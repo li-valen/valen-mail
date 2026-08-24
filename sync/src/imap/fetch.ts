@@ -193,10 +193,13 @@ export async function fetchHeaders(
 
 /**
  * Fetches one body part (e.g. an attachment's bytes) on demand, by IMAP part
- * number. This is NOT part of the sync loop — fetchHeaders() never calls it,
- * and nothing in this module wires it into a per-message loop. It exists for
- * Task 8's API to download a single attachment when a user actually opens
- * it, which is what keeps sync itself header-only. Do not call this from
+ * number, or the whole raw message when `partId` is omitted. This is NOT
+ * part of the sync loop — fetchHeaders() never calls it, and nothing in
+ * this module wires it into a per-message loop. It exists for Task 8's API:
+ * the full-body route calls it with no `partId` (imapflow's own
+ * `download()` returns the whole raw message source in that case), the
+ * attachment route calls it with the attachment's own `partId`. That split
+ * is what keeps sync itself header-only. Do not call this from
  * fetchHeaders() or any bulk loop "for convenience" — that reintroduces the
  * exact BODY[]-during-sync problem this module exists to avoid.
  */
@@ -204,7 +207,7 @@ export async function fetchBodyPart(
   connection: ImapConnection,
   folder: string,
   uid: number,
-  partId: string,
+  partId?: string,
 ): Promise<Buffer> {
   const client = connection.rawClient();
   const lock = await client.getMailboxLock(folder);

@@ -245,6 +245,18 @@ export class ConnectionPool {
     return this.statuses;
   }
 
+  /**
+   * Returns the live connection for one account, or undefined if the
+   * account id is unknown to this pool or has never connected. Nothing
+   * inside this class needs this — it exists for Task 8's API, which reads
+   * a specific account's connection on demand to serve the body and
+   * attachment routes (fetchBodyPart), never as part of the sync loop
+   * itself.
+   */
+  getConnection(accountId: string): ImapConnection | undefined {
+    return this.connections.get(accountId);
+  }
+
   async start(): Promise<void> {
     this.running = true;
     // One connection per account, run concurrently with each other. Gmail
