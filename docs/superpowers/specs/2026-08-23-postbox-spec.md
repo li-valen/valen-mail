@@ -121,9 +121,30 @@ thread and reply-all behaves correctly.
 
 Consequences accepted:
 - Counts N times against Gmail's ~500 messages/day limit.
-- N copies land in the Sent folder unless suppressed (see 5.6).
 - A forwarded message carries its original token, so forwards can read as
   the original recipient re-opening.
+
+**5.3.1 Attachment multiplication (binding mitigation).**
+
+Gmail copies every SMTP send into the Sent folder automatically; the client
+cannot suppress this. N tokenized sends therefore write N copies of every
+attachment into the user's 15 GB Gmail quota. A 10 MB attachment to 5
+recipients consumes 50 MB, not 10 MB.
+
+The client MUST mitigate as follows:
+
+1. **Degrade before sending.** If `attachment_bytes * recipient_count`
+   exceeds `TRACKED_SEND_BYTE_BUDGET` (default 25 MB), fall back to a single
+   shared token for that message. Attribution degrades to "someone opened"
+   rather than naming a recipient. The UI MUST say so on that message
+   rather than implying per-person data it does not have.
+2. **Reconcile after sending.** Where per-recipient sends did occur, the
+   client SHOULD delete the redundant Sent copies over IMAP, retaining one.
+
+Rationale for degrading rather than always reconciling: reconciliation is
+racy (it depends on Gmail having filed all N copies before the sweep runs)
+and a failed sweep silently costs quota. The budget check is deterministic
+and cannot fail open.
 
 ### 5.4 Open classification (binding)
 
