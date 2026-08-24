@@ -6,6 +6,12 @@ create table if not exists tokens (
   recipient_email text not null,
   subject         text,
   sent_at         timestamptz not null default now(),
+  -- sender_ip holds the ACCOUNT OWNER'S OWN sending IP, used only to
+  -- suppress self-opens: classifyHit() compares it against a hit's IP as a
+  -- raw string, which is why this column is intentionally unhashed (unlike
+  -- opens.raw_ip_hash). It must NEVER be populated with a recipient's IP —
+  -- doing so would misclassify that recipient's real opens as 'self' and
+  -- silently drop them. See spec 7.2 and Task 7 Amendment 3.
   sender_ip       text
 );
 create index if not exists tokens_account_sent on tokens (account_id, sent_at desc);
