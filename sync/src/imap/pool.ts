@@ -271,25 +271,47 @@ export class ConnectionPool {
   }
 
   private async sleepInterruptible(ms: number): Promise<void> {
-    await Promise.race([new Promise<void>((resolve) => setTimeout(resolve, ms)), this.stopRequested]);
+    // The timer must be captured and cleared on the winning branch, not
+    // just left to fire on its own: when stopRequested wins this race
+    // (stop() called mid-backoff), an uncleared setTimeout stays queued in
+    // Node's timer list for up to MAX_BACKOFF_MS (5 minutes) after this
+    // function has already returned. Under systemd that is the difference
+    // between an ordered shutdown and a SIGKILL once the unit's stop grace
+    // period elapses with the process still alive for no operational
+    // reason.
+    let timer!: NodeJS.Timeout;
+    const timeout = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, ms);
+    });
+    await Promise.race([timeout, this.stopRequested]);
+    clearTimeout(timer);
   }
 
   private async runAccount(account: AccountConfig): Promise<void> {
     let attempt = 0;
     while (this.running) {
-      const connection = this.createConnection(account);
-      // Registered before connect() is even attempted, not after it
-      // succeeds. This account's connect() call, and this loop's ability
-      // to notice stop() at all, race stop() the moment it is called: if
-      // registration waited until connect() succeeded, a connect() that
-      // completed just after stop() had already taken its disconnect
-      // snapshot would leave this exact instance connected and completely
-      // unaccounted for — a leaked socket stop() genuinely can't find.
-      // Registering first means ImapConnection.disconnect() (Task 5) can
-      // always find this instance and await its in-flight connect() before
-      // deciding whether there is anything to close.
-      this.connections.set(account.id, connection);
+      // createConnection is a caller-supplied factory (tests inject one
+      // that wraps a fake client). It stays inside the try along with
+      // everything that depends on its result: a factory that throws
+      // synchronously must be handled exactly like a failed connect() —
+      // logged, backed off, retried — never left to escape runAccount and
+      // reject start()'s Promise.all, which would take down every other
+      // account's loop along with it.
+      let connection: ImapConnection | null = null;
       try {
+        connection = this.createConnection(account);
+        // Registered before connect() is even attempted, not after it
+        // succeeds. This account's connect() call, and this loop's ability
+        // to notice stop() at all, race stop() the moment it is called: if
+        // registration waited until connect() succeeded, a connect() that
+        // completed just after stop() had already taken its disconnect
+        // snapshot would leave this exact instance connected and completely
+        // unaccounted for — a leaked socket stop() genuinely can't find.
+        // Registering first means ImapConnection.disconnect() (Task 5) can
+        // always find this instance and await its in-flight connect() before
+        // deciding whether there is anything to close.
+        this.connections.set(account.id, connection);
+
         await connection.connect();
         if (!this.running) break; // stop() raced this connect(); it already owns cleanup for this instance.
         this.statuses.set(account.id, 'connected');
@@ -311,10 +333,15 @@ export class ConnectionPool {
         // Best-effort cleanup of a connection that failed or was found
         // dead by the liveness probe. Not awaited: a hung logout() on a
         // half-open socket must not block this account's own retry loop
-        // (the whole reason this connection is being discarded).
-        void connection.disconnect().catch((cleanupError) => {
-          console.error(`account "${account.id}": cleanup disconnect failed`, cleanupError);
-        });
+        // (the whole reason this connection is being discarded). Guarded
+        // on `connection` because createConnection() itself may have been
+        // what threw, in which case there is nothing to clean up.
+        if (connection) {
+          const failedConnection = connection;
+          void failedConnection.disconnect().catch((cleanupError) => {
+            console.error(`account "${account.id}": cleanup disconnect failed`, cleanupError);
+          });
+        }
 
         if (!this.running) break;
         await this.sleepInterruptible(computeBackoffMs(attempt));

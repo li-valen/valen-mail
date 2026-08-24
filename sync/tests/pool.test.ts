@@ -422,6 +422,39 @@ describe('ConnectionPool', () => {
     consoleErrorSpy.mockRestore();
   });
 
+  it('does not let a synchronously-throwing connection factory take down other accounts (Finding 2)', async () => {
+    // createConnection is a caller-supplied factory. If its call sat
+    // outside runAccount's try/catch, a factory that throws synchronously
+    // would escape runAccount entirely, rejecting start()'s Promise.all
+    // and terminating that account's loop with no retry at all — exactly
+    // the failure this guards against, just triggered by the factory
+    // instead of by connect().
+    const fakeB = createFakeClient();
+    const db = createFakeDb();
+    const throwingFactory = vi.fn((account: AccountConfig) => {
+      if (account.id === 'a') throw new Error('factory misconfigured');
+      return new ImapConnection(account, () => fakeB.client);
+    });
+    const pool = new ConnectionPool([ACCOUNT_A, ACCOUNT_B], db, throwingFactory);
+
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    launch(pool);
+    await wait(50);
+
+    // If the throw escaped runAccount, "a" would never reach the catch
+    // block that sets 'reconnecting' — its status would stay unset.
+    expect(pool.status.get('a')).toBe('reconnecting');
+    expect(pool.status.get('b')).toBe('connected');
+
+    // Wait past attempt 1's backoff window to prove the factory is
+    // actually retried, not just called once before the loop died.
+    await wait(1_200);
+    expect(throwingFactory.mock.calls.filter((call) => call[0].id === 'a').length).toBeGreaterThanOrEqual(2);
+    expect(pool.status.get('b')).toBe('connected');
+
+    consoleErrorSpy.mockRestore();
+  });
+
   it('reconnects with backoff when the liveness probe fails after IDLE ends unexpectedly', async () => {
     const fakeA = createFakeClient({
       idleRejectsImmediately: true,
@@ -552,6 +585,52 @@ describe('ConnectionPool', () => {
 
     expect(fakeA.logout).toHaveBeenCalledTimes(1);
     expect(pool.status.get('a')).toBe('stopped');
+  });
+
+  it('stop() clears the pending backoff timer instead of leaving it dangling (regression: uncleared setTimeout blocks process exit)', async () => {
+    // Asserting the race resolves quickly is not enough on its own — that
+    // was already true before this fix, since stopRequested still wins
+    // Promise.race immediately. What was missing is that the loser's
+    // setTimeout handle was never cleared, so it stayed queued in Node's
+    // timer list for up to MAX_BACKOFF_MS after stop() had already
+    // returned — invisible to a test that only checks elapsed time, but
+    // fatal to a clean process exit under systemd. Fake timers let this
+    // test observe the timer queue directly instead of elapsed wall time.
+    vi.useFakeTimers();
+    try {
+      const fakeA = createFakeClient({
+        connectBehavior: async () => {
+          throw new Error('invalid credentials');
+        },
+      });
+      const db = createFakeDb();
+      const pool = new ConnectionPool([ACCOUNT_A], db, () => new ImapConnection(ACCOUNT_A, () => fakeA.client));
+
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      launch(pool);
+
+      // Let the first (failing) connect() reject and land the account in
+      // its backoff sleep. Rejection and the resulting catch block are
+      // pure microtask work — advancing fake time by 0ms is enough to
+      // flush them without ever firing the backoff timer itself.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(pool.status.get('a')).toBe('reconnecting');
+      expect(vi.getTimerCount()).toBe(1); // exactly the pending backoff timer
+
+      await activePool!.stop();
+      await activeStart;
+      activePool = null;
+      activeStart = null;
+
+      // The regression: this used to stay 1 (the uncleared backoff
+      // timer), even though stop() had already resolved.
+      expect(vi.getTimerCount()).toBe(0);
+      expect(pool.status.get('a')).toBe('stopped');
+
+      consoleErrorSpy.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('stop() resolves promptly even while an account is mid-backoff sleep', async () => {
