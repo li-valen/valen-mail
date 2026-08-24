@@ -39,6 +39,7 @@ export function extractAttachments(bodyStructure: unknown): readonly AttachmentM
     const visited = new Set<object>();
     const stack: Array<unknown> = [bodyStructure];
     let nodeCount = 0;
+    let cycleLogged = false;
 
     while (stack.length > 0) {
       const node = stack.pop();
@@ -48,6 +49,12 @@ export function extractAttachments(bodyStructure: unknown): readonly AttachmentM
       // Cycle detection: if we've already processed this node, skip it.
       // Uses object identity via Set; does not mutate the caller's nodes.
       if (visited.has(node)) {
+        if (!cycleLogged) {
+          console.error(
+            `[sync/attachments] cycle detected in BODYSTRUCTURE, skipping duplicate node after collecting ${found.length} attachments`,
+          );
+          cycleLogged = true;
+        }
         continue;
       }
       visited.add(node);

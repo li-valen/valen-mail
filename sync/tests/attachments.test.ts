@@ -119,4 +119,26 @@ describe('extractAttachments', () => {
     spy.mockRestore();
   });
 
+  it('suppresses duplicate attachments from cyclic self-referencing nodes', () => {
+    // A self-referencing attachment node: the visited set MUST prevent duplicates.
+    // Without cycle detection, node budget would collect MAX_NODES copies of the same attachment.
+    const evil: any = {
+      part: '1',
+      type: 'application/pdf',
+      disposition: 'attachment',
+      dispositionParameters: { filename: 'evil.pdf' },
+      size: 100,
+      childNodes: [],
+    };
+    evil.childNodes.push(evil); // Self-reference
+
+    const result = extractAttachments(evil);
+
+    // Must return exactly 1 attachment, not 1000 duplicates
+    expect(result).toHaveLength(1);
+    const attachment = result[0];
+    expect(attachment?.filename).toBe('evil.pdf');
+    expect(attachment?.partId).toBe('1');
+  });
+
 });
