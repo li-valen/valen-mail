@@ -295,6 +295,22 @@ See `docs/frontend-guide.md` for the routing rules and proposed stack.
   UA matching still classifies `scanner` correctly; only the hit-count burst
   path is dead. The real fix — classify before dedupe, or track raw
   arrivals separately from recorded opens — is deferred to a later plan.
+- **L8. Device attribution (5.7) is empirically ~0% for real accounts.**
+  The 2026-08-23 production calibration run (`docs/measurement-results.md`)
+  hit every real Gmail and iCloud account tested and recorded
+  `device_class: unknown` on every single hit: Gmail always proxies through
+  `GoogleImageProxy` (expected per 5.7/L2), and Apple's MPP relay sends a
+  bare `"Mozilla/5.0"` with no platform information at all, which is
+  functionally the same "unknown" outcome for a different reason. Device
+  attribution (`parseUserAgent()`, `src/ua.ts`) worked exactly once in this
+  project's history, against a synthetic, hand-built Outlook user-agent in a
+  unit test — it has never been exercised by real production traffic. The
+  code is correct and is retained for the accounts where a real UA does
+  arrive (Outlook desktop, direct-load Apple Mail, etc.), but the future UI
+  MUST NOT be designed around device breakdowns as a primary surface for
+  accounts that are predominantly Gmail or iCloud recipients — "unknown"
+  should be expected to be the common case, not the exception, until
+  measured otherwise against a broader recipient set.
 
 ## 10. Success Criteria
 

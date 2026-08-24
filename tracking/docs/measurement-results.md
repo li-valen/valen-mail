@@ -1,10 +1,15 @@
 # Live measurement results — tracking pixel calibration
 
-**Status: template, awaiting real data.** Every data cell below is empty. This
-document is the deliverable that Success Criterion 7 and Plan gate require —
-it exists to be filled in by actually running the calibration matrix, not by
-guessing what the numbers will look like. Do not fill in a cell unless you
-have run `scripts/report.mjs` and read the number off its output.
+**Status: run complete, results recorded 2026-08-24.** Rows 1-4 of the
+calibration matrix were sent, opened, and reported per the procedure below;
+row 5 (`real-contact`) was not run (optional, user's discretion). The
+"How to run this" / "Calibration matrix to run" sections are kept as-written
+for traceability of what was planned and predicted going in — see the
+erratum below for where a pre-run prediction turned out to be wrong, and
+`Results` / `Analysis` for what was actually measured. This document is the
+deliverable that Success Criterion 7 and the Plan gate require, and it fed
+directly into the classifier recalibration recorded in
+`docs/superpowers/logs/2026-08-24-classifier-recalibration.md`.
 
 ## How to run this
 
@@ -71,6 +76,20 @@ it is deterministically zero by construction, whatever actually happened at
 send B. Do not read a zero (or nonzero) delta here as evidence about MPP
 distortion.
 
+> **Erratum, post-run (2026-08-24):** this prediction was wrong, and the way
+> it was wrong is the actual finding. `isApplePrivacyProxy()` never fired at
+> all — both row 3 and row 4 classified `open`, not `mpp` (see Results
+> below). Real MPP traffic sends a bare 11-character `"Mozilla/5.0"`, which
+> does not contain `AppleWebKit`, so the old heuristic's `isWebKit` term was
+> always false against real traffic. The prediction above was reasoned
+> correctly from the code as written; the code's premise about what MPP
+> traffic looks like was simply never checked against a real relay fetch
+> until this run. Fixed in
+> `docs/superpowers/logs/2026-08-24-classifier-recalibration.md`; the
+> classifier now keys off the absence of any platform parenthetical
+> (`isContentlessProxy()`), which is what the calibration data actually
+> showed.
+
 The real signal for send B is in the **raw hits table — timing and hit
 count**, not the classification column: an MPP prefetch arrives at or very
 near the delivery timestamp regardless of whether a human ever opens the
@@ -96,34 +115,51 @@ involves a third party, so it is the user's call whether to include it.
 
 ## Results
 
-*(Fill in after running `scripts/report.mjs`. Leave any cell blank if it was
-not directly observed — do not estimate.)*
+Run: 2026-08-23/24. Lag is measured from `sent_at` to `occurred_at` for each
+hit. Classifications shown are what the **classifier in production at the
+time of the run** actually returned (the old `isApplePrivacyProxy()` /
+10s `PREFETCH_WINDOW_MS`), not what the recalibrated classifier would now
+return — this table records what was measured, not a re-run.
 
 | # | Label | Any hit arrived? | Classification(s) observed | Device attribution (`device_class` / `os`) | Spurious hit count | Notes |
 |---|---|---|---|---|---|---|
-| 1 | `gmail-web` | | | | | |
-| 2 | `gmail-ios-app` | | | | | |
-| 3 | `apple-mail-mpp-on` | | | | | |
-| 4 | `apple-mail-mpp-off` | | | | | |
-| 5 | `real-contact` (optional) | | | | | |
+| 1 | `gmail-web` | Yes | `prefetch` (+9s) | `unknown` / — (Gmail proxied) | 1 | Correctly suppressed even under the old 10s window. |
+| 2 | `gmail-ios-app` | Yes | `open` ×2 (+14s, +26s) | `unknown` / — (Gmail proxied) | 2 | Both hits landed outside the old 10s prefetch window and so counted as human opens. +14s is very likely a machine re-fetch; +26s is ambiguous — could be either. No independent confirmation either way for this row. |
+| 3 | `apple-mail-mpp-on` | Yes | `open` (+25s) | `unknown` / null (bare `"Mozilla/5.0"`, no platform info) | 1 | **Wrong.** This is Apple's MPP relay prefetching the image, not a human open — `isApplePrivacyProxy()` failed to fire because the real relay UA carries no `AppleWebKit` token (see erratum above). |
+| 4 | `apple-mail-mpp-off` | Yes | `open` (+7s) | `unknown` / null (bare `"Mozilla/5.0"`, no platform info) | 1 | **Wrong**, same failure mode as row 3. The +7s lag is itself evidence this is a proxy prefetch, not a human read. Also: row 3 and row 4's user agents are byte-identical, so this run cannot show whether Protect Mail Activity actually changed anything server-side — see note below. |
+| 5 | `real-contact` (optional) | Not run | — | — | — | Not exercised this calibration; user's discretion, per matrix note above. |
 
 "Any hit arrived?" is itself a result: a target with zero hits means the
 image was blocked or never fetched by that client — that is a meaningful
-finding (spec L3), not missing data.
+finding (spec L3), not missing data. Here, every target that was sent
+produced at least one hit.
 
-## Classification breakdown (all hits, all targets)
+**Row 3 vs. row 4 user-agent identity.** The exact same 11-character
+`"Mozilla/5.0"` string was captured for both the MPP-on and MPP-off sends.
+Per the calibration brief: do not build any logic that assumes MPP-on and
+MPP-off are distinguishable from this data — either the settings change had
+not propagated by send time, or iCloud proxies image loads independently of
+the Protect Mail Activity toggle for this account. Both are plausible; this
+run cannot tell them apart, and neither should the classifier.
 
-*(Copy directly from the `scripts/report.mjs` output. All five categories
-are shown, including any at zero — a category that never fired is a result,
-not an omission.)*
+## Classification breakdown (calibration-matrix hits only, rows 1-4)
+
+*(The connectivity smoke test below is intentionally excluded from this
+breakdown — see its own section — so these counts are the 5 hits produced
+by the actual calibration matrix.)*
 
 | Classification | Count |
 |---|---|
-| `open` | |
-| `mpp` | |
-| `prefetch` | |
-| `scanner` | |
-| `self` | |
+| `open` | 4 |
+| `mpp` | 0 |
+| `prefetch` | 1 |
+| `scanner` | 0 |
+| `self` | 0 |
+
+`mpp: 0` is Finding 1, in numbers: across two real Apple MPP relay hits,
+the classifier that was live at measurement time labelled zero of them
+`mpp`. Every Apple hit landed in `open` instead — the exact false positive
+the classifier exists to prevent (spec 5.4, L1).
 
 **Limitation: `scanner: 0` does not mean no burst scanners occurred.**
 `scanner` classification has two independent triggers (spec 5.4): a known
@@ -153,7 +189,17 @@ is not a substitute for rows 1–5.
 |---|---|
 | Sent | 2026-08-24T01:40:07.578Z, to `li.valen.008@gmail.com` |
 | Token | `313b3c5e24e403ddd84bb52244594a43` |
-| Any hit arrived by the time this doc was written? | No (0 hits) — expected, since no one had opened it yet at write time |
+| Hit arrived | Yes — one hit, +203s after send |
+| Classification | `open` |
+| Ground truth | **Genuine human open.** The recipient replied "done" to confirm they had opened it, independent of the tracking data. This is the one hit in the whole run with an external confirmation of what actually happened. |
+
+Retained as a connectivity check per its original framing (not a controlled
+calibration row), but its later hit turned out to be the run's single most
+valuable data point: it is the only lag with independent ground truth, and
+it landed at +203s — far outside any prefetch window under discussion. It
+directly grounds the choice of `PREFETCH_WINDOW_MS = 60_000` in
+`src/classify.ts`: whatever the window is widened to, it must stay well
+clear of 203s.
 
 ## Analysis — three required questions
 
@@ -163,43 +209,87 @@ speculating.
 
 ### 1. Did any true open go unrecorded?
 
-If a row where you know you personally opened the message shows "NO HITS" in
-`scripts/report.mjs`, images were blocked for that client and tracking
-cannot see it at all (spec L3). Record which row(s), if any, and what that
-implies about coverage for that client.
-
-*(unanswered — pending calibration run)*
+No. Every target that was sent — rows 1 through 4, plus the smoke test —
+produced at least one hit; no row shows "NO HITS" in the report output.
+Row 5 (`real-contact`) was not run, so it contributes nothing either way.
+This is a real, if narrow, positive result: for the two mail systems tested
+(Gmail, iCloud/Apple Mail), the pixel itself was fetched every time an
+image-loading client received the message, matching the instruction that
+each message be opened normally before the 24-hour wait. Five hits across
+five sends is not enough to bound a loss rate with any confidence — it only
+says the failure mode of "image silently never fetched" (spec L3) did not
+occur in this specific, small run.
 
 ### 2. Was any true open misclassified as `mpp`, `prefetch`, or `scanner`?
 
-Row 4 (`apple-mail-mpp-off`) does **not** test this by its classification —
-per the matrix section above, `isApplePrivacyProxy()` classifies by
-user-agent shape, and Apple Mail presents that same shape whether Protect
-Mail Activity is on or off, so row 4 is expected to classify `mpp` even on a
-genuine human open. Use row 4's raw hit timing (`occurred_at` vs. `sent_at`)
-to judge whether the open was real, not its classification column.
+Yes — but inverted from what this question originally anticipated. The
+concern going in was a genuine human open being wrongly suppressed as
+`mpp`/`prefetch`/`scanner`. What the data actually shows is the opposite
+failure: **machine prefetches were misclassified as genuine opens.** Rows 3
+and 4 are Apple's MPP relay prefetching an image at +25s and +7s
+respectively — not a human reading the message — and both were recorded as
+`open`, the classification meant to mean "surfaced as a confirmed read"
+(spec 5.4). That is a false positive, and it is the most consequential
+finding in this run: it means the pre-calibration classifier would have
+told the user "opened" for messages that were, as far as this data can
+tell, never actually read by anyone. Row 2's +14s hit is also suspect for
+the same reason (very likely a Gmail proxy re-fetch, not a human), though
+without an independent confirmation for that row (unlike the smoke test) it
+cannot be stated as certainly as rows 3–4.
 
-The real check for this question is any row where you know with certainty a
-fetch was a genuine human open — most usefully row 5 (`real-contact`), if
-run — coming back classified as anything other than `open`. That is a
-false negative in the classifier. If it happens, the constants in
-`src/classify.ts` (`isApplePrivacyProxy`, `PREFETCH_WINDOW_MS`,
-`SCANNER_BURST_COUNT`/`SCANNER_BURST_WINDOW_MS`) need tuning — note exactly
-what changed and why.
+In the other direction — a genuine human open wrongly suppressed as
+`mpp`/`prefetch`/`scanner` — this run has exactly one point of ground truth
+(the smoke test, confirmed by reply), and it was **not** misclassified: it
+correctly landed as `open` at +203s. No evidence of that failure direction
+in this run, though one confirmed data point cannot rule it out generally.
 
-*(unanswered — pending calibration run)*
+Fixed in `src/classify.ts`: `isApplePrivacyProxy` (renamed
+`isContentlessProxy`) now keys off the absence of any platform
+parenthetical rather than the AppleWebKit/Version/Safari shape that never
+matched real MPP traffic, and `PREFETCH_WINDOW_MS` widened from 10s to 60s
+to cover the +14s/+26s Gmail lags observed in row 2. See
+`docs/superpowers/logs/2026-08-24-classifier-recalibration.md` for the full
+reasoning.
 
 ### 3. Is the signal worth building a client around?
 
-State plainly what the Gmail `unknown` rate (rows 1–2) implies for the rest
-of this plan. Rows 3 and 4 do not yield a classification-based MPP
-distortion rate — both are expected to classify `mpp` regardless of the
-Protect Mail Activity toggle (see the matrix section above), so that
-comparison is not available from this matrix. If you compared row 4's raw
-hit timing against its send time (per question 2) to judge whether Protect
-Mail Activity was actually off, factor that reading in here instead. If the
-Gmail `unknown` rate is high because the user's real contacts are on Gmail,
-say so — that is a legitimate and valuable outcome of this plan, not a
-failure of it.
+A qualified yes, with the qualification doing real work.
 
-*(unanswered — pending calibration run)*
+**Pixel delivery is reliable, as far as this data goes.** Every send in
+this run produced a hit — no client tested silently dropped the image (see
+Q1). That is the load-bearing precondition for everything else in this
+plan, and it held.
+
+**Human-vs-machine discrimination was badly broken and is now provisionally
+better, not proven.** Before this run, the MPP heuristic had literally
+never fired against real traffic (`mpp: 0` across two live Apple MPP hits —
+see the classification breakdown above) — the exact failure this
+classifier exists to prevent. That is now fixed against the one proxy shape
+this run observed (a bare `"Mozilla/5.0"`), and the prefetch window is
+widened to cover the two suspect Gmail lags. But this run supplies exactly
+one confirmed genuine human open (the smoke test) to validate against, and
+zero confirmed genuine Apple Mail opens — every Apple hit in this run was a
+machine prefetch. The fix is well-evidenced for what it corrects, but
+essentially unvalidated against a real human Apple Mail read, because none
+occurred in this data.
+
+**Device attribution is not there for the accounts actually in use.** Rows
+1–2 (Gmail) return `device_class: unknown` by architecture — Gmail proxies
+every fetch, so there is no UA to parse, full stop (spec 5.7/L2). Rows 3–4
+(iCloud) also return `unknown`, for the separate reason that Apple's MPP
+relay strips all platform information, not because `parseUserAgent()` is
+broken — the code correctly reports "unknown" rather than guessing. Across
+every real account tested, device attribution was 0-for-4. It worked
+exactly once in this project's history, against a synthetic Outlook UA in a
+unit test. See spec L8. If the user's actual contacts are predominantly
+Gmail and iCloud (plausible for a personal client), device-class breakdowns
+should not be a UI cornerstone; they will read "unknown" almost always.
+
+**Net assessment:** the case for continuing is "pixel delivery works, and a
+real, mistaken heuristic just got corrected by real data" — not "the
+classifier is validated." The honest-states requirement already written
+into spec 7A.2 (uncertainty must be legible, not hidden) is not a
+nice-to-have for this product; it is the correct response to what this
+calibration actually found. Building the client is defensible on this
+evidence. Designing its UI as if `open`/`mpp` were a settled, trustworthy
+signal, or as if device class will usually be known, is not.
