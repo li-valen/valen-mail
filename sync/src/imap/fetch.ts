@@ -61,8 +61,13 @@ export const HEADER_FETCH_OPTIONS = {
  * Because this is a fixed charge rather than a measurement, it cannot by
  * itself detect a real BODY[] regression — see HEADER_FETCH_OPTIONS above
  * for the assertion that actually does that job.
+ *
+ * Exported so Task 7's connection pool can size its pre-fetch budget
+ * reservation (`limit * this constant`) from the same number this module
+ * actually charges after the fetch, rather than duplicating the literal
+ * and risking the two drifting apart.
  */
-const ESTIMATED_BYTES_PER_HEADER_FETCH = 2048;
+export const ESTIMATED_BYTES_PER_HEADER_FETCH = 2048;
 
 const EMPTY_RESULT: FetchResult = { messages: [], attachments: new Map(), bytesDownloaded: 0 };
 
