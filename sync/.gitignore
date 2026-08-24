@@ -1,5 +1,12 @@
 node_modules/
 dist/
 .env
-accounts.json
+# Broad enough to cover accounts.json.bak, accounts.json.orig,
+# accounts.local.json and any other copy of a file holding ten Gmail app
+# passwords — a bare `accounts.json` rule matched only the exact name, and
+# `accounts*.json` alone would still miss a `.bak`/`.orig` suffix. The
+# negation below must stay last so the credential-free example is still
+# committed; it is an exact name, so `accounts.example.json.bak` stays
+# ignored.
+accounts*.json*
 !accounts.example.json

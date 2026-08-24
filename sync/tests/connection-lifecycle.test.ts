@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { ImapConnection } from '../src/imap/connection';
+import { ImapConnection, LOGOUT_TIMEOUT_MS } from '../src/imap/connection';
 import type { ImapFlow } from 'imapflow';
 
 /**
@@ -136,5 +136,65 @@ describe('ImapConnection lifecycle (no network)', () => {
     expect(factory).toHaveBeenCalledTimes(1);
     expect(fake.connectCallCount()).toBe(1);
     expect(connection.isConnected).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // F4: a hung LOGOUT must not wedge shutdown
+  // -------------------------------------------------------------------------
+
+  it('gives up on a logout() that never returns instead of hanging forever', async () => {
+    // logout() writes a command and waits for the server's reply. On a
+    // half-open socket that write succeeds into a dead TCP window and the
+    // reply never arrives. ConnectionPool.stop() awaits Promise.all over
+    // every connection's disconnect(), so ONE hung logout wedged the entire
+    // shutdown — and under systemd that ends in SIGKILL once the stop grace
+    // period expires.
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const hangingClient = {
+        connect: vi.fn(async () => {}),
+        logout: vi.fn(() => new Promise<void>(() => {})), // never settles
+        get usable() {
+          return true;
+        },
+      } as unknown as ImapFlow;
+      const connection = new ImapConnection(ACCOUNT, () => hangingClient);
+      await connection.connect();
+
+      const disconnectPromise = connection.disconnect();
+      await vi.advanceTimersByTimeAsync(LOGOUT_TIMEOUT_MS + 1);
+
+      // disconnect() must RESOLVE, not reject: a failed logout must never
+      // stop shutdown, it is only logged with the account id.
+      await expect(disconnectPromise).resolves.toBeUndefined();
+      expect(connection.isConnected).toBe(false);
+
+      const loggedAccount = errorSpy.mock.calls.some((call) =>
+        call.some((arg) => typeof arg === 'string' && arg.includes('"test"')),
+      );
+      expect(loggedAccount).toBe(true);
+    } finally {
+      errorSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('leaves no pending timer behind when logout() succeeds normally', async () => {
+    // The timeout guard must not itself become the thing that keeps the
+    // event loop alive after a clean shutdown.
+    vi.useFakeTimers();
+    try {
+      const fake = createFakeClient();
+      const connection = new ImapConnection(ACCOUNT, () => fake.client);
+      fake.resolveConnect();
+      await connection.connect();
+      await connection.disconnect();
+
+      expect(vi.getTimerCount()).toBe(0);
+      expect(fake.logoutCallCount()).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

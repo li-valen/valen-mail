@@ -1,9 +1,11 @@
 import type { ImapFlow } from 'imapflow';
 import type { AccountConfig } from '../config';
 import type { Db } from '../db';
+import type { AttachmentMeta } from '../attachments';
 import { ImapConnection } from './connection.ts';
 import { fetchHeaders, ESTIMATED_BYTES_PER_HEADER_FETCH } from './fetch.ts';
 import { ByteBudget } from '../budget.ts';
+import { withTimeout } from '../timeout.ts';
 
 const BASE_BACKOFF_MS = 1_000;
 export const MAX_BACKOFF_MS = 5 * 60 * 1_000;
@@ -48,7 +50,14 @@ const SYNCED_FOLDER = 'INBOX';
  *  `resolveUidSpan` (fetch.ts) does not validate `sinceUid`, so a 0 or
  *  negative cursor would build a malformed IMAP range. This pool instead
  *  relies on repeated bounded polls of the newest messages plus
- *  `upsertMessage`'s idempotent (account, folder, uid) upsert. */
+ *  `upsertMessage`'s idempotent (account, folder, uid) upsert.
+ *
+ *  KNOWN LIMITATION (spec 9 / L9): this is a poll of the newest 50, not a
+ *  backfill. If more than 50 messages arrive at an account while the
+ *  service is down, everything older than the newest 50 is never fetched
+ *  and never appears in the unified inbox — and nothing detects the gap.
+ *  The `sync_state` table exists for the resume point a real backfill
+ *  would need, but nothing reads or writes it today. */
 const HEADER_FETCH_LIMIT = 50;
 
 /** Pre-fetch reservation charged against the daily byte budget before each
@@ -79,28 +88,6 @@ export const IDLE_LIVENESS_CHECK_INTERVAL_MS = 3 * 60 * 1_000;
  *  would otherwise let this hang exactly as long as IDLE did — the probe
  *  needs its own, much shorter timeout to actually prove something. */
 export const LIVENESS_PROBE_TIMEOUT_MS = 15_000;
-
-/**
- * Rejects if `promise` has not settled within `ms`. Does not cancel the
- * underlying operation (imapflow has no cancellation primitive for an
- * in-flight command) — it only stops this caller from waiting on it
- * forever.
- */
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
-}
 
 export type IdleWakeReason = 'mail' | 'timeout' | 'idle-ended';
 
@@ -257,6 +244,38 @@ export class ConnectionPool {
     return this.connections.get(accountId);
   }
 
+  /**
+   * Runs `fn` inside the same per-account critical section syncOnce() uses.
+   *
+   * The API and the IDLE loop drive the SAME imapflow client. An on-demand
+   * download breaks the active IDLE, so waitForIdleWake() returns
+   * 'idle-ended' and idleLoop() immediately runs probeLiveness() — but
+   * imapflow serialises commands per connection, so that NOOP queues behind
+   * the in-flight download. A download that outlasts
+   * LIVENESS_PROBE_TIMEOUT_MS (15s — a large attachment on a slow link)
+   * then times the probe out, and runAccount() tears down a perfectly
+   * healthy connection, killing the download with it.
+   *
+   * Routing on-demand fetches through this key means the probe and the
+   * download can never interleave: whichever starts first finishes first.
+   * It also gives the API a place to do reserve -> fetch -> record as one
+   * atomic unit against the same budget snapshot the sync loop uses.
+   */
+  async withAccountLock<T>(accountId: string, fn: () => Promise<T>): Promise<T> {
+    return this.mutex.run(accountId, fn);
+  }
+
+  /**
+   * The per-account daily byte budget (spec L6). Exposed because the API's
+   * on-demand body and attachment fetches pull bytes down the SAME
+   * connection Gmail meters — the sync loop charging a 2 KB estimate per
+   * header fetch while the API pulls tens of megabytes unrecorded would
+   * make the accounting fiction.
+   */
+  get byteBudget(): ByteBudget {
+    return this.budget;
+  }
+
   async start(): Promise<void> {
     this.running = true;
     // One connection per account, run concurrently with each other. Gmail
@@ -327,9 +346,27 @@ export class ConnectionPool {
         await connection.connect();
         if (!this.running) break; // stop() raced this connect(); it already owns cleanup for this instance.
         this.statuses.set(account.id, 'connected');
+
+        // NOTE: `attempt` is deliberately NOT reset here. A successful TCP
+        // + auth handshake proves only that Gmail accepted the credential;
+        // it says nothing about whether this account can make progress.
+        // Resetting on connect success made the backoff ladder unreachable
+        // for every post-handshake failure — a Postgres restart or OOM-kill
+        // (budget.reserve queries the db), a mailbox that fails to open, or
+        // an account already IMAP-suspended where AUTH succeeds but SELECT
+        // INBOX does not. Each of those threw below, the catch incremented
+        // `attempt` from 0 to 1, and the loop slept only computeBackoffMs(1)
+        // — 500-1000ms — forever. Measured against this pool with a Db whose
+        // every query throws: 8 connect attempts in 6 seconds, sustained
+        // indefinitely. That turns the byte-budget lockout this subsystem
+        // exists to prevent into something the subsystem itself causes.
+        await this.syncOnce(account.id, connection);
+
+        // A full cycle completed — reserve, fetch, upsert, record all
+        // succeeded — so this account is genuinely healthy and the ladder
+        // is safe to reset. This is the ONLY place `attempt` returns to 0.
         attempt = 0;
 
-        await this.syncOnce(account.id, connection);
         await this.idleLoop(account.id, connection);
         // idleLoop only returns once `running` has been cleared by stop();
         // the outer while re-checks that and exits below without going
@@ -402,8 +439,39 @@ export class ConnectionPool {
       const result = await fetchHeaders(connection, SYNCED_FOLDER, { limit: HEADER_FETCH_LIMIT });
       for (const message of result.messages) {
         await this.db.upsertMessage(message);
+        // Attachment metadata is written AFTER its message row: the
+        // attachments table has a foreign key onto
+        // messages(account_id, folder, uid), so the reverse order would
+        // fail on a message this cycle is seeing for the first time.
+        //
+        // Dropping result.attachments (which is what this loop used to do)
+        // left the table permanently empty, which in turn made
+        // lookupAttachmentMeta a guaranteed miss — every attachment served
+        // as application/octet-stream with no filename — and left a client
+        // with no way to discover a partId at all, so
+        // /api/attachment/:account/:folder/:uid/:partId was unreachable.
+        await this.persistAttachments(accountId, message.uid, result.attachments.get(message.uid));
       }
       await this.budget.record(accountId, result.bytesDownloaded);
     });
+  }
+
+  private async persistAttachments(
+    accountId: string,
+    uid: number,
+    parts: readonly AttachmentMeta[] | undefined,
+  ): Promise<void> {
+    if (!parts) return;
+    for (const part of parts) {
+      await this.db.upsertAttachment({
+        accountId,
+        folder: SYNCED_FOLDER,
+        uid,
+        partId: part.partId,
+        filename: part.filename,
+        mimeType: part.mimeType,
+        sizeBytes: part.sizeBytes,
+      });
+    }
   }
 }

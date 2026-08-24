@@ -192,6 +192,47 @@ export async function fetchHeaders(
 }
 
 /**
+ * Hard ceiling on a single on-demand body/attachment fetch.
+ *
+ * Why a cap exists at all: this service is sized for a GCP always-free
+ * e2-micro — 1 GB of RAM shared with Postgres and up to ten live IMAP
+ * connections. fetchBodyPart() accumulates the part in memory, and the API
+ * buffers it again on the way out, so peak footprint is roughly twice the
+ * part size. Uncapped, Gmail's own 50 MB message ceiling would translate
+ * into ~100 MB of transient heap for one request, and /api/message/.../body
+ * downloads the WHOLE raw message including every attachment, so that is
+ * not a hypothetical worst case.
+ *
+ * Why 32 MB specifically: it is comfortably under Gmail's 50 MB message
+ * ceiling (so the cap is a real, reachable bound rather than dead code),
+ * it covers essentially every attachment a human actually sends, and at a
+ * ~64 MB peak it stays a small fraction of 1 GB even with several requests
+ * in flight. Requests above it are refused with 413 rather than served —
+ * an OOM-killed process takes all ten accounts' connections down with it,
+ * which is strictly worse than one refused download.
+ */
+export const MAX_BODY_PART_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Thrown by fetchBodyPart() when a part exceeds MAX_BODY_PART_BYTES. A
+ * distinct type (rather than a string match on the message) is what lets
+ * the API answer 413 for this case while still answering 502 for a genuine
+ * IMAP failure.
+ *
+ * Note: an explicit field assignment, not a TypeScript parameter property —
+ * the service runs under --experimental-strip-types, which rejects those.
+ */
+export class BodyPartTooLargeError extends Error {
+  readonly limitBytes: number;
+
+  constructor(limitBytes: number) {
+    super(`body part exceeds the ${limitBytes}-byte maximum`);
+    this.name = 'BodyPartTooLargeError';
+    this.limitBytes = limitBytes;
+  }
+}
+
+/**
  * Fetches one body part (e.g. an attachment's bytes) on demand, by IMAP part
  * number, or the whole raw message when `partId` is omitted. This is NOT
  * part of the sync loop — fetchHeaders() never calls it, and nothing in
@@ -202,12 +243,22 @@ export async function fetchHeaders(
  * is what keeps sync itself header-only. Do not call this from
  * fetchHeaders() or any bulk loop "for convenience" — that reintroduces the
  * exact BODY[]-during-sync problem this module exists to avoid.
+ *
+ * Bounded by `maxBytes` (default MAX_BODY_PART_BYTES): the running total is
+ * checked BEFORE each chunk is retained, so an oversized part is abandoned
+ * partway rather than fully accumulated and then rejected. Breaking out of
+ * the for-await closes the underlying stream via the iterator's return().
+ *
+ * The caller is responsible for charging the returned bytes against the
+ * per-account daily budget (spec L6) — these bytes travel the same
+ * connection Gmail meters. See routes.ts's fetchBudgetedPart.
  */
 export async function fetchBodyPart(
   connection: ImapConnection,
   folder: string,
   uid: number,
   partId?: string,
+  maxBytes: number = MAX_BODY_PART_BYTES,
 ): Promise<Buffer> {
   const client = connection.rawClient();
   const lock = await client.getMailboxLock(folder);
@@ -215,8 +266,12 @@ export async function fetchBodyPart(
   try {
     const download = await client.download(String(uid), partId, { uid: true });
     const chunks: Buffer[] = [];
+    let total = 0;
     for await (const chunk of download.content) {
-      chunks.push(chunk as Buffer);
+      const buffer = chunk as Buffer;
+      total += buffer.length;
+      if (total > maxBytes) throw new BodyPartTooLargeError(maxBytes);
+      chunks.push(buffer);
     }
     return Buffer.concat(chunks);
   } finally {

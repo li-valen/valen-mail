@@ -97,6 +97,20 @@ export function loadConfig(raw: unknown, env: NodeJS.ProcessEnv): SyncConfig {
     seenEmails.add(emailLower);
   }
 
+  // Spec 7B.1: `isPrimary` is the default send-from account for Plan 4's
+  // composer, so "all ten set it" and "none set it" are both unusable
+  // configurations — and neither is detectable by the per-account type
+  // check in parseAccount(), which only ever sees one account at a time.
+  // Checked after the duplicate-id/email loop so a config with two
+  // problems still reports the more specific one first.
+  const primaryCount = accounts.filter((account) => account.isPrimary).length;
+  if (primaryCount !== 1) {
+    throw new Error(
+      `exactly one account must set isPrimary: true (spec 7B.1), found ${primaryCount} ` +
+      `of ${accounts.length}`,
+    );
+  }
+
   const databaseUrl = env.DATABASE_URL;
   if (!databaseUrl) throw new Error('DATABASE_URL is not set');
 

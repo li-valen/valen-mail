@@ -10,182 +10,24 @@ import {
 } from '../src/imap/pool';
 import { ImapConnection } from '../src/imap/connection';
 import { DAILY_BYTE_LIMIT } from '../src/budget';
-import type { Db, MessageInput } from '../src/db';
 import type { AccountConfig } from '../src/config';
+import {
+  ACCOUNT_A,
+  ACCOUNT_B,
+  createFakeClient,
+  createFakeDb,
+  createPoolHarness,
+  wait,
+} from './helpers/pool-fakes.ts';
 
 /**
- * None of these tests open a real socket or a live Gmail account.
- * ImapConnection's injectable client factory (Task 5) lets a fake imapflow
- * client stand in everywhere a connection is needed, and ConnectionPool
- * accepts an injectable `createConnection` for the same reason. The pool's
- * own logic — backoff, status transitions, per-account serialisation,
- * stop-safety — is what these tests exercise, not imapflow or Gmail.
+ * Backoff arithmetic, the keyed mutex, the bounded IDLE wait, the liveness
+ * probe, and the pool's connect/status/stop behaviour. The pool's sync-cycle
+ * behaviour — backoff after a post-handshake failure, attachment
+ * persistence, API/sync serialisation — lives in pool-sync-cycle.test.ts.
+ * Fakes are shared from ./helpers/pool-fakes.ts; nothing here opens a socket
+ * or touches a live Gmail account.
  */
-
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-const ACCOUNT_A: AccountConfig = { id: 'a', email: 'a@example.com', appPassword: 'x'.repeat(16), isPrimary: true };
-const ACCOUNT_B: AccountConfig = { id: 'b', email: 'b@example.com', appPassword: 'y'.repeat(16), isPrimary: false };
-
-// ---------------------------------------------------------------------------
-// Fakes
-// ---------------------------------------------------------------------------
-
-interface FakeClientOptions {
-  readonly connectBehavior?: () => Promise<void>;
-  /** If true, every idle() call rejects on the next microtask instead of
-   *  hanging — simulates a connection that dies while idling. */
-  readonly idleRejectsImmediately?: boolean;
-  readonly noopBehavior?: () => Promise<void>;
-}
-
-/**
- * Minimal stand-in for the subset of ImapFlow the pool actually touches:
- * connect/logout/usable (connection lifecycle, mirrors
- * connection-lifecycle.test.ts's fake), idle/noop (Amendment 1's wait and
- * liveness probe), getMailboxLock/mailbox (fetchHeaders, Task 6), and
- * on/removeListener('exists') (the real new-mail wake signal — see
- * waitForIdleWake's own doc comment for why idle() alone can't be it).
- *
- * mailbox.uidNext is fixed at 1 so resolveUidSpan (fetch.ts) always
- * resolves to an empty span: fetchHeaders returns zero messages without
- * this fake needing to implement client.fetch() at all. Fetch correctness
- * is Task 6's job, not this suite's.
- */
-function createFakeClient(options: FakeClientOptions = {}) {
-  let usable = false;
-  let currentIdle: { resolve: () => void } | null = null;
-  const existsListeners = new Set<(data: unknown) => void>();
-
-  const connect = vi.fn(async () => {
-    if (options.connectBehavior) {
-      await options.connectBehavior();
-      return;
-    }
-    usable = true;
-  });
-
-  const logout = vi.fn(async () => {
-    usable = false;
-    // Mirrors real imapflow: tearing down the socket breaks any IDLE that
-    // is currently in flight rather than leaving it hanging forever.
-    if (currentIdle) {
-      currentIdle.resolve();
-      currentIdle = null;
-    }
-  });
-
-  const idle = vi.fn(() => {
-    return new Promise<boolean>((resolve, reject) => {
-      currentIdle = { resolve: () => resolve(true) };
-      if (options.idleRejectsImmediately) {
-        Promise.resolve().then(() => reject(new Error('connection reset')));
-      }
-      // Otherwise: hangs until logout() breaks it or the test calls
-      // triggerExists(), exactly like a quiet, healthy IDLE session.
-    });
-  });
-
-  const noop = vi.fn(async () => {
-    if (options.noopBehavior) await options.noopBehavior();
-  });
-
-  const getMailboxLock = vi.fn(async () => ({ release: () => {} }));
-
-  const fake = {
-    connect,
-    logout,
-    idle,
-    noop,
-    getMailboxLock,
-    on(event: string, handler: (data: unknown) => void) {
-      if (event === 'exists') existsListeners.add(handler);
-      return fake;
-    },
-    removeListener(event: string, handler: (data: unknown) => void) {
-      if (event === 'exists') existsListeners.delete(handler);
-      return fake;
-    },
-    get usable() {
-      return usable;
-    },
-    get mailbox() {
-      return { path: 'INBOX', uidValidity: 1, uidNext: 1, exists: 0 };
-    },
-  };
-
-  return {
-    client: fake as unknown as ImapFlow,
-    connect,
-    logout,
-    idle,
-    noop,
-    triggerExists: () => {
-      for (const handler of existsListeners) handler({});
-    },
-    existsListenerCount: () => existsListeners.size,
-  };
-}
-
-interface FakeDb extends Db {
-  readonly upserts: MessageInput[];
-  readonly budgetRecordCalls: number[];
-  seedBytesUsedToday(accountId: string, bytes: number): void;
-}
-
-/**
- * In-memory stand-in for the Db interface. ByteBudget only ever calls
- * query() with two literal statements (select the day's bytes_used, or
- * upsert-add to it); this fake pattern-matches on that literal text rather
- * than parsing SQL, which is enough to exercise Amendment 4's reserve/skip
- * logic without a Postgres connection.
- */
-function createFakeDb(): FakeDb {
-  const bytesUsedByKey = new Map<string, number>();
-  const upserts: MessageInput[] = [];
-  const budgetRecordCalls: number[] = [];
-
-  const today = (): string => new Date().toISOString().slice(0, 10);
-
-  return {
-    upserts,
-    budgetRecordCalls,
-    seedBytesUsedToday(accountId, bytes) {
-      bytesUsedByKey.set(`${accountId}|${today()}`, bytes);
-    },
-    async applySchema() {},
-    async query(text, values = []) {
-      if (text.includes('select bytes_used')) {
-        const [accountId, day] = values as [string, string];
-        return [{ bytes_used: bytesUsedByKey.get(`${accountId}|${day}`) ?? 0 }];
-      }
-      if (text.includes('insert into byte_budget')) {
-        const [accountId, day, bytes] = values as [string, string, number];
-        const key = `${accountId}|${day}`;
-        bytesUsedByKey.set(key, (bytesUsedByKey.get(key) ?? 0) + bytes);
-        budgetRecordCalls.push(bytes);
-        return [];
-      }
-      throw new Error(`fake db: unexpected query: ${text}`);
-    },
-    async upsertMessage(message) {
-      upserts.push(message);
-    },
-    async getUnifiedInbox() {
-      return [];
-    },
-    async getThread() {
-      return [];
-    },
-    async getSyncState() {
-      return null;
-    },
-    async setSyncState() {},
-    async close() {},
-  };
-}
 
 // ---------------------------------------------------------------------------
 // computeBackoffMs
@@ -358,19 +200,11 @@ describe('probeLiveness', () => {
 // ---------------------------------------------------------------------------
 
 describe('ConnectionPool', () => {
-  let activePool: ConnectionPool | null = null;
-  let activeStart: Promise<void> | null = null;
-
-  function launch(pool: ConnectionPool): void {
-    activePool = pool;
-    activeStart = pool.start();
-  }
+  const harness = createPoolHarness();
+  const launch = harness.launch;
 
   afterEach(async () => {
-    if (activePool) await activePool.stop();
-    if (activeStart) await activeStart;
-    activePool = null;
-    activeStart = null;
+    await harness.stop();
   });
 
   it('connects each configured account and reports "connected" status', async () => {
@@ -543,10 +377,7 @@ describe('ConnectionPool', () => {
     expect(pool.status.get('a')).toBe('connected');
     expect(pool.status.get('b')).toBe('connected');
 
-    await activePool!.stop();
-    await activeStart;
-    activePool = null;
-    activeStart = null;
+    await harness.stop();
 
     expect(fakeA.logout).toHaveBeenCalledTimes(1);
     expect(fakeB.logout).toHaveBeenCalledTimes(1);
@@ -576,12 +407,10 @@ describe('ConnectionPool', () => {
     // connect() is in flight; nothing has been marked "connected" yet.
     expect(pool.status.get('a')).not.toBe('connected');
 
-    const stopPromise = activePool!.stop();
+    const stopPromise = harness.current()!.stop();
     releaseConnect();
     await stopPromise;
-    await activeStart;
-    activePool = null;
-    activeStart = null;
+    await harness.stop();
 
     expect(fakeA.logout).toHaveBeenCalledTimes(1);
     expect(pool.status.get('a')).toBe('stopped');
@@ -617,10 +446,7 @@ describe('ConnectionPool', () => {
       expect(pool.status.get('a')).toBe('reconnecting');
       expect(vi.getTimerCount()).toBe(1); // exactly the pending backoff timer
 
-      await activePool!.stop();
-      await activeStart;
-      activePool = null;
-      activeStart = null;
+      await harness.stop();
 
       // The regression: this used to stay 1 (the uncleared backoff
       // timer), even though stop() had already resolved.
@@ -651,10 +477,7 @@ describe('ConnectionPool', () => {
     expect(pool.status.get('a')).toBe('reconnecting');
 
     const stopStartedAt = Date.now();
-    await activePool!.stop();
-    await activeStart;
-    activePool = null;
-    activeStart = null;
+    await harness.stop();
     const stopDurationMs = Date.now() - stopStartedAt;
 
     // computeBackoffMs(1) can be as long as ~1000ms; stop() must not wait

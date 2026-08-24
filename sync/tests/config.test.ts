@@ -71,10 +71,44 @@ describe('loadConfig', () => {
     expect(() => loadConfig(stringPrimary, ENV)).toThrow(/work/);
   });
 
-  it('allows isPrimary to be absent and defaults to false', () => {
+  // Spec 7B.1: "Exactly one account MUST be primary, and the config loader
+  // MUST enforce it before Plan 4 consumes the field." This block replaces
+  // an earlier test that asserted the opposite — that a config with no
+  // primary at all was accepted and defaulted to false. That test encoded
+  // the spec violation rather than the spec, so it is rewritten, not
+  // weakened: the default-to-false behaviour it was really guarding is
+  // still asserted below, in a config that does have a primary.
+  it('rejects a config where no account is primary (spec 7B.1)', () => {
     const noPrimary = [{ id: 'primary', email: 'a@gmail.com', appPassword: 'abcdefghijklmnop' }];
-    const config = loadConfig(noPrimary, ENV);
-    expect(config.accounts[0]?.isPrimary).toBe(false);
+    expect(() => loadConfig(noPrimary, ENV)).toThrow(/exactly one account must set isPrimary/i);
+    expect(() => loadConfig(noPrimary, ENV)).toThrow(/found 0/);
+  });
+
+  it('rejects a config where more than one account is primary (spec 7B.1)', () => {
+    const twoPrimaries = [
+      { id: 'primary', email: 'a@gmail.com', appPassword: 'abcdefghijklmnop', isPrimary: true },
+      { id: 'work', email: 'b@gmail.com', appPassword: 'qrstuvwxyzabcdef', isPrimary: true },
+    ];
+    expect(() => loadConfig(twoPrimaries, ENV)).toThrow(/exactly one account must set isPrimary/i);
+    expect(() => loadConfig(twoPrimaries, ENV)).toThrow(/found 2/);
+  });
+
+  it('still defaults an absent isPrimary to false when a different account is primary', () => {
+    const mixed = [
+      { id: 'primary', email: 'a@gmail.com', appPassword: 'abcdefghijklmnop', isPrimary: true },
+      { id: 'work', email: 'b@gmail.com', appPassword: 'qrstuvwxyzabcdef' },
+    ];
+    const config = loadConfig(mixed, ENV);
+    expect(config.accounts[0]?.isPrimary).toBe(true);
+    expect(config.accounts[1]?.isPrimary).toBe(false);
+  });
+
+  it('accepts the shipped accounts.example.json shape (exactly one primary)', () => {
+    const example = [
+      { id: 'primary', email: 'you@gmail.com', appPassword: 'abcdefghijklmnop', isPrimary: true },
+      { id: 'work', email: 'you.work@gmail.com', appPassword: 'qrstuvwxyzabcdef', isPrimary: false },
+    ];
+    expect(loadConfig(example, ENV).accounts).toHaveLength(2);
   });
 
   it('rejects duplicate emails case-insensitively', () => {

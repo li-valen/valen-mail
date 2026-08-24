@@ -1,7 +1,16 @@
 import type { MessageInput } from './db';
 
 /** Long enough to judge a message from the list, short enough that 500k
- *  rows stay near 1 GB. Storing full bodies would be roughly 10x this. */
+ *  rows stay near 1 GB. Storing full bodies would be roughly 10x this.
+ *
+ *  NOT YET EXERCISED IN PRODUCTION. makeSnippet() reads `raw.bodyText`, and
+ *  the only producer of RawImapMessage is fetchHeaders(), which correctly
+ *  never fetches a body — so `bodyText` is always undefined, makeSnippet()
+ *  always returns null, and the `snippet` column is always NULL. This limit
+ *  therefore bounds nothing today; it is the contract a future
+ *  fetch-a-body-prefix task must honour. Treat the storage arithmetic above
+ *  as the design intent for that task, not as a description of what the
+ *  service currently stores. */
 export const SNIPPET_CHARS = 280;
 
 interface Address { readonly name?: string; readonly address?: string }
@@ -44,6 +53,8 @@ function addresses(list: readonly Address[] | undefined): string[] {
   return (list ?? []).map((a) => a.address).filter((a): a is string => Boolean(a));
 }
 
+/** Always returns null in the shipped service: no caller supplies
+ *  `bodyText`. See SNIPPET_CHARS above. */
 function makeSnippet(bodyText: string | undefined): string | null {
   if (!bodyText) return null;
   const collapsed = bodyText.replace(/\s+/g, ' ').trim();

@@ -372,6 +372,24 @@ identities, which per-recipient tracking would exhaust quickly.
   accounts that are predominantly Gmail or iCloud recipients — "unknown"
   should be expected to be the common case, not the exception, until
   measured otherwise against a broader recipient set.
+- **L9. There is no backfill, and an outage longer than 50 new messages
+  loses mail permanently.** `ConnectionPool.syncOnce` (`sync/src/imap/pool.ts`)
+  polls the newest `HEADER_FETCH_LIMIT` (50) UIDs on every cycle with no UID
+  cursor at all, relying on `upsertMessage`'s idempotent
+  `(account_id, folder, uid)` upsert instead of a resume point. If more than
+  50 messages arrive at an account while the service is down — a redeploy, a
+  reboot, an OOM-kill, or simply a busy overnight — everything older than the
+  newest 50 is never fetched and never appears in the unified inbox. Nothing
+  detects or reports the gap.
+  The `sync_state` table and its `backfill_done` column imply a backfill that
+  does not exist; `Db.getSyncState`/`setSyncState` and `budget.BACKFILL_SHARE`
+  likewise have no production callers. They are the storage and the budget
+  split a later backfill task will use, and are documented as unwired at each
+  definition. `resolveUidSpan` (`sync/src/imap/fetch.ts`) already implements
+  and unit-tests the bounded `sinceUid` paging such a task needs — what is
+  missing is the cursor that drives it, plus validation that `sinceUid` is
+  positive before it reaches an IMAP range. Until that ships, a UI MUST NOT
+  present the unified inbox as a complete archive of an account.
 
 ## 10. Success Criteria
 

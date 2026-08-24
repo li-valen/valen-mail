@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { HEADER_FETCH_OPTIONS, applyAttachmentFlag, resolveUidSpan } from '../src/imap/fetch';
+import {
+  HEADER_FETCH_OPTIONS,
+  MAX_BODY_PART_BYTES,
+  BodyPartTooLargeError,
+  applyAttachmentFlag,
+  fetchBodyPart,
+  resolveUidSpan,
+} from '../src/imap/fetch';
+import type { ImapConnection } from '../src/imap/connection';
 import { normalizeMessage } from '../src/normalize';
 import type { AttachmentMeta } from '../src/attachments';
 
@@ -133,5 +141,88 @@ describe('applyAttachmentFlag', () => {
     expect(result.subject).toBe(normalized.subject);
     expect(result.accountId).toBe(normalized.accountId);
     expect(result.folder).toBe(normalized.folder);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchBodyPart's size cap (F3)
+// ---------------------------------------------------------------------------
+
+interface FakeDownloadHandle {
+  readonly connection: ImapConnection;
+  /** How many chunks the stream was actually asked for. */
+  readonly consumed: () => number;
+  readonly locksReleased: () => number;
+}
+
+function makeFakeConnection(chunks: readonly Buffer[]): FakeDownloadHandle {
+  let consumed = 0;
+  let locksReleased = 0;
+  const connection = {
+    accountId: 'test',
+    rawClient: () => ({
+      getMailboxLock: async () => ({ release: () => { locksReleased += 1; } }),
+      download: async () => ({
+        content: {
+          async *[Symbol.asyncIterator]() {
+            for (const chunk of chunks) {
+              consumed += 1;
+              yield chunk;
+            }
+          },
+        },
+      }),
+    }),
+  } as unknown as ImapConnection;
+  return { connection, consumed: () => consumed, locksReleased: () => locksReleased };
+}
+
+describe('fetchBodyPart size cap', () => {
+  it('returns the concatenated part when it fits under the cap', async () => {
+    const fake = makeFakeConnection([Buffer.from('abc'), Buffer.from('def')]);
+    const bytes = await fetchBodyPart(fake.connection, 'INBOX', 1, '2', 100);
+    expect(bytes.toString()).toBe('abcdef');
+  });
+
+  it('throws BodyPartTooLargeError once the running total exceeds the cap', async () => {
+    // Not "buffer it all, then check": a 50 MB message must never be fully
+    // accumulated on a 1 GB box just to be rejected afterwards.
+    const fake = makeFakeConnection([Buffer.alloc(8), Buffer.alloc(8), Buffer.alloc(8)]);
+    await expect(fetchBodyPart(fake.connection, 'INBOX', 1, '2', 10))
+      .rejects.toThrow(BodyPartTooLargeError);
+  });
+
+  it('stops consuming the stream at the chunk that crosses the cap', async () => {
+    const fake = makeFakeConnection([Buffer.alloc(8), Buffer.alloc(8), Buffer.alloc(8)]);
+    await expect(fetchBodyPart(fake.connection, 'INBOX', 1, '2', 10)).rejects.toThrow();
+    // Chunk 1 (8 bytes) fits; chunk 2 takes the total to 16 and aborts.
+    // Chunk 3 must never be pulled.
+    expect(fake.consumed()).toBe(2);
+  });
+
+  it('carries the limit on the error so the API can report it', async () => {
+    const fake = makeFakeConnection([Buffer.alloc(40)]);
+    await expect(fetchBodyPart(fake.connection, 'INBOX', 1, '2', 10)).rejects.toMatchObject({
+      name: 'BodyPartTooLargeError',
+      limitBytes: 10,
+    });
+  });
+
+  it('releases the mailbox lock even when the cap aborts the fetch', async () => {
+    // A lock leaked here wedges every later operation on this connection —
+    // these are process-lifetime connections, not per-request ones.
+    const fake = makeFakeConnection([Buffer.alloc(40)]);
+    await expect(fetchBodyPart(fake.connection, 'INBOX', 1, '2', 10)).rejects.toThrow();
+    expect(fake.locksReleased()).toBe(1);
+  });
+
+  it('defaults to MAX_BODY_PART_BYTES, which is below Gmail\'s 50 MB message ceiling', async () => {
+    // The cap has to be reachable to be a cap: above Gmail's own ceiling it
+    // would be dead code that never fires.
+    expect(MAX_BODY_PART_BYTES).toBe(32 * 1024 * 1024);
+    expect(MAX_BODY_PART_BYTES).toBeLessThan(50 * 1024 * 1024);
+
+    const fake = makeFakeConnection([Buffer.from('small')]);
+    await expect(fetchBodyPart(fake.connection, 'INBOX', 1, '2')).resolves.toBeInstanceOf(Buffer);
   });
 });

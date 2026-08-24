@@ -1,5 +1,6 @@
 import { ImapFlow } from 'imapflow';
 import type { AccountConfig } from '../config';
+import { withTimeout } from '../timeout.ts';
 
 /** Gmail's IMAP endpoint. There is exactly one supported host/port pair, so
  *  no per-account override exists — connecting to anything else is not a
@@ -7,6 +8,30 @@ import type { AccountConfig } from '../config';
 const GMAIL_IMAP_HOST = 'imap.gmail.com';
 const GMAIL_IMAP_PORT = 993;
 
+/**
+ * Upper bound on the IMAP LOGOUT round trip during disconnect().
+ *
+ * logout() writes a command and waits for the server's reply. On a
+ * half-open socket (peer vanished without FIN or RST) that write succeeds
+ * into a dead TCP window and the reply never arrives, so an unbounded
+ * logout() hangs forever — and ConnectionPool.stop() awaits Promise.all
+ * over every connection, so ONE hung logout wedges the entire shutdown.
+ * Under systemd that ends in SIGKILL once the stop grace period expires.
+ *
+ * 5 seconds is far longer than a healthy LOGOUT (a single round trip to
+ * Gmail) and far shorter than any plausible systemd TimeoutStopSec, so a
+ * dead connection is abandoned quickly while a live one always completes
+ * its clean logout.
+ */
+export const LOGOUT_TIMEOUT_MS = 5_000;
+
+/**
+ * NOT YET WIRED: no production caller. Only openMailbox() below returns
+ * this shape, and openMailbox() itself has no production caller — the sync
+ * path opens mailboxes through fetchHeaders()'s own getMailboxLock. Kept
+ * for a future task that needs uidValidity/uidNext (a UID-cursor backfill,
+ * spec 9 / L9).
+ */
 export interface MailboxInfo {
   readonly path: string;
   readonly uidValidity: bigint;
@@ -142,11 +167,23 @@ export class ImapConnection {
     return this.getClient();
   }
 
+  /**
+   * NOT YET WIRED: no production caller. The service syncs exactly one
+   * folder (INBOX, see SYNCED_FOLDER in imap/pool.ts), so nothing needs to
+   * enumerate mailboxes yet. Retained for multi-folder sync.
+   */
   async listMailboxes(): Promise<readonly string[]> {
     const list = await this.getClient().list();
     return list.map((box) => box.path);
   }
 
+  /**
+   * NOT YET WIRED: no production caller. fetchHeaders() takes its own
+   * mailbox lock and reads client.mailbox directly, so this wrapper is
+   * exercised only by tests/connection.test.ts (live, opt-in). Retained
+   * because a UID-cursor backfill needs uidValidity, which is exactly what
+   * this returns.
+   */
   async openMailbox(path: string): Promise<MailboxInfo> {
     const client = this.getClient();
     const lock = await client.getMailboxLock(path);
@@ -198,7 +235,11 @@ export class ImapConnection {
     const client = this.client;
     this.client = null;
     try {
-      await client.logout();
+      // Bounded: an unbounded logout() on a half-open socket hangs forever
+      // and ConnectionPool.stop() awaits every connection's disconnect().
+      // withTimeout does not cancel the underlying command — it only stops
+      // shutdown from waiting on a reply that is never coming.
+      await withTimeout(client.logout(), LOGOUT_TIMEOUT_MS, 'IMAP LOGOUT');
     } catch (error) {
       // A failed logout must not prevent shutdown, but it is logged with
       // the account id rather than swallowed: with ten connections, a

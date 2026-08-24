@@ -11,6 +11,11 @@ export const DAILY_BYTE_LIMIT = 2 * 1024 * 1024 * 1024;
  * Backfill may consume at most this share of the daily budget, leaving the
  * remainder for live sync. Without this, a backfill exhausts the day's
  * allowance and new mail stops arriving until midnight.
+ *
+ * NOT YET WIRED: no production caller. There is no backfill in the shipped
+ * service (spec 9 / L9) — ConnectionPool.syncOnce polls the newest 50 UIDs
+ * with no cursor. This constant is the budget split a future backfill task
+ * must apply; it currently constrains nothing.
  */
 export const BACKFILL_SHARE = 0.7;
 

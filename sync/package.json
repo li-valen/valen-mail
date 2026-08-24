@@ -6,7 +6,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "check:runtime": "node --experimental-strip-types scripts/check-runtime.ts",
-    "start": "node --env-file=.env dist/api/server.js",
+    "start": "node --env-file=.env --experimental-strip-types src/api/server.ts",
     "dev": "node --env-file=.env --experimental-strip-types src/api/server.ts"
   },
   "dependencies": {
