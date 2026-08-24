@@ -1,0 +1,4 @@
+[
+  { "id": "primary",  "email": "you@gmail.com",       "appPassword": "abcdefghijklmnop", "isPrimary": true },
+  { "id": "work",     "email": "you.work@gmail.com",  "appPassword": "qrstuvwxyzabcdef", "isPrimary": false }
+]

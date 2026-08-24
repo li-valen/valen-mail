@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.env
+accounts.json
+!accounts.example.json
