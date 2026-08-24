@@ -62,4 +62,11 @@ describe('normalizeMessage', () => {
     const nothread = { ...RAW, threadId: undefined };
     expect(normalizeMessage(nothread, 'p', 'INBOX').threadId).toBe('<abc@mail.gmail.com>');
   });
+
+  it('yields null threadId when both threadId and messageId are absent', () => {
+    const both = { ...RAW, threadId: undefined, envelope: { ...RAW.envelope, messageId: undefined } };
+    const m = normalizeMessage(both, 'p', 'INBOX');
+    expect(m.threadId).toBeNull();
+    expect(m.messageId).toBeNull();
+  });
 });

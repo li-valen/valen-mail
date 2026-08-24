@@ -26,6 +26,9 @@ export interface RawImapMessage {
 function toSortedArray(value: ReadonlySet<string> | readonly string[] | undefined): string[] {
   if (!value) return [];
   const arr = [...value];
+  // Sort system labels (starting with \) before custom labels, then alphabetically within
+  // each group. This is not a plain lexicographic sort: 'Work' (W=0x57) < '\' (0x5C) in ASCII,
+  // but IMAP semantics distinguish system labels; custom labels after system ones is correct.
   arr.sort((a, b) => {
     const aIsSystem = a.startsWith('\\');
     const bIsSystem = b.startsWith('\\');

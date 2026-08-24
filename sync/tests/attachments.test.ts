@@ -51,4 +51,58 @@ describe('extractAttachments', () => {
     expect(extractAttachments(null)).toEqual([]);
     expect(extractAttachments({ childNodes: 'not-an-array' })).toEqual([]);
   });
+
+  it('handles forwarded email attachments (message/rfc822 with disposition)', () => {
+    const forwarded = {
+      type: 'multipart/mixed',
+      childNodes: [
+        { part: '1', type: 'text/plain', size: 100 },
+        {
+          part: '2',
+          type: 'message/rfc822',
+          size: 5000,
+          disposition: 'attachment',
+          dispositionParameters: { filename: 'forwarded.eml' },
+          childNodes: [
+            { part: '2.1', type: 'text/plain', size: 50 },
+          ],
+        },
+      ],
+    };
+    const found = extractAttachments(forwarded);
+    const eml = found.find((a) => a.filename === 'forwarded.eml');
+    expect(eml).toBeDefined();
+    expect(eml?.partId).toBe('2');
+    expect(eml?.mimeType).toBe('message/rfc822');
+    // Verify we did not recurse into the forwarded message's children
+    expect(found).toHaveLength(1);
+  });
+
+  it('validates that part must be a string, not a number', () => {
+    const invalid = {
+      type: 'multipart/mixed',
+      childNodes: [
+        { part: 1, type: 'application/pdf', size: 100,
+          disposition: 'attachment', dispositionParameters: { filename: 'bad.pdf' } },
+      ],
+    };
+    expect(extractAttachments(invalid)).toEqual([]);
+  });
+
+  it('never throws on deeply nested BODYSTRUCTURE (depth limit)', () => {
+    // Build a structure 150 levels deep (well past MAX_DEPTH=100)
+    let deep: any = { type: 'text/plain', part: '1', size: 100 };
+    for (let i = 0; i < 150; i++) {
+      deep = { type: 'multipart/mixed', childNodes: [deep] };
+    }
+    expect(() => extractAttachments(deep)).not.toThrow();
+    expect(extractAttachments(deep)).toEqual([]);
+  });
+
+  it('never throws on cyclic BODYSTRUCTURE references', () => {
+    const node: any = { type: 'multipart/mixed', childNodes: [] };
+    node.childNodes.push(node); // Self-reference
+    expect(() => extractAttachments(node)).not.toThrow();
+    expect(extractAttachments(node)).toEqual([]);
+  });
 });
