@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { extractAttachments } from '../src/attachments';
 
 // imapflow BODYSTRUCTURE shape: a multipart node with childNodes.
@@ -89,20 +89,34 @@ describe('extractAttachments', () => {
     expect(extractAttachments(invalid)).toEqual([]);
   });
 
-  it('never throws on deeply nested BODYSTRUCTURE (depth limit)', () => {
-    // Build a structure 150 levels deep (well past MAX_DEPTH=100)
-    let deep: any = { type: 'text/plain', part: '1', size: 100 };
-    for (let i = 0; i < 150; i++) {
-      deep = { type: 'multipart/mixed', childNodes: [deep] };
-    }
-    expect(() => extractAttachments(deep)).not.toThrow();
-    expect(extractAttachments(deep)).toEqual([]);
+  it('handles branching cycles (fan-out > 1) without hanging', () => {
+    const cyc: any = { type: 'multipart/mixed', childNodes: [] };
+    cyc.childNodes.push(cyc, cyc); // branching factor 2 — would cause exponential work
+
+    const start = Date.now();
+    const result = extractAttachments(cyc);
+    const elapsed = Date.now() - start;
+
+    expect(result).toEqual([]);
+    expect(elapsed).toBeLessThan(1000); // Must complete promptly, not hang
   });
 
-  it('never throws on cyclic BODYSTRUCTURE references', () => {
-    const node: any = { type: 'multipart/mixed', childNodes: [] };
-    node.childNodes.push(node); // Self-reference
-    expect(() => extractAttachments(node)).not.toThrow();
-    expect(extractAttachments(node)).toEqual([]);
+  it('respects node budget on wide acyclic structures', () => {
+    // Create a wide tree with 1100 children (exceeds MAX_NODES=1000)
+    const wide: any = { type: 'multipart/mixed', childNodes: [] };
+    for (let i = 0; i < 1100; i++) {
+      wide.childNodes.push({ type: 'text/plain', size: 100 });
+    }
+
+    const spy = vi.spyOn(console, 'error');
+    const result = extractAttachments(wide);
+
+    expect(result).toEqual([]);
+    expect(spy).toHaveBeenCalled();
+    const callArg = spy.mock.calls[0]?.[0];
+    expect(String(callArg)).toContain('exceeded node budget');
+
+    spy.mockRestore();
   });
+
 });
