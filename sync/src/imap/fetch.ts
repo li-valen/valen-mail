@@ -1,3 +1,4 @@
+import type { FetchQueryObject } from 'imapflow';
 import type { ImapConnection } from './connection';
 import type { MessageInput } from '../db';
 import type { AttachmentMeta } from '../attachments';
@@ -25,6 +26,27 @@ export interface FetchResult {
 }
 
 /**
+ * The ONLY fields fetched during sync. Adding a body-bearing key here —
+ * `source`, `bodyParts`, or anything else that pulls `BODY[...]` content —
+ * is simultaneously the storage blowup (10 GB instead of 1 GB across ten
+ * mailboxes) and the fastest route to Gmail's ~2.5 GB/day ceiling, which
+ * suspends IMAP for 24 hours across the affected account. (Spec L6)
+ *
+ * This constant is asserted on directly, by exact shape, in
+ * tests/fetch-unit.test.ts — that test (not the live byte-magnitude check
+ * below) is the real guard against BODY[] creeping into the header fetch.
+ */
+export const HEADER_FETCH_OPTIONS = {
+  uid: true,
+  envelope: true,
+  flags: true,
+  size: true,
+  bodyStructure: true,
+  labels: true,
+  threadId: true,
+} as const satisfies FetchQueryObject;
+
+/**
  * Conservative fixed per-message charge for the byte budget. imapflow does
  * not expose a wire-byte counter for an individual fetch call, so this is an
  * ESTIMATE of what one envelope + BODYSTRUCTURE fetch costs on the wire, not
@@ -34,10 +56,30 @@ export interface FetchResult {
  * that margin and risk a 24-hour IMAP lockout on the affected account. Do
  * not tune it down to make totals look smaller, and do not try to make it
  * exact; conservative-and-approximate is the deliberate choice here.
+ *
+ * Because this is a fixed charge rather than a measurement, it cannot by
+ * itself detect a real BODY[] regression — see HEADER_FETCH_OPTIONS above
+ * for the assertion that actually does that job.
  */
 const ESTIMATED_BYTES_PER_HEADER_FETCH = 2048;
 
 const EMPTY_RESULT: FetchResult = { messages: [], attachments: new Map(), bytesDownloaded: 0 };
+
+/**
+ * Overrides normalizeMessage()'s stubbed `hasAttach: false` with the real
+ * value from the BODYSTRUCTURE walk. normalizeMessage() has no visibility
+ * into BODYSTRUCTURE, so only a caller holding both the normalized fields
+ * and extractAttachments()'s result can set this correctly. Exported as its
+ * own function (rather than left inline in the fetch loop) so this override
+ * can be unit-tested without a live IMAP connection — see
+ * tests/fetch-unit.test.ts.
+ */
+export function applyAttachmentFlag(
+  normalized: MessageInput,
+  parts: readonly AttachmentMeta[],
+): MessageInput {
+  return { ...normalized, hasAttach: parts.length > 0 };
+}
 
 /**
  * Fetches envelope, flags, labels, size, thread id and BODYSTRUCTURE for a
@@ -77,15 +119,7 @@ export async function fetchHeaders(
 
     for await (const message of client.fetch(
       `${lowestUid}:${highestUid}`,
-      {
-        uid: true,
-        envelope: true,
-        flags: true,
-        size: true,
-        bodyStructure: true,
-        labels: true,
-        threadId: true,
-      },
+      HEADER_FETCH_OPTIONS,
       { uid: true },
     )) {
       const parts = extractAttachments(message.bodyStructure);
@@ -102,11 +136,7 @@ export async function fetchHeaders(
         folder,
       );
 
-      // Amendment 2: normalizeMessage() always returns hasAttach: false — it
-      // has no visibility into BODYSTRUCTURE. Only this loop, which has both
-      // the normalized fields and extractAttachments()'s result, can set it
-      // correctly.
-      messages.push({ ...normalized, hasAttach: parts.length > 0 });
+      messages.push(applyAttachmentFlag(normalized, parts));
       if (parts.length > 0) attachments.set(message.uid, parts);
 
       bytesDownloaded += ESTIMATED_BYTES_PER_HEADER_FETCH;
