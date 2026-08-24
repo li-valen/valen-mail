@@ -15,6 +15,28 @@ export interface MailboxInfo {
 }
 
 /**
+ * Builds the real imapflow client for an account. Factored out of the class
+ * so tests can substitute a fake client (see connection-lifecycle.test.ts)
+ * and drive the connect/disconnect race without a socket.
+ */
+type ClientFactory = (account: AccountConfig) => ImapFlow;
+
+function createGmailClient(account: AccountConfig): ImapFlow {
+  return new ImapFlow({
+    host: GMAIL_IMAP_HOST,
+    port: GMAIL_IMAP_PORT,
+    secure: true,
+    auth: { user: account.email, pass: account.appPassword },
+    // imapflow logs at debug level by default, and its log records can
+    // include the raw auth payload. This service holds up to ten Gmail
+    // app passwords, so logging must be explicitly disabled rather than
+    // left to whatever the library's default happens to be — this is a
+    // security requirement, not a style preference.
+    logger: false,
+  });
+}
+
+/**
  * Strips any literal occurrence of a secret from a string before it is
  * thrown or logged. IMAP auth failures are reported by the server, not by
  * echoing the client's own credential back, so in practice this should
@@ -38,17 +60,36 @@ function describeError(error: unknown): string {
  * deployment well under that ceiling by holding one of these per account
  * rather than one per operation.
  *
+ * connect() and disconnect() are both idempotent under concurrency: each
+ * caches its own in-flight promise so concurrent callers share one attempt
+ * rather than racing separate ones, and disconnect() always waits out a
+ * connect() that is still in flight before deciding whether there is
+ * anything to close. Task 7 shuts all ten account connections down
+ * concurrently, so a disconnect() that raced a still-connecting account and
+ * silently no-opped (because this.client was still null) would leak a live,
+ * untracked socket — exactly the failure mode this coordination closes.
+ *
  * Note: parameter properties are avoided project-wide because the service
  * runs under --experimental-strip-types, which does not support them.
  */
 export class ImapConnection {
   private readonly account: AccountConfig;
+  private readonly createClient: ClientFactory;
   private client: ImapFlow | null = null;
+  private connectPromise: Promise<void> | null = null;
+  private disconnectPromise: Promise<void> | null = null;
   readonly accountId: string;
 
-  constructor(account: AccountConfig) {
+  /**
+   * @param createClient Test-only seam. Production code never passes this —
+   *   it defaults to opening a real socket to Gmail. Tests pass a fake
+   *   client so the connect/disconnect race can be driven deterministically
+   *   without a network call.
+   */
+  constructor(account: AccountConfig, createClient: ClientFactory = createGmailClient) {
     this.account = account;
     this.accountId = account.id;
+    this.createClient = createClient;
   }
 
   get isConnected(): boolean {
@@ -56,18 +97,20 @@ export class ImapConnection {
   }
 
   async connect(): Promise<void> {
-    const client = new ImapFlow({
-      host: GMAIL_IMAP_HOST,
-      port: GMAIL_IMAP_PORT,
-      secure: true,
-      auth: { user: this.account.email, pass: this.account.appPassword },
-      // imapflow logs at debug level by default, and its log records can
-      // include the raw auth payload. This service holds up to ten Gmail
-      // app passwords, so logging must be explicitly disabled rather than
-      // left to whatever the library's default happens to be — this is a
-      // security requirement, not a style preference.
-      logger: false,
-    });
+    // Concurrent callers share one in-flight attempt instead of each
+    // opening their own socket. The promise is cleared once it settles
+    // (success or failure) so a later connect() — after a disconnect(), or
+    // as a retry following a failed attempt — starts a fresh one.
+    if (!this.connectPromise) {
+      this.connectPromise = this.performConnect().finally(() => {
+        this.connectPromise = null;
+      });
+    }
+    return this.connectPromise;
+  }
+
+  private async performConnect(): Promise<void> {
+    const client = this.createClient(this.account);
 
     try {
       await client.connect();
@@ -127,8 +170,33 @@ export class ImapConnection {
   }
 
   async disconnect(): Promise<void> {
+    // Concurrent callers share one in-flight teardown rather than each
+    // calling logout() on the same client.
+    if (!this.disconnectPromise) {
+      this.disconnectPromise = this.performDisconnect().finally(() => {
+        this.disconnectPromise = null;
+      });
+    }
+    return this.disconnectPromise;
+  }
+
+  private async performDisconnect(): Promise<void> {
+    // A connect() may still be in flight on this instance — Task 7 shuts
+    // down all ten accounts concurrently, and one may be mid-reconnect at
+    // that moment. Wait for it to settle before deciding whether there is
+    // a client to close: otherwise this method would see this.client as
+    // still null, return immediately, and the in-flight connect() would go
+    // on to assign this.client afterwards — a live socket that nothing is
+    // tracking any more.
+    if (this.connectPromise) {
+      await this.connectPromise.catch(() => {
+        // connect() failed on its own; nothing was assigned, nothing to close.
+      });
+    }
+
     if (!this.client) return;
     const client = this.client;
+    this.client = null;
     try {
       await client.logout();
     } catch (error) {
@@ -137,8 +205,6 @@ export class ImapConnection {
       // silently hung logout is otherwise impossible to attribute.
       const reason = redactSecret(describeError(error), this.account.appPassword);
       console.error(`account "${this.accountId}": logout failed:`, reason);
-    } finally {
-      this.client = null;
     }
   }
 }
