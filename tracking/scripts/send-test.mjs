@@ -11,6 +11,7 @@
 import nodemailer from 'nodemailer';
 import { neon } from '@neondatabase/serverless';
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 const [recipient, label] = process.argv.slice(2);
 if (!recipient) {
@@ -28,10 +29,31 @@ if (missingEnvVars.length > 0) {
 
 const sql = neon(process.env.DATABASE_URL);
 
+/**
+ * The endpoint validates tokens with TOKEN_PATTERN from src/token.ts. This
+ * script cannot import that TypeScript module, so it reads the pattern from
+ * source instead of hardcoding a copy that could silently drift. If the two
+ * ever diverged, the endpoint would reject every token, still serve a valid
+ * 200 pixel, and record nothing — a silent zero. Failing closed here (throw
+ * if extraction fails) matters as much as the check itself: a guard that
+ * quietly stops guarding is worse than no guard.
+ */
+function tokenPatternFromSource() {
+  const src = readFileSync(new URL('../src/token.ts', import.meta.url), 'utf8');
+  const match = src.match(/TOKEN_PATTERN\s*=\s*\/(.+?)\/[gimsuy]*\s*;/);
+  if (!match) {
+    throw new Error('could not extract TOKEN_PATTERN from src/token.ts — guard cannot run');
+  }
+  return new RegExp(match[1]);
+}
+
 const token = randomBytes(16).toString('hex');
-// Must match isValidToken() in src/token.ts. Divergence is silent: the endpoint
-// would reject every token, still serve a valid pixel, and record nothing.
-if (!/^[0-9a-f]{32}$/.test(token)) throw new Error('token format drift vs src/token.ts');
+const tokenPattern = tokenPatternFromSource();
+if (!tokenPattern.test(token)) {
+  throw new Error(
+    `generated token does not match TOKEN_PATTERN in src/token.ts (${tokenPattern}) — token format drift`,
+  );
+}
 
 const messageId = `test-${Date.now()}@postbox.local`;
 const subject = `Postbox tracking test — ${label ?? recipient}`;
@@ -82,8 +104,21 @@ try {
     html,
     messageId: `<${messageId}>`,
   });
-} catch (error) {
-  console.error('failed to send mail (token row was already inserted):', error);
+} catch (sendError) {
+  // A late send failure must not leave an orphan token row behind: a row
+  // with zero hits is indistinguishable from "sent, delivered, but blocked
+  // or never opened" once report.mjs runs 24h later. With only a handful of
+  // calibration targets, one misread row is a real risk to the conclusion —
+  // so roll the insert back before propagating the error.
+  console.error('failed to send mail:', sendError);
+  try {
+    await sql`delete from tokens where token = ${token}`;
+    console.error(`token row ${token} rolled back — no orphan row remains.`);
+  } catch (rollbackError) {
+    console.error('CRITICAL: failed to roll back token row after send failure.');
+    console.error(`orphan token row remains and must be disregarded when reading the report: ${token}`);
+    console.error('rollback error:', rollbackError);
+  }
   process.exit(1);
 }
 

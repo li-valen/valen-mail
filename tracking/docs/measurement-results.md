@@ -16,6 +16,11 @@ have run `scripts/report.mjs` and read the number off its output.
    ```bash
    node --env-file=.env scripts/send-test.mjs <recipient> "<label>"
    ```
+   Confirm each send printed its `sent to ... token ... pixel ...` success
+   line before moving on. If a send fails, `send-test.mjs` now rolls back
+   the token row it inserted (so no orphan can survive to be misread as a
+   real "sent but never opened" target) — but only trust a later `NO HITS`
+   row in the report for a target whose send you saw succeed.
 3. Open each message once, normally, on the client named in its row. For the
    two Apple Mail rows, set Mail Privacy Protection to the state the row
    specifies **before** opening that message (path below).
