@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { HEADER_FETCH_OPTIONS, applyAttachmentFlag } from '../src/imap/fetch';
+import { HEADER_FETCH_OPTIONS, applyAttachmentFlag, resolveUidSpan } from '../src/imap/fetch';
 import { normalizeMessage } from '../src/normalize';
 import type { AttachmentMeta } from '../src/attachments';
 
@@ -8,16 +8,29 @@ import type { AttachmentMeta } from '../src/attachments';
  * exist specifically because the live suite (tests/fetch.test.ts) cannot
  * causally prove "we never fetch BODY[]" (bytesDownloaded is a fixed
  * estimate, not a wire measurement — see ESTIMATED_BYTES_PER_HEADER_FETCH's
- * comment in src/imap/fetch.ts) and cannot deterministically exercise
+ * comment in src/imap/fetch.ts), cannot deterministically exercise
  * hasAttach: true against a shared mailbox that may or may not contain an
- * attachment on any given run.
+ * attachment on any given run, and cannot safely exercise a huge sinceUid
+ * backlog without actually pulling thousands of messages from the one
+ * shared live test account.
  */
 
 describe('HEADER_FETCH_OPTIONS', () => {
-  it('requests exactly the header-safe fields — nothing more, nothing less', () => {
-    expect(Object.keys(HEADER_FETCH_OPTIONS).sort()).toEqual(
-      ['bodyStructure', 'envelope', 'flags', 'labels', 'size', 'threadId', 'uid'].sort(),
-    );
+  it('requests exactly the header-safe fields, each set to fetch — nothing more, nothing less, no value flipped', () => {
+    // Asserts the full object (keys AND values), not just the key set: a
+    // regression that flips e.g. `bodyStructure: true` to `false` while
+    // keeping the key would pass a keys-only check but break attachment
+    // detection silently. toEqual catches both a missing/extra key and a
+    // wrong value in one assertion.
+    expect(HEADER_FETCH_OPTIONS).toEqual({
+      uid: true,
+      envelope: true,
+      flags: true,
+      size: true,
+      bodyStructure: true,
+      labels: true,
+      threadId: true,
+    });
   });
 
   it('never requests a body-bearing field', () => {
@@ -30,6 +43,55 @@ describe('HEADER_FETCH_OPTIONS', () => {
     for (const key of bodyBearingKeys) {
       expect(HEADER_FETCH_OPTIONS).not.toHaveProperty(key);
     }
+  });
+});
+
+describe('resolveUidSpan', () => {
+  it('caps a sinceUid fetch to at most `limit` messages when the backlog is far larger', () => {
+    // A caller resuming after a long gap (large mailbox, old sinceUid) must
+    // get one bounded page, not a single fetch covering the entire backlog.
+    const span = resolveUidSpan({ limit: 50, sinceUid: 1 }, 10_000);
+    expect(span).not.toBeNull();
+    expect(span!.lowestUid).toBe(1);
+    expect(span!.highestUid).toBe(50);
+    expect(span!.highestUid - span!.lowestUid + 1).toBe(50);
+  });
+
+  it('returns null when sinceUid is above the mailbox\'s current highest UID', () => {
+    const span = resolveUidSpan({ limit: 50, sinceUid: 500 }, 100);
+    expect(span).toBeNull();
+  });
+
+  it('returns exactly `limit` UIDs when sinceUid is combined with a small limit', () => {
+    const span = resolveUidSpan({ limit: 3, sinceUid: 10 }, 1000);
+    expect(span).toEqual({ lowestUid: 10, highestUid: 12 });
+  });
+
+  it('returns fewer than `limit` UIDs when sinceUid plus limit would overrun the mailbox top', () => {
+    // The cap is min(mailbox top, sinceUid + limit - 1) — it must not
+    // request UIDs that cannot exist yet.
+    const span = resolveUidSpan({ limit: 50, sinceUid: 90 }, 100);
+    expect(span).toEqual({ lowestUid: 90, highestUid: 100 });
+  });
+
+  it('without sinceUid, fetches the most recent `limit` messages from the mailbox top', () => {
+    const span = resolveUidSpan({ limit: 20 }, 100);
+    expect(span).toEqual({ lowestUid: 81, highestUid: 100 });
+  });
+
+  it('without sinceUid, bounds the tail fetch to UID 1 when the mailbox has fewer than `limit` messages', () => {
+    const span = resolveUidSpan({ limit: 20 }, 5);
+    expect(span).toEqual({ lowestUid: 1, highestUid: 5 });
+  });
+
+  it('returns null for a non-positive limit', () => {
+    expect(resolveUidSpan({ limit: 0 }, 100)).toBeNull();
+    expect(resolveUidSpan({ limit: -5 }, 100)).toBeNull();
+  });
+
+  it('returns null for an empty mailbox (uidNext of 1, nothing ever delivered)', () => {
+    // highestUidInMailbox = uidNext - 1 = 0 for a freshly created mailbox.
+    expect(resolveUidSpan({ limit: 20 }, 0)).toBeNull();
   });
 });
 

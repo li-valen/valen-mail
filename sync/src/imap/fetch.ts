@@ -9,12 +9,13 @@ export interface FetchRange {
   readonly limit: number;
   /**
    * Lower UID bound, inclusive — matches IMAP's own `UID a:b` range
-   * semantics, where both ends are inclusive. When set, every message from
-   * `sinceUid` through the mailbox's current highest UID is fetched; `limit`
-   * only bounds how far back a tail fetch reaches when `sinceUid` is absent.
-   * A caller doing incremental sync should pass `lastSeenUid + 1` to avoid
-   * re-fetching a message it already has, and should be aware that a large
-   * backlog since the last sync can return more than `limit` messages.
+   * semantics, where both ends are inclusive. `limit` ALWAYS bounds the
+   * number of UIDs fetched, even when `sinceUid` is set: the fetched span
+   * is `[sinceUid, min(mailbox's current highest UID, sinceUid + limit -
+   * 1)]`. A caller doing incremental sync after a gap gets one bounded
+   * page here, never one uncapped fetch — it must loop, passing the last
+   * UID it actually saw + 1 as the next call's `sinceUid`, until it catches
+   * up to the mailbox's current top.
    */
   readonly sinceUid?: number;
 }
@@ -65,6 +66,40 @@ const ESTIMATED_BYTES_PER_HEADER_FETCH = 2048;
 
 const EMPTY_RESULT: FetchResult = { messages: [], attachments: new Map(), bytesDownloaded: 0 };
 
+export interface UidSpan {
+  readonly lowestUid: number;
+  readonly highestUid: number;
+}
+
+/**
+ * Computes the inclusive `[lowestUid, highestUid]` span to fetch, or `null`
+ * if nothing should be fetched. Pure and IMAP-client-free on purpose: this
+ * is the one place `sinceUid`/`limit` interact, and keeping it a standalone
+ * function lets tests/fetch-unit.test.ts prove the arithmetic — including
+ * the "does `limit` actually cap a `sinceUid` fetch" property — without a
+ * live Gmail connection.
+ *
+ * `limit` always bounds the span's size, even when `sinceUid` is set: an
+ * incremental-sync caller resuming after a long gap gets a bounded first
+ * page, not one fetch covering the entire backlog in a single IMAP round
+ * trip. `record()`-ing the byte estimate only happens after fetchHeaders()
+ * returns (see budget.ts), so an unbounded span would already have hit
+ * Gmail before the budget could ever refuse it — bounding the span here is
+ * what keeps that scenario from being possible at all.
+ */
+export function resolveUidSpan(
+  range: FetchRange,
+  highestUidInMailbox: number,
+): UidSpan | null {
+  if (range.limit <= 0) return null;
+
+  const lowestUid = range.sinceUid ?? Math.max(1, highestUidInMailbox - range.limit + 1);
+  const highestUid = Math.min(highestUidInMailbox, lowestUid + range.limit - 1);
+
+  if (highestUid < lowestUid) return null;
+  return { lowestUid, highestUid };
+}
+
 /**
  * Overrides normalizeMessage()'s stubbed `hasAttach: false` with the real
  * value from the BODYSTRUCTURE walk. normalizeMessage() has no visibility
@@ -91,7 +126,8 @@ export function applyAttachmentFlag(
  *
  * Returns an empty result rather than throwing for an empty or inverted UID
  * range (e.g. a freshly created mailbox, where uidNext is 1 and nothing has
- * ever been delivered).
+ * ever been delivered) — see resolveUidSpan() for the range arithmetic,
+ * including how `limit` caps the span even when `sinceUid` is set.
  */
 export async function fetchHeaders(
   connection: ImapConnection,
@@ -109,16 +145,15 @@ export async function fetchHeaders(
       throw new Error(`account "${connection.accountId}": failed to open mailbox "${folder}"`);
     }
 
-    const highestUid = Number(mailbox.uidNext) - 1;
-    const lowestUid = range.sinceUid ?? Math.max(1, highestUid - range.limit + 1);
-    if (highestUid < lowestUid) return EMPTY_RESULT;
+    const span = resolveUidSpan(range, Number(mailbox.uidNext) - 1);
+    if (!span) return EMPTY_RESULT;
 
     const messages: MessageInput[] = [];
     const attachments = new Map<number, readonly AttachmentMeta[]>();
     let bytesDownloaded = 0;
 
     for await (const message of client.fetch(
-      `${lowestUid}:${highestUid}`,
+      `${span.lowestUid}:${span.highestUid}`,
       HEADER_FETCH_OPTIONS,
       { uid: true },
     )) {
