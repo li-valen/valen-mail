@@ -288,6 +288,39 @@ live picker, the user picks, and only then is a Tier 1 direction skill applied t
 the winner. "Make it cooler" is not a direction; it is a request for options.
 See `docs/frontend-guide.md` for the routing rules and proposed stack.
 
+## 7B. Sending Identity Model (resolved 2026-08-24)
+
+**Decision: ten separate Google accounts, each sending through its own SMTP.**
+Gmail "Send as" aliases are NOT used and require no configuration.
+
+The user's requirement: all ten mailboxes unified into one inbox, with a
+per-message picker choosing which account sends or replies. Two mechanisms
+could deliver that; this spec binds the first.
+
+| Mechanism | Behaviour | Consequence |
+|---|---|---|
+| **Own SMTP per account** (chosen) | Authenticate as that account and send. The message genuinely originates from it. | Each account keeps its own ~500/day send limit and its own sending reputation. Needs one app password per account. |
+| Gmail "Send as" alias (rejected) | One account sends with another address in the `From` header, only if pre-verified in Gmail settings. | All identities share ONE send limit and ONE reputation. |
+
+**Why this matters more than it looks (5.3):** per-recipient tokenised
+tracking sends one message per recipient, so a five-person email consumes
+five sends. Ten independent limits give roughly 5,000 sends/day in
+aggregate; a shared alias limit would give ~500 total across all ten
+identities, which per-recipient tracking would exhaust quickly.
+
+**Consequences now binding on later plans:**
+
+- **Plan 2:** ten IMAP connections, one per account. Ten app passwords in
+  `sync/accounts.json`.
+- **Plan 4 (composer):** must hold ten SMTP identities and select one per
+  message. `accounts.json`'s `isPrimary` flag determines the default sender.
+- **7B.1 — `isPrimary` is now load-bearing.** Task 1's review parked a
+  finding that nothing validates how many accounts carry `isPrimary`; all
+  ten could set it, or none. That was harmless while nothing read the field.
+  It is no longer harmless: `isPrimary` is the default send-from account.
+  Exactly one account MUST be primary, and the config loader MUST enforce it
+  before Plan 4 consumes the field.
+
 ## 8. Non-Goals (v1)
 
 - Chrome extension for tracking mail sent from Gmail's web UI — planned
@@ -339,6 +372,24 @@ See `docs/frontend-guide.md` for the routing rules and proposed stack.
   accounts that are predominantly Gmail or iCloud recipients — "unknown"
   should be expected to be the common case, not the exception, until
   measured otherwise against a broader recipient set.
+- **L9. There is no backfill, and an outage longer than 50 new messages
+  loses mail permanently.** `ConnectionPool.syncOnce` (`sync/src/imap/pool.ts`)
+  polls the newest `HEADER_FETCH_LIMIT` (50) UIDs on every cycle with no UID
+  cursor at all, relying on `upsertMessage`'s idempotent
+  `(account_id, folder, uid)` upsert instead of a resume point. If more than
+  50 messages arrive at an account while the service is down — a redeploy, a
+  reboot, an OOM-kill, or simply a busy overnight — everything older than the
+  newest 50 is never fetched and never appears in the unified inbox. Nothing
+  detects or reports the gap.
+  The `sync_state` table and its `backfill_done` column imply a backfill that
+  does not exist; `Db.getSyncState`/`setSyncState` and `budget.BACKFILL_SHARE`
+  likewise have no production callers. They are the storage and the budget
+  split a later backfill task will use, and are documented as unwired at each
+  definition. `resolveUidSpan` (`sync/src/imap/fetch.ts`) already implements
+  and unit-tests the bounded `sinceUid` paging such a task needs — what is
+  missing is the cursor that drives it, plus validation that `sinceUid` is
+  positive before it reaches an IMAP range. Until that ships, a UI MUST NOT
+  present the unified inbox as a complete archive of an account.
 
 ## 10. Success Criteria
 

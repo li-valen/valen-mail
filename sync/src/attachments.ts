@@ -1,0 +1,106 @@
+export interface AttachmentMeta {
+  readonly partId: string;
+  readonly filename: string | null;
+  readonly mimeType: string;
+  readonly sizeBytes: number | null;
+}
+
+interface BodyNode {
+  readonly part?: string;
+  readonly type?: string;
+  readonly size?: number;
+  readonly disposition?: string;
+  readonly dispositionParameters?: Record<string, unknown>;
+  readonly childNodes?: readonly BodyNode[];
+}
+
+/** Node budget for BODYSTRUCTURE walk. Legitimate messages have tens of parts; a thousand
+ *  is a generous backstop. This bounds pathological-but-acyclic structures (fan-out without
+ *  cycles). Combined with cycle detection via visited set, this prevents both unbounded
+ *  recursion and exponential branching in a single mechanism. */
+const MAX_NODES = 1000;
+
+/**
+ * Walks an IMAP BODYSTRUCTURE and returns metadata for parts that are
+ * attachments. Content is never read — `partId` is the IMAP part number
+ * used to fetch the bytes on demand, which is what keeps a ten-mailbox
+ * store near 1 GB instead of 100 GB.
+ *
+ * Never throws, even on hostile input: a cyclic or deeply-nested structure
+ * from an untrusted sender is malformed, not exceptional. Uses an iterative
+ * worklist with visited-set cycle detection and node-count budget to avoid
+ * stack overflow and exponential expansion. Returns whatever was collected
+ * before hitting a limit, or an empty array if the input is not parseable.
+ */
+export function extractAttachments(bodyStructure: unknown): readonly AttachmentMeta[] {
+  const found: AttachmentMeta[] = [];
+
+  try {
+    const visited = new Set<object>();
+    const stack: Array<unknown> = [bodyStructure];
+    let nodeCount = 0;
+    let cycleLogged = false;
+
+    while (stack.length > 0) {
+      const node = stack.pop();
+
+      if (typeof node !== 'object' || node === null) continue;
+
+      // Cycle detection: if we've already processed this node, skip it.
+      // Uses object identity via Set; does not mutate the caller's nodes.
+      if (visited.has(node)) {
+        if (!cycleLogged) {
+          console.error(
+            `[sync/attachments] cycle detected in BODYSTRUCTURE, skipping duplicate node after collecting ${found.length} attachments`,
+          );
+          cycleLogged = true;
+        }
+        continue;
+      }
+      visited.add(node);
+
+      // Node budget: stop if we've explored too many nodes. This catches
+      // acyclic but pathologically-wide structures (exponential fan-out).
+      nodeCount++;
+      if (nodeCount > MAX_NODES) {
+        console.error(
+          `[sync/attachments] exceeded node budget (${MAX_NODES} nodes), stopping walk after collecting ${found.length} attachments`,
+        );
+        break;
+      }
+
+      const current = node as BodyNode;
+
+      // Check this node's own disposition first (independent of children).
+      // A node can have both childNodes (e.g., message/rfc822 forwarded as attachment)
+      // and its own disposition. We evaluate the node itself, then conditionally queue children.
+      const filename = current.dispositionParameters?.filename;
+      const isAttachment =
+        current.disposition === 'attachment' ||
+        (current.disposition === 'inline' && typeof filename === 'string');
+
+      if (isAttachment && typeof current.part === 'string') {
+        found.push({
+          partId: current.part,
+          filename: typeof filename === 'string' ? filename : null,
+          mimeType: current.type ?? 'application/octet-stream',
+          sizeBytes: current.size ?? null,
+        });
+      }
+
+      // Queue children for processing, but not children of message/rfc822.
+      // An attached .eml is fetchable only as a whole; its embedded message's
+      // parts are not separately accessible attachments of the outer message.
+      if (Array.isArray(current.childNodes) && current.type !== 'message/rfc822') {
+        // Push in reverse order for left-to-right traversal on stack (LIFO).
+        for (let i = current.childNodes.length - 1; i >= 0; i--) {
+          stack.push(current.childNodes[i]);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[sync/attachments] error walking BODYSTRUCTURE:', err);
+  }
+
+  return found;
+}

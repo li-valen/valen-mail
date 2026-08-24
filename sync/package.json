@@ -1,0 +1,23 @@
+{
+  "name": "postbox-sync",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "check:runtime": "node --experimental-strip-types scripts/check-runtime.ts",
+    "start": "node --env-file=.env --experimental-strip-types src/api/server.ts",
+    "dev": "node --env-file=.env --experimental-strip-types src/api/server.ts"
+  },
+  "dependencies": {
+    "imapflow": "^1.0.191",
+    "mailparser": "^3.7.1",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

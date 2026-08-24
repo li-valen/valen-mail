@@ -1,0 +1,27 @@
+[Unit]
+Description=Postbox mail sync service
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=postbox
+WorkingDirectory=/opt/postbox/sync
+EnvironmentFile=/opt/postbox/sync/.env
+# ACCOUNTS_FILE is set to an absolute path in .env (not the default
+# ./accounts.json): systemd's default working directory for a unit with
+# no explicit User-relative shell is "/", so a relative default would
+# resolve to /accounts.json and fail at boot (amendment A3).
+ExecStart=/usr/bin/node --experimental-strip-types src/api/server.ts
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+# accounts.json holds real Gmail app passwords (currently four accounts,
+# MAX_ACCOUNTS caps the config at ten) — UMask=0077 keeps anything the
+# process creates (and the account/env files it reads) unreadable to any
+# other local user, matching the 600 permissions already set by hand.
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
