@@ -17,6 +17,19 @@ import { createRouter } from './routes.ts';
  *  degraded silently instead of refusing to start. */
 const MIN_TOKEN_LENGTH = 32;
 
+/**
+ * The HTTP server binds to loopback only, never every interface.
+ *
+ * Node's http.Server.listen(port) with no host argument binds 0.0.0.0
+ * (and ::), which on a cloud VM means every mailbox this process serves
+ * is reachable from the public internet the moment the process starts —
+ * plaintext, since Caddy/TLS sits in front of it, not inside it. Caddy
+ * (or, in local dev, curl) reaches this port over loopback, so binding
+ * anywhere else buys nothing and removes the one thing standing between
+ * an API_TOKEN check and four (soon up to ten) real Gmail accounts.
+ */
+const BIND_HOST = '127.0.0.1';
+
 function requireApiToken(env: NodeJS.ProcessEnv): string {
   const apiToken = env.API_TOKEN;
   if (!apiToken || apiToken.length < MIN_TOKEN_LENGTH) {
@@ -264,8 +277,10 @@ export async function startServer(): Promise<{ close(): Promise<void> }> {
     void handleRequest(router, nodeRequest, nodeResponse);
   });
 
-  await new Promise<void>((resolve) => server.listen(config.port, resolve));
-  console.error(`api: postbox-sync listening on ${config.port}, ${config.accounts.length} accounts`);
+  await new Promise<void>((resolve) => server.listen(config.port, BIND_HOST, resolve));
+  console.error(
+    `api: postbox-sync listening on ${BIND_HOST}:${config.port}, ${config.accounts.length} accounts`,
+  );
 
   const close = createShutdown(server, pool, db);
   registerShutdownHandlers(close);
