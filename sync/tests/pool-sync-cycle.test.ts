@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { ConnectionPool } from '../src/imap/pool';
+import { ConnectionPool, IDLE_LIVENESS_CHECK_INTERVAL_MS } from '../src/imap/pool';
 import { ImapConnection } from '../src/imap/connection';
 import type { Db } from '../src/db';
 import {
@@ -102,18 +102,93 @@ describe('ConnectionPool sync cycle', () => {
     // The complement to the test above: the fix must not turn into "never
     // reset", or a connection that drops after weeks of healthy operation
     // would come back with a five-minute delay.
-    const fakeA = createFakeClient();
-    const db = createFakeDb();
-    const pool = new ConnectionPool([ACCOUNT_A], db, () =>
-      new ImapConnection(ACCOUNT_A, () => fakeA.client),
-    );
+    //
+    // A version of this test that only drives ONE successful cycle and
+    // then asserts 'connected' plus one budget record is vacuous: `attempt`
+    // starts at 0 regardless of whether the post-syncOnce `attempt = 0`
+    // line exists, so that assertion passes identically even with the
+    // reset line deleted outright — exactly the regression this test's own
+    // name claims to guard against.
+    //
+    // To actually discriminate, this drives the ladder up first (two
+    // failed connects, landing `attempt` at 2), lets a cycle complete
+    // (where the reset either fires or doesn't), then induces exactly one
+    // more failure and checks which side of the ladder the resulting
+    // backoff lands on:
+    //  - reset fired: attempt goes 0 -> 1, so the backoff is
+    //    computeBackoffMs(1).
+    //  - reset didn't fire: attempt was still 2 from the two earlier
+    //    failures, so this failure pushes it to 3, and the backoff is
+    //    computeBackoffMs(3) — four times longer than computeBackoffMs(1).
+    // Math.random is pinned to 0 for the whole test, which collapses each
+    // call to computeBackoffMs down to its exact floor (jittered = floor +
+    // 0 * range): attempt 1 -> exactly 500ms, attempt 2 -> exactly 1000ms,
+    // attempt 3 -> exactly 2000ms. That removes jitter as a source of
+    // timing slack, so every advance below lands on an exact, predictable
+    // instant instead of a range — this test does not have to guess how
+    // much wall-clock slack the earlier random backoffs left behind.
+    vi.useFakeTimers();
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      let connectAttempts = 0;
+      let noopShouldFail = false;
+      const fakeA = createFakeClient({
+        connectBehavior: async () => {
+          connectAttempts += 1;
+          if (connectAttempts <= 2) {
+            throw new Error('temporary connect failure');
+          }
+          // 3rd and every later attempt succeeds.
+        },
+        noopBehavior: async () => {
+          if (noopShouldFail) throw new Error('socket is dead');
+        },
+      });
+      const db = createFakeDb();
+      const pool = new ConnectionPool([ACCOUNT_A], db, () =>
+        new ImapConnection(ACCOUNT_A, () => fakeA.client),
+      );
 
-    launch(pool);
-    await wait(50);
+      const started = pool.start();
 
-    // A completed cycle: reserve -> fetch -> record all succeeded.
-    expect(db.budgetRecordCalls.length).toBe(1);
-    expect(pool.status.get('a')).toBe('connected');
+      // Exactly past both failed connects' backoff sleeps (500ms + 1000ms,
+      // with jitter pinned to 0) and the third (successful) connect's sync
+      // cycle, which is pure microtask work with no timer of its own. The
+      // liveness-check timer for IDLE is armed at exactly this instant.
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(connectAttempts).toBe(3);
+      expect(db.budgetRecordCalls.length).toBe(1);
+      expect(pool.status.get('a')).toBe('connected');
+      // The connection is sitting in a normal, healthy IDLE — nothing
+      // above has touched the liveness probe yet.
+      expect(fakeA.noop).not.toHaveBeenCalled();
+
+      // Induce exactly one failure: let the liveness timer fire (armed at
+      // fake-time 1500ms, so it fires at exactly 1500 + the interval) and
+      // make the resulting NOOP fail.
+      noopShouldFail = true;
+      const connectsBeforeRetry = fakeA.connect.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(IDLE_LIVENESS_CHECK_INTERVAL_MS);
+      expect(fakeA.noop).toHaveBeenCalledTimes(1);
+      // Landing exactly on the interval boundary — the new backoff sleep
+      // has just been scheduled but cannot have elapsed any time yet, so
+      // the retry itself must not have fired for either outcome.
+      expect(fakeA.connect.mock.calls.length).toBe(connectsBeforeRetry);
+
+      // The cutoff: comfortably past the reset outcome's exact 500ms
+      // backoff, comfortably short of the unreset outcome's exact 2000ms
+      // one — no jitter left to make either bound fuzzy.
+      await vi.advanceTimersByTimeAsync(600);
+      expect(fakeA.connect.mock.calls.length).toBeGreaterThan(connectsBeforeRetry);
+
+      await pool.stop();
+      await started;
+    } finally {
+      randomSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   // -------------------------------------------------------------------------

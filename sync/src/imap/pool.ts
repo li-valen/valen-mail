@@ -245,19 +245,35 @@ export class ConnectionPool {
   }
 
   /**
-   * Runs `fn` inside the same per-account critical section syncOnce() uses.
+   * Runs `fn` inside the same per-account critical section syncOnce() and
+   * idleLoop()'s liveness probe use.
    *
    * The API and the IDLE loop drive the SAME imapflow client. An on-demand
    * download breaks the active IDLE, so waitForIdleWake() returns
-   * 'idle-ended' and idleLoop() immediately runs probeLiveness() — but
-   * imapflow serialises commands per connection, so that NOOP queues behind
-   * the in-flight download. A download that outlasts
+   * 'idle-ended' and idleLoop() runs probeLiveness() — and imapflow
+   * serialises commands per connection, so an uncoordinated NOOP would
+   * queue behind an in-flight download. A download that outlasted
    * LIVENESS_PROBE_TIMEOUT_MS (15s — a large attachment on a slow link)
-   * then times the probe out, and runAccount() tears down a perfectly
-   * healthy connection, killing the download with it.
+   * would then time the probe out, and runAccount() would tear down a
+   * perfectly healthy connection, killing the download with it.
    *
-   * Routing on-demand fetches through this key means the probe and the
-   * download can never interleave: whichever starts first finishes first.
+   * What this key actually guarantees: syncOnce(), the idleLoop() probe,
+   * and any caller of withAccountLock() (the API's on-demand fetches) are
+   * mutually exclusive per account — whichever acquires the key first runs
+   * to completion, success or failure, before the next one is even
+   * started. They can never interleave or race the same client.
+   *
+   * What it does NOT guarantee is a bounded wait. KeyedMutex has no
+   * timeout of its own, and the API's fetchBodyPart() (the only caller of
+   * this method) has no independent deadline either — it is bounded by
+   * MAX_BODY_PART_BYTES, not by time. A slow-but-still-progressing
+   * download can therefore hold this key for as long as the transfer
+   * takes, and both the next liveness probe and the next sync cycle for
+   * that account simply queue behind it rather than running on schedule.
+   * IDLE_LIVENESS_CHECK_INTERVAL_MS is a target cadence under sustained
+   * on-demand traffic, not a hard bound — late is the only failure mode
+   * left; racing the download is not.
+   *
    * It also gives the API a place to do reserve -> fetch -> record as one
    * atomic unit against the same budget snapshot the sync loop uses.
    */
@@ -410,7 +426,18 @@ export class ConnectionPool {
         // liveness against a half-open TCP peer (Amendment 1). A failed or
         // hung probe here throws, which is caught by runAccount() and
         // turned into a reconnect with backoff.
-        await probeLiveness(client);
+        //
+        // Routed through the same per-account key syncOnce() and
+        // withAccountLock() use (F8): an on-demand API download and this
+        // probe drive the same imapflow client, and imapflow serialises
+        // commands per connection, so an un-keyed probe could queue behind
+        // an in-flight download and time out against a perfectly healthy
+        // connection. Taking this key here is safe from self-deadlock: by
+        // the time idleLoop() runs, the syncOnce() call that preceded it
+        // has already released this same key, and the syncOnce() call
+        // below only runs after this one resolves — sequential, not
+        // nested.
+        await this.mutex.run(accountId, () => probeLiveness(client));
       }
       if (!this.running) break;
 
