@@ -9,7 +9,7 @@
 export const PIXEL_PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNgAAIAAAUAAen63NgAAAAASUVORK5CYII=';
 
-export const PIXEL_BYTES: Uint8Array = Uint8Array.from(
+export const PIXEL_BYTES = Uint8Array.from(
   atob(PIXEL_PNG_BASE64),
   (char) => char.charCodeAt(0),
 );
