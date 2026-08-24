@@ -28,11 +28,18 @@ function parseAccount(raw: unknown, index: number): AccountConfig {
   const id = record.id;
   const email = record.email;
   const password = record.appPassword;
+  const isPrimary = record.isPrimary;
 
   if (typeof id !== 'string' || !id) throw new Error(`accounts[${index}] has no id`);
-  if (typeof email !== 'string' || !email.includes('@')) {
+
+  if (typeof email !== 'string') {
+    throw new Error(`account "${id}" has no email`);
+  }
+  const trimmedEmail = email.trim();
+  if (!trimmedEmail || !trimmedEmail.includes('@')) {
     throw new Error(`account "${id}" has an invalid email`);
   }
+
   if (typeof password !== 'string') throw new Error(`account "${id}" has no appPassword`);
 
   const stripped = password.replace(/\s+/g, '');
@@ -45,7 +52,23 @@ function parseAccount(raw: unknown, index: number): AccountConfig {
     );
   }
 
-  return { id, email, appPassword: stripped, isPrimary: record.isPrimary === true };
+  // isPrimary must be explicitly a boolean or absent (defaults to false)
+  if (isPrimary !== undefined && typeof isPrimary !== 'boolean') {
+    throw new Error(`account "${id}": isPrimary must be a boolean`);
+  }
+
+  return { id, email: trimmedEmail, appPassword: stripped, isPrimary: isPrimary === true };
+}
+
+function parsePort(portStr: string | undefined): number {
+  // If PORT is absent or empty string, use default
+  if (!portStr) return 8080;
+
+  const port = Number(portStr);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`PORT must be an integer between 1 and 65535, got "${portStr}"`);
+  }
+  return port;
 }
 
 export function loadConfig(raw: unknown, env: NodeJS.ProcessEnv): SyncConfig {
@@ -57,14 +80,27 @@ export function loadConfig(raw: unknown, env: NodeJS.ProcessEnv): SyncConfig {
 
   const accounts = raw.map(parseAccount);
 
-  const seen = new Set<string>();
+  const seenIds = new Set<string>();
+  const seenEmails = new Set<string>();
   for (const account of accounts) {
-    if (seen.has(account.id)) throw new Error(`duplicate account id "${account.id}"`);
-    seen.add(account.id);
+    if (seenIds.has(account.id)) throw new Error(`duplicate account id "${account.id}"`);
+    seenIds.add(account.id);
+
+    const emailLower = account.email.toLowerCase();
+    if (seenEmails.has(emailLower)) {
+      // Find the duplicate account's id for better error messaging
+      const first = accounts.find(a => a.email.toLowerCase() === emailLower);
+      throw new Error(
+        `duplicate email: account "${account.id}" and "${first?.id}" both use email (case-insensitive)`,
+      );
+    }
+    seenEmails.add(emailLower);
   }
 
   const databaseUrl = env.DATABASE_URL;
   if (!databaseUrl) throw new Error('DATABASE_URL is not set');
 
-  return { accounts, databaseUrl, port: Number(env.PORT ?? 8080) };
+  const port = parsePort(env.PORT);
+
+  return { accounts, databaseUrl, port };
 }
