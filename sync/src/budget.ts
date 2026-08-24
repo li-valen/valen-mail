@@ -33,9 +33,16 @@ export function checkBudget(
 /**
  * Budget state is persisted per account per day, so a process restart
  * cannot silently reset the allowance and re-trigger a lockout.
+ *
+ * Note: Parameter properties are avoided project-wide because the service
+ * runs under --experimental-strip-types, which does not support them.
  */
 export class ByteBudget {
-  constructor(private readonly db: Db) {}
+  private readonly db: Db;
+
+  constructor(db: Db) {
+    this.db = db;
+  }
 
   private today(): string {
     return new Date().toISOString().slice(0, 10);

@@ -5,6 +5,7 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
+    "check:runtime": "node --experimental-strip-types --input-type=module -e \"await import('./src/config.ts'); await import('./src/db.ts'); await import('./src/normalize.ts'); await import('./src/attachments.ts'); await import('./src/budget.ts'); console.log('runtime import OK');\"",
     "start": "node --env-file=.env dist/api/server.js",
     "dev": "node --env-file=.env --experimental-strip-types src/api/server.ts"
   },
