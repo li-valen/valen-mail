@@ -91,6 +91,18 @@ describe('router', () => {
     expect(Object.keys(accounts[0]!).sort()).toEqual(['id', 'status']);
   });
 
+  it('gates health on GET like every other route, instead of answering any method', async () => {
+    // Finding 2: health used to be matched by path alone, before the
+    // method check, so POST/DELETE/etc. all got a 200 with health data.
+    // It must now fall through into the ordinary auth-then-404 pipeline
+    // like any other route for any method other than GET.
+    const response = await router(new Request('http://x/api/health', {
+      method: 'POST',
+      headers: auth,
+    }));
+    expect(response.status).toBe(404);
+  });
+
   it('rejects the inbox without a token', async () => {
     const response = await router(new Request('http://x/api/inbox'));
     expect(response.status).toBe(401);
@@ -359,5 +371,51 @@ describe('router / attachment route', () => {
   it('404s an unknown account on the attachment route', async () => {
     const response = await router(new Request('http://x/api/attachment/ghost/INBOX/1/2.1', { headers: auth }));
     expect(response.status).toBe(404);
+  });
+});
+
+describe('router / malformed path segments', () => {
+  // Finding 1: decodeURIComponent throws a URIError on malformed
+  // percent-encoding (e.g. a lone "%", or "%zz"). Before the
+  // decodeSegment/decodeSegments guard, that throw escaped the route
+  // handler entirely — violating createRouter's "always resolves to a
+  // Response" contract for any caller that doesn't happen to wrap it in
+  // its own try/catch. These assert 400, the correct response to
+  // malformed client input, not a crash.
+  //
+  // Mutation check performed by hand (see task-8-report.md addendum):
+  // temporarily reverting decodeSegment to call decodeURIComponent
+  // directly (no try/catch) makes every test in this block fail with an
+  // unhandled URIError rather than a clean 400 assertion failure,
+  // confirming these tests are causally tied to the guard.
+
+  it('400s a malformed percent-encoding in the thread id', async () => {
+    const response = await router(new Request('http://x/api/thread/%', { headers: auth }));
+    expect(response.status).toBe(400);
+  });
+
+  it('400s a malformed percent-encoding in the message-body account id', async () => {
+    const response = await router(new Request('http://x/api/message/%/INBOX/1/body', { headers: auth }));
+    expect(response.status).toBe(400);
+  });
+
+  it('400s a malformed percent-encoding in the message-body folder', async () => {
+    const response = await router(new Request('http://x/api/message/acct1/%/1/body', { headers: auth }));
+    expect(response.status).toBe(400);
+  });
+
+  it('400s a malformed percent-encoding in the attachment account id', async () => {
+    const response = await router(new Request('http://x/api/attachment/%/INBOX/1/2.1', { headers: auth }));
+    expect(response.status).toBe(400);
+  });
+
+  it('400s a malformed percent-encoding in the attachment folder', async () => {
+    const response = await router(new Request('http://x/api/attachment/acct1/%/1/2.1', { headers: auth }));
+    expect(response.status).toBe(400);
+  });
+
+  it('400s a malformed percent-encoding in the attachment part id', async () => {
+    const response = await router(new Request('http://x/api/attachment/acct1/INBOX/1/%', { headers: auth }));
+    expect(response.status).toBe(400);
   });
 });

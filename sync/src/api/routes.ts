@@ -38,6 +38,38 @@ function extractBearerToken(request: Request): string | null {
 }
 
 /**
+ * Decodes one route-capture segment, or returns null on malformed
+ * percent-encoding (e.g. a lone "%") instead of letting decodeURIComponent
+ * throw inside the handler. createRouter's declared contract is "always
+ * resolves to a Response" — an uncaught URIError here would violate that
+ * for any caller that doesn't wrap it in its own try/catch the way
+ * server.ts happens to (a bare fetch-style caller, which is exactly the
+ * shape this signature mimics, would see an unhandled rejection instead).
+ */
+function decodeSegment(raw: string): string | null {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Decodes every capture in `raw`, in order, or returns a ready 400
+ * Response the moment one fails to decode — keeping the try/catch to this
+ * one place rather than one per route.
+ */
+function decodeSegments(raw: readonly string[]): readonly string[] | Response {
+  const decoded: string[] = [];
+  for (const value of raw) {
+    const result = decodeSegment(value);
+    if (result === null) return json({ error: 'invalid path segment' }, 400);
+    decoded.push(result);
+  }
+  return decoded;
+}
+
+/**
  * Clamps `limit` to [1, MAX_LIMIT] and falls back to DEFAULT_LIMIT for
  * anything that isn't a usable positive number — a missing param, a
  * non-numeric string, NaN, or a negative value — so a malformed or hostile
@@ -210,12 +242,15 @@ async function handleAttachment(
 
 /**
  * Builds the request handler for the unified-inbox JSON API. Every route
- * except /api/health requires a valid bearer token (Amendment 1: three
+ * except GET /api/health requires a valid bearer token (Amendment 1: three
  * arguments — auth cannot be optional on a service fronting four mailboxes
- * containing 60,000+ messages on the public internet). Auth is checked
- * before any route is matched, so an unauthenticated caller gets the same
- * 401 for a real route and a typo'd one — never a 404 that would confirm a
- * route exists before proving the caller is allowed to ask.
+ * containing 60,000+ messages on the public internet). /api/health is
+ * gated on GET the same as every other route is gated on its own method —
+ * a non-GET request to it falls through to the ordinary auth-then-404
+ * path below rather than being special-cased forever. Auth is checked
+ * before any other route is matched, so an unauthenticated caller gets the
+ * same 401 for a real route and a typo'd one — never a 404 that would
+ * confirm a route exists before proving the caller is allowed to ask.
  */
 export function createRouter(
   db: Db,
@@ -226,7 +261,7 @@ export function createRouter(
     const url = new URL(request.url);
     const path = url.pathname;
 
-    if (path === '/api/health') {
+    if (path === '/api/health' && request.method === 'GET') {
       return handleHealth(pool);
     }
 
@@ -245,24 +280,31 @@ export function createRouter(
 
     const threadMatch = path.match(/^\/api\/thread\/([^/]+)$/);
     if (threadMatch) {
-      return handleThread(db, decodeURIComponent(threadMatch[1] ?? ''));
+      const decoded = decodeSegments([threadMatch[1] ?? '']);
+      if (decoded instanceof Response) return decoded;
+      return handleThread(db, decoded[0]!);
     }
 
     const bodyMatch = path.match(/^\/api\/message\/([^/]+)\/([^/]+)\/([^/]+)\/body$/);
     if (bodyMatch) {
-      const accountId = decodeURIComponent(bodyMatch[1] ?? '');
-      const folder = decodeURIComponent(bodyMatch[2] ?? '');
+      const decoded = decodeSegments([bodyMatch[1] ?? '', bodyMatch[2] ?? '']);
+      if (decoded instanceof Response) return decoded;
+      const [accountId, folder] = decoded;
       const uidRaw = bodyMatch[3] ?? '';
-      return handleBody(pool, accountId, folder, uidRaw);
+      return handleBody(pool, accountId!, folder!, uidRaw);
     }
 
     const attachmentMatch = path.match(/^\/api\/attachment\/([^/]+)\/([^/]+)\/([^/]+)\/([^/]+)$/);
     if (attachmentMatch) {
-      const accountId = decodeURIComponent(attachmentMatch[1] ?? '');
-      const folder = decodeURIComponent(attachmentMatch[2] ?? '');
+      const decoded = decodeSegments([
+        attachmentMatch[1] ?? '',
+        attachmentMatch[2] ?? '',
+        attachmentMatch[4] ?? '',
+      ]);
+      if (decoded instanceof Response) return decoded;
+      const [accountId, folder, partId] = decoded;
       const uidRaw = attachmentMatch[3] ?? '';
-      const partId = decodeURIComponent(attachmentMatch[4] ?? '');
-      return handleAttachment(db, pool, accountId, folder, uidRaw, partId);
+      return handleAttachment(db, pool, accountId!, folder!, uidRaw, partId!);
     }
 
     return json({ error: 'not found' }, 404);
