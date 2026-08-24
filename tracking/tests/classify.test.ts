@@ -57,9 +57,44 @@ describe('classifyHit', () => {
     expect(classifyHit(hit({ ip: '17.58.12.9' }))).toBe('mpp');
   });
 
-  it('prefers self over every other classification', () => {
+  it('prefers self over mpp when both conditions hold', () => {
     const ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15';
     expect(classifyHit(hit({ ip: '198.51.100.1', userAgent: ua }))).toBe('self');
+  });
+
+  it('prefers self over prefetch when both conditions hold', () => {
+    const ua = 'Mozilla/5.0 (via ggpht.com GoogleImageProxy)';
+    expect(classifyHit(hit({
+      ip: '198.51.100.1',
+      userAgent: ua,
+      occurredAt: SENT_AT + 2_000
+    }))).toBe('self');
+  });
+
+  it('prefers self over scanner when both conditions hold', () => {
+    expect(classifyHit(hit({
+      ip: '198.51.100.1',
+      userAgent: 'Mimecast Ltd Scanner'
+    }))).toBe('self');
+  });
+
+  it('prefers prefetch over scanner when both conditions hold', () => {
+    const ua = 'Mozilla/5.0 (via ggpht.com GoogleImageProxy Mimecast)';
+    expect(classifyHit(hit({
+      userAgent: ua,
+      occurredAt: SENT_AT + 2_000
+    }))).toBe('prefetch');
+  });
+
+  it('prefers scanner over mpp when both conditions hold', () => {
+    const ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15';
+    const now = SENT_AT + 60_000;
+    const burst = [now - 500, now - 1_200, now - 2_000];
+    expect(classifyHit(hit({
+      userAgent: ua,
+      occurredAt: now,
+      recentHitTimes: burst
+    }))).toBe('scanner');
   });
 });
 

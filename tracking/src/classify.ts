@@ -4,7 +4,9 @@ export type Classification = 'self' | 'prefetch' | 'mpp' | 'scanner' | 'open';
 export const PREFETCH_WINDOW_MS = 10_000;
 /** Repeat hits on one token inside this window collapse to a single event. */
 export const DEDUPE_WINDOW_MS = 10_000;
+/** Scanner detection fires when recentHitTimes holds 3+ hits within SCANNER_BURST_WINDOW_MS, meaning the 4th or later hit is flagged. */
 export const SCANNER_BURST_COUNT = 3;
+/** Time window for bursts. recentHitTimes holds prior hits only; detection fires on hits beyond SCANNER_BURST_COUNT within this window. */
 export const SCANNER_BURST_WINDOW_MS = 5_000;
 
 /** Apple owns 17.0.0.0/8 outright. */
