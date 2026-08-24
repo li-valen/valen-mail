@@ -121,9 +121,30 @@ thread and reply-all behaves correctly.
 
 Consequences accepted:
 - Counts N times against Gmail's ~500 messages/day limit.
-- N copies land in the Sent folder unless suppressed (see 5.6).
 - A forwarded message carries its original token, so forwards can read as
   the original recipient re-opening.
+
+**5.3.1 Attachment multiplication (binding mitigation).**
+
+Gmail copies every SMTP send into the Sent folder automatically; the client
+cannot suppress this. N tokenized sends therefore write N copies of every
+attachment into the user's 15 GB Gmail quota. A 10 MB attachment to 5
+recipients consumes 50 MB, not 10 MB.
+
+The client MUST mitigate as follows:
+
+1. **Degrade before sending.** If `attachment_bytes * recipient_count`
+   exceeds `TRACKED_SEND_BYTE_BUDGET` (default 25 MB), fall back to a single
+   shared token for that message. Attribution degrades to "someone opened"
+   rather than naming a recipient. The UI MUST say so on that message
+   rather than implying per-person data it does not have.
+2. **Reconcile after sending.** Where per-recipient sends did occur, the
+   client SHOULD delete the redundant Sent copies over IMAP, retaining one.
+
+Rationale for degrading rather than always reconciling: reconciliation is
+racy (it depends on Gmail having filed all N copies before the sweep runs)
+and a failed sweep silently costs quota. The budget check is deterministic
+and cannot fail open.
 
 ### 5.4 Open classification (binding)
 
@@ -203,6 +224,42 @@ devices: id(pk) · endpoint · p256dh · auth · label · created_at
 - **7.5** The tracking endpoint MUST NOT accept or store message content.
   It sees opaque tokens and request metadata only.
 
+## 7A. Design Intent (binding on Plans 3 and 5)
+
+Stated by the user: "make it different from other email providers, make it look
+better and cooler."
+
+**7A.1 The differentiator is the data, not the skin.** Every existing client
+organises around one axis: time. Gmail, Outlook, Spark, Superhuman and Hey all
+show what arrived, newest first, and differ mainly in density and chrome. A
+visually novel client organised the same way is a reskin.
+
+Postbox holds a dimension none of them expose: **who has read what, and when.**
+The design should be organised around that, not merely decorated with it.
+Concretely, these are the views the tracking data makes possible and that no
+mainstream client offers:
+
+- **Sent & Waiting** — outbound mail ranked by engagement state, not by date:
+  opened-and-silent, never-opened, opened-repeatedly.
+- **Opened, no reply** — the highest-signal follow-up queue in the product, and
+  the reason this client exists.
+- **Recent Opens** — a live chronological feed of read events (Superhuman ships
+  this; it is the one piece worth matching directly).
+- **Read state on the thread itself** — per recipient, with device and time, and
+  with honest "unknown" and "Apple MPP, cannot verify" states rendered as
+  first-class rather than hidden (see 5.7, L1, L2).
+
+**7A.2 Honest states are a design requirement, not an edge case.** Roughly half
+of all opens cannot be confirmed (L1) and Gmail recipients yield no device data
+(L2). A UI that renders uncertainty as confidence is worse than one with no
+tracking at all. Ambiguity must be legible in the interface, not buried.
+
+**7A.3 Direction is chosen by prototype, not by assertion.** Plan 3 MUST open
+with the `prototype` skill: three to four genuinely different directions behind a
+live picker, the user picks, and only then is a Tier 1 direction skill applied to
+the winner. "Make it cooler" is not a direction; it is a request for options.
+See `docs/frontend-guide.md` for the routing rules and proposed stack.
+
 ## 8. Non-Goals (v1)
 
 - Chrome extension for tracking mail sent from Gmail's web UI — planned
@@ -229,6 +286,15 @@ devices: id(pk) · endpoint · p256dh · auth · label · created_at
   web UI is invisible until the Chrome extension expansion ships.
 - **L6. Gmail IMAP limits:** ~15 concurrent connections and ~2.5 GB/day
   download per account. Sync must respect both.
+- **L7. The burst half of `scanner` classification (5.4) is unreachable as
+  built.** The endpoint checks `isDuplicate()` against `recentHitTimes`
+  before calling `classifyHit()`, and returns early on any prior hit inside
+  the 10s dedupe window — which fully contains the burst rule's 5s window.
+  So `classifyHit()` only ever runs with `recentHitTimes: []` in production;
+  `isScannerBurst` is exercised only by direct unit-test calls. Known-vendor
+  UA matching still classifies `scanner` correctly; only the hit-count burst
+  path is dead. The real fix — classify before dedupe, or track raw
+  arrivals separately from recorded opens — is deferred to a later plan.
 
 ## 10. Success Criteria
 
