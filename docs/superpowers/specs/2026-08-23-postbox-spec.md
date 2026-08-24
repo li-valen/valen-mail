@@ -288,6 +288,39 @@ live picker, the user picks, and only then is a Tier 1 direction skill applied t
 the winner. "Make it cooler" is not a direction; it is a request for options.
 See `docs/frontend-guide.md` for the routing rules and proposed stack.
 
+## 7B. Sending Identity Model (resolved 2026-08-24)
+
+**Decision: ten separate Google accounts, each sending through its own SMTP.**
+Gmail "Send as" aliases are NOT used and require no configuration.
+
+The user's requirement: all ten mailboxes unified into one inbox, with a
+per-message picker choosing which account sends or replies. Two mechanisms
+could deliver that; this spec binds the first.
+
+| Mechanism | Behaviour | Consequence |
+|---|---|---|
+| **Own SMTP per account** (chosen) | Authenticate as that account and send. The message genuinely originates from it. | Each account keeps its own ~500/day send limit and its own sending reputation. Needs one app password per account. |
+| Gmail "Send as" alias (rejected) | One account sends with another address in the `From` header, only if pre-verified in Gmail settings. | All identities share ONE send limit and ONE reputation. |
+
+**Why this matters more than it looks (5.3):** per-recipient tokenised
+tracking sends one message per recipient, so a five-person email consumes
+five sends. Ten independent limits give roughly 5,000 sends/day in
+aggregate; a shared alias limit would give ~500 total across all ten
+identities, which per-recipient tracking would exhaust quickly.
+
+**Consequences now binding on later plans:**
+
+- **Plan 2:** ten IMAP connections, one per account. Ten app passwords in
+  `sync/accounts.json`.
+- **Plan 4 (composer):** must hold ten SMTP identities and select one per
+  message. `accounts.json`'s `isPrimary` flag determines the default sender.
+- **7B.1 — `isPrimary` is now load-bearing.** Task 1's review parked a
+  finding that nothing validates how many accounts carry `isPrimary`; all
+  ten could set it, or none. That was harmless while nothing read the field.
+  It is no longer harmless: `isPrimary` is the default send-from account.
+  Exactly one account MUST be primary, and the config loader MUST enforce it
+  before Plan 4 consumes the field.
+
 ## 8. Non-Goals (v1)
 
 - Chrome extension for tracking mail sent from Gmail's web UI — planned
