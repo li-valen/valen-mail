@@ -224,6 +224,42 @@ devices: id(pk) · endpoint · p256dh · auth · label · created_at
 - **7.5** The tracking endpoint MUST NOT accept or store message content.
   It sees opaque tokens and request metadata only.
 
+## 7A. Design Intent (binding on Plans 3 and 5)
+
+Stated by the user: "make it different from other email providers, make it look
+better and cooler."
+
+**7A.1 The differentiator is the data, not the skin.** Every existing client
+organises around one axis: time. Gmail, Outlook, Spark, Superhuman and Hey all
+show what arrived, newest first, and differ mainly in density and chrome. A
+visually novel client organised the same way is a reskin.
+
+Postbox holds a dimension none of them expose: **who has read what, and when.**
+The design should be organised around that, not merely decorated with it.
+Concretely, these are the views the tracking data makes possible and that no
+mainstream client offers:
+
+- **Sent & Waiting** — outbound mail ranked by engagement state, not by date:
+  opened-and-silent, never-opened, opened-repeatedly.
+- **Opened, no reply** — the highest-signal follow-up queue in the product, and
+  the reason this client exists.
+- **Recent Opens** — a live chronological feed of read events (Superhuman ships
+  this; it is the one piece worth matching directly).
+- **Read state on the thread itself** — per recipient, with device and time, and
+  with honest "unknown" and "Apple MPP, cannot verify" states rendered as
+  first-class rather than hidden (see 5.7, L1, L2).
+
+**7A.2 Honest states are a design requirement, not an edge case.** Roughly half
+of all opens cannot be confirmed (L1) and Gmail recipients yield no device data
+(L2). A UI that renders uncertainty as confidence is worse than one with no
+tracking at all. Ambiguity must be legible in the interface, not buried.
+
+**7A.3 Direction is chosen by prototype, not by assertion.** Plan 3 MUST open
+with the `prototype` skill: three to four genuinely different directions behind a
+live picker, the user picks, and only then is a Tier 1 direction skill applied to
+the winner. "Make it cooler" is not a direction; it is a request for options.
+See `docs/frontend-guide.md` for the routing rules and proposed stack.
+
 ## 8. Non-Goals (v1)
 
 - Chrome extension for tracking mail sent from Gmail's web UI — planned

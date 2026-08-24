@@ -25,6 +25,12 @@ Motion library:    motion/react           PROPOSED - confirm at Plan 3
 Icon set:          lucide                 PROPOSED - confirm at Plan 3
 ```
 
+**Plan 3 opens with `prototype`, before any of this applies.** The user's brief is
+"different from other email providers, better and cooler" — which is a request for
+options, not a direction. Three to four genuinely different versions behind a live
+picker, then a Tier 1 skill on the winner. Design intent and the product-level
+differentiators are specified in the spec, section 7A.
+
 **These are PROPOSED, not set.** The guide's own rule 3 says direction is set once
 per project and then recorded — so these get confirmed or overridden deliberately at
 the start of Plan 3, not inherited by accident. Reasoning behind each proposal:
