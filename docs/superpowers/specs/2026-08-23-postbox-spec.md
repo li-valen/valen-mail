@@ -254,6 +254,34 @@ of all opens cannot be confirmed (L1) and Gmail recipients yield no device data
 (L2). A UI that renders uncertainty as confidence is worse than one with no
 tracking at all. Ambiguity must be legible in the interface, not buried.
 
+**7A.4 Measured reality (calibration, 2026-08-24) — binding on the UI.**
+
+The first calibration run replaced assumption with measurement. Plan 3 must
+design against these facts, not against what tracking is imagined to do:
+
+- **Apple/iCloud recipients are permanently unconfirmable.** Apple's proxy
+  sends a bare `Mozilla/5.0` (11 characters, no platform token) for every
+  fetch, and toggling Mail Privacy Protection off changed nothing observable.
+  These classify `mpp`. A read-state view can never confirm an Apple
+  recipient opened anything. The UI must state this, not render an empty
+  state that reads as "not opened yet".
+- **Device attribution is effectively unavailable** (L8). The device column
+  is empty for every real account measured. Do not design a UI around it;
+  surface it only where it exists.
+- **Opens within 60 seconds of send are suppressed as machine prefetch**
+  (`PREFETCH_WINDOW_MS`). A genuine immediate open is therefore invisible.
+  This is a deliberate trade: a false "they read it" is worse than a missed
+  open, because it invites action on nothing.
+- **What remains genuinely reliable:** a non-Apple recipient opening more
+  than 60 seconds after send. That is the signal the "Opened, no reply"
+  queue is built on, and it is narrower than Superhuman's UI implies.
+
+Consequence for 7A.1: the read-state organising principle stands, but every
+view built on it MUST distinguish three states — confirmed, unconfirmable,
+and no-signal — rather than the binary read/unread every other client shows.
+That distinction is the product, and faking it would make Postbox worse than
+the clients it is replacing.
+
 **7A.3 Direction is chosen by prototype, not by assertion.** Plan 3 MUST open
 with the `prototype` skill: three to four genuinely different directions behind a
 live picker, the user picks, and only then is a Tier 1 direction skill applied to
