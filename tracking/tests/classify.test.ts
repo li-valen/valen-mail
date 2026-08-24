@@ -41,6 +41,13 @@ describe('classifyHit', () => {
     expect(classifyHit(hit({ userAgent: 'Proofpoint-URL-Defense/2' }))).toBe('scanner');
   });
 
+  // This calls classifyHit() directly with a hand-built recentHitTimes, which
+  // is the only way this branch runs. It does not reflect a reachable
+  // production path: api/o/[token].ts always calls isDuplicate() on
+  // recentHitTimes before classifyHit(), and returns early on any match
+  // within DEDUPE_WINDOW_MS (10s) — which fully covers SCANNER_BURST_WINDOW_MS
+  // (5s), so classifyHit() only ever receives recentHitTimes: [] in
+  // production. See the NOTE on isScannerBurst in src/classify.ts and spec 9.
   it('flags a rapid burst on one token as a scanner', () => {
     const now = SENT_AT + 60_000;
     const burst = [now - 500, now - 1_200, now - 2_000];

@@ -2,7 +2,7 @@ import { pixelResponse } from '../../src/pixel';
 import { isValidToken } from '../../src/token';
 import { parseUserAgent } from '../../src/ua';
 import { classifyHit, isDuplicate, DEDUPE_WINDOW_MS } from '../../src/classify';
-import { lookupToken, recentHitTimes, recordOpen, hashIp } from '../../src/db';
+import { lookupToken, recentHitTimes, recordOpen, hashIp, requireIpHashSalt } from '../../src/db';
 
 export const config = { runtime: 'edge' };
 
@@ -28,6 +28,11 @@ async function record(request: Request): Promise<void> {
   if (!row) return;
 
   const occurredAt = Date.now();
+  // Best-effort, same as the cap in recordOpen: two concurrent hits on the
+  // same token can both read an empty/stale priorHits and both pass this
+  // check, so a rapid double-fetch can still write two rows. Accepted for
+  // the same reason (see db.ts recordOpen) — closing it needs a
+  // transactional read+write, which the HTTP driver doesn't offer here.
   const priorHits = await recentHitTimes(token, DEDUPE_WINDOW_MS);
   if (isDuplicate(occurredAt, priorHits)) return;
 
@@ -49,7 +54,7 @@ async function record(request: Request): Promise<void> {
     classification,
     userAgent,
     device: parseUserAgent(userAgent),
-    ipHash: await hashIp(ip, process.env.IP_HASH_SALT ?? ''),
+    ipHash: await hashIp(ip, requireIpHashSalt()),
   });
 }
 

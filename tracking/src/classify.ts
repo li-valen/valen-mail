@@ -4,9 +4,31 @@ export type Classification = 'self' | 'prefetch' | 'mpp' | 'scanner' | 'open';
 export const PREFETCH_WINDOW_MS = 10_000;
 /** Repeat hits on one token inside this window collapse to a single event. */
 export const DEDUPE_WINDOW_MS = 10_000;
-/** Scanner detection fires when recentHitTimes holds 3+ hits within SCANNER_BURST_WINDOW_MS, meaning the 4th or later hit is flagged. */
+/**
+ * Scanner detection fires when recentHitTimes holds 3+ hits within
+ * SCANNER_BURST_WINDOW_MS, meaning the 4th or later hit is flagged.
+ *
+ * NOTE — currently unreachable from the production endpoint. In
+ * `api/o/[token].ts`, `record()` calls `recentHitTimes()`, then `isDuplicate()`
+ * on that same list, and returns before `classifyHit()` runs if any prior hit
+ * fell within DEDUPE_WINDOW_MS (10s). Since SCANNER_BURST_WINDOW_MS (5s) is
+ * inside DEDUPE_WINDOW_MS (10s), every row `recentHitTimes` could return that
+ * `isScannerBurst` would count is also new enough to make `isDuplicate` true
+ * and short-circuit the request before `classifyHit` is ever called — so
+ * `classifyHit` only ever sees `recentHitTimes: []` in production. This path
+ * is reachable only via a direct call to `classifyHit`, such as the unit
+ * tests below. See spec 9 for the tracked gap and the real fix (classify
+ * before dedupe, or track raw arrivals separately from recorded opens).
+ */
 export const SCANNER_BURST_COUNT = 3;
-/** Time window for bursts. recentHitTimes holds prior hits only; detection fires on hits beyond SCANNER_BURST_COUNT within this window. */
+/**
+ * Time window for bursts. recentHitTimes holds prior hits only; detection
+ * fires on hits beyond SCANNER_BURST_COUNT within this window.
+ *
+ * NOTE — same unreachability as SCANNER_BURST_COUNT above: this window sits
+ * inside DEDUPE_WINDOW_MS, so dedupe always consumes the hits this constant
+ * would need before `isScannerBurst` gets a chance to see them in production.
+ */
 export const SCANNER_BURST_WINDOW_MS = 5_000;
 
 /** Apple owns 17.0.0.0/8 outright. */
@@ -44,6 +66,18 @@ export function isApplePrivacyProxy(ua: string, ip: string): boolean {
   return isWebKit && !isBrowser;
 }
 
+/**
+ * Unreachable from the production endpoint: `api/o/[token].ts` fetches
+ * `recentHitTimes`, checks it with `isDuplicate`, and returns early on any
+ * match before `classifyHit` (and therefore this function) ever runs, so
+ * `ctx.recentHitTimes` is always `[]` by the time real traffic gets here.
+ * This function only fires when `classifyHit` is called directly with a
+ * non-empty `recentHitTimes`, as the unit tests below do. Widening the
+ * fetch window doesn't fix it either — dedupe still returns before
+ * `recordOpen`, so `opens` holds at most one row per token per dedupe
+ * window regardless. Left in place (not deleted) as a documented, known
+ * limitation — see spec 9.
+ */
 function isScannerBurst(ctx: HitContext): boolean {
   const recent = ctx.recentHitTimes.filter(
     (time) => ctx.occurredAt - time < SCANNER_BURST_WINDOW_MS,

@@ -3,14 +3,18 @@ import { PIXEL_BYTES } from '../src/pixel';
 import { isValidToken, generateToken } from '../src/token';
 
 /**
- * `api/o/[token].ts` imports `src/db.ts`, which calls
- * `neon(process.env.DATABASE_URL ?? '')` at module load time and throws if
- * the string is empty. Every test here therefore needs a non-empty
- * DATABASE_URL in place *before* the module loads — and because ESM imports
- * are hoisted above ordinary statements, that means importing dynamically
- * after setting `process.env`, never via a static top-level `import` of the
- * handler module. (`src/pixel.ts` and `src/token.ts` above have no such
- * dependency, so they're imported normally.)
+ * `api/o/[token].ts` imports `src/db.ts`, whose Postgres client is
+ * constructed lazily on first use (not at module load) so that a missing
+ * `DATABASE_URL` throws inside the handler's try/catch instead of during
+ * isolate init — see the comment on `sql_()` in `src/db.ts`. That lazy
+ * client is still cached at module scope once created, so a test that ran
+ * with one `DATABASE_URL` would keep using that same client on a later
+ * `import` of the same module instance. Every test here therefore imports
+ * dynamically after setting `process.env.DATABASE_URL` and resetting the
+ * module registry, rather than via a static top-level `import` of the
+ * handler module, so each test gets its own fresh client bound to the URL
+ * it set. (`src/pixel.ts` and `src/token.ts` above have no such dependency,
+ * so they're imported normally.)
  */
 const ORIGINAL_DATABASE_URL = process.env.DATABASE_URL;
 

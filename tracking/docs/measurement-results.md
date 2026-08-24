@@ -60,24 +60,39 @@ device data is architecturally unrecoverable there (see `src/ua.ts`). They
 cannot tell us anything about whether device attribution *works*; they can
 only confirm that it doesn't apply to Gmail.
 
-Row 3 is expected to be machine-prefetched and classify as `mpp`. Row 4 is
-the control: with Protect Mail Activity off, Apple Mail should send a real
-`AppleWebKit`/`Safari` user agent and a genuine human-triggered fetch, which
-should classify as `open` with real `device_class`/`os`. **The gap between
-row 3 and row 4 is the measured MPP distortion rate for this user** — not
-assumed, not estimated from public figures, but observed directly. It is the
-single most important number in this document.
+**Both row 3 and row 4 are expected to classify as `mpp`, regardless of the
+Protect Mail Activity toggle.** `isApplePrivacyProxy()` (`src/classify.ts`)
+classifies by user-agent *shape* — AppleWebKit present, with neither
+`Version/` nor `Safari/` — and that is the same shape Apple Mail presents
+whether Protect Mail Activity is on or off; it is also the exact signal
+`src/ua.ts` uses to *label* the client "Apple Mail" in the first place. So
+the row-3-vs-row-4 classification delta is not a measurement of anything —
+it is deterministically zero by construction, whatever actually happened at
+send B. Do not read a zero (or nonzero) delta here as evidence about MPP
+distortion.
+
+The real signal for send B is in the **raw hits table — timing and hit
+count**, not the classification column: an MPP prefetch arrives at or very
+near the delivery timestamp regardless of whether a human ever opens the
+message, while a genuine human open arrives whenever the human actually
+opened it (which, per the run instructions above, should be well after
+delivery). Compare `occurred_at` for row 4's hit(s) against `sent_at` for
+that token to judge whether Protect Mail Activity was actually off for that
+send — not the classification, which will read `mpp` either way.
 
 ### What this matrix cannot tell you
 
 With no Outlook (or any other non-proxied desktop client) in the set, rows
 1–2 can only ever confirm that Gmail device data is unrecoverable — they
 cannot validate the device-attribution logic (`src/ua.ts`) itself, because
-Gmail never exposes a real user agent to validate against. Row 4 is the only
-row in this matrix that exercises `parseUserAgent()` against a real client
-user agent. If row 5 (real contact) is run, it adds a second, independent
-ground-truth point — but it is optional and involves a third party, so it is
-the user's call whether to include it.
+Gmail never exposes a real user agent to validate against. Row 4 keeps its
+value despite classifying `mpp` like row 3: it is still the only row in this
+matrix that exercises `parseUserAgent()` against a real client user agent,
+and `device_class`/`os` are recorded for every hit regardless of
+classification — so row 4 remains the matrix's one check on device
+attribution, just not on MPP distortion. If row 5 (real contact) is run, it
+adds a second, independent ground-truth point — but it is optional and
+involves a third party, so it is the user's call whether to include it.
 
 ## Results
 
@@ -109,6 +124,21 @@ not an omission.)*
 | `prefetch` | |
 | `scanner` | |
 | `self` | |
+
+**Limitation: `scanner: 0` does not mean no burst scanners occurred.**
+`scanner` classification has two independent triggers (spec 5.4): a known
+corporate-gateway user agent (Mimecast, Proofpoint, Barracuda, etc.), and a
+burst of >3 hits within 5s on one token. Only the first is actually reachable
+in production — the burst check runs on `recentHitTimes`, but the endpoint's
+dedupe check consumes that same list and returns before `classifyHit()` is
+called whenever any prior hit fell within the 10s dedupe window, which fully
+contains the burst check's 5s window. So `isScannerBurst` never sees a
+non-empty list outside its own unit test (see `src/classify.ts`,
+`isScannerBurst`, and spec 9). A `scanner: 0` row here means "no known-vendor
+scanner UA was seen," not "no burst scanning happened" — a scanner that
+bursts without a recognizable UA is invisible to this build. This matters
+because this document is the deliverable that decides whether to build the
+client.
 
 ## Smoke test (connectivity check only — not a calibration data point)
 
@@ -142,9 +172,17 @@ implies about coverage for that client.
 
 ### 2. Was any true open misclassified as `mpp`, `prefetch`, or `scanner`?
 
-This is what row 4 (`apple-mail-mpp-off`) is specifically designed to catch:
-a known-human open that comes back classified as anything other than `open`
-is a false negative in the classifier. If this happens, the constants in
+Row 4 (`apple-mail-mpp-off`) does **not** test this by its classification —
+per the matrix section above, `isApplePrivacyProxy()` classifies by
+user-agent shape, and Apple Mail presents that same shape whether Protect
+Mail Activity is on or off, so row 4 is expected to classify `mpp` even on a
+genuine human open. Use row 4's raw hit timing (`occurred_at` vs. `sent_at`)
+to judge whether the open was real, not its classification column.
+
+The real check for this question is any row where you know with certainty a
+fetch was a genuine human open — most usefully row 5 (`real-contact`), if
+run — coming back classified as anything other than `open`. That is a
+false negative in the classifier. If it happens, the constants in
 `src/classify.ts` (`isApplePrivacyProxy`, `PREFETCH_WINDOW_MS`,
 `SCANNER_BURST_COUNT`/`SCANNER_BURST_WINDOW_MS`) need tuning — note exactly
 what changed and why.
@@ -153,10 +191,15 @@ what changed and why.
 
 ### 3. Is the signal worth building a client around?
 
-State plainly what the measured MPP distortion rate (row 3 vs. row 4) and
-the Gmail `unknown` rate (rows 1–2) imply for the rest of this plan. If the
-false-positive share is high and device attribution mostly returns
-`unknown` because the user's real contacts are on Gmail, say so — that is a
-legitimate and valuable outcome of this plan, not a failure of it.
+State plainly what the Gmail `unknown` rate (rows 1–2) implies for the rest
+of this plan. Rows 3 and 4 do not yield a classification-based MPP
+distortion rate — both are expected to classify `mpp` regardless of the
+Protect Mail Activity toggle (see the matrix section above), so that
+comparison is not available from this matrix. If you compared row 4's raw
+hit timing against its send time (per question 2) to judge whether Protect
+Mail Activity was actually off, factor that reading in here instead. If the
+Gmail `unknown` rate is high because the user's real contacts are on Gmail,
+say so — that is a legitimate and valuable outcome of this plan, not a
+failure of it.
 
 *(unanswered — pending calibration run)*

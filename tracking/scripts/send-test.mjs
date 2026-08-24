@@ -71,6 +71,16 @@ const subject = `Postbox tracking test — ${label ?? recipient}`;
  */
 const senderIp = process.env.SENDER_IP ?? null;
 
+// Constructed before the token insert so a synchronous throw here can't
+// leave an orphan token row behind with no rollback (that orphan would
+// later be misread by report.mjs as "sent but never opened").
+const transport = nodemailer.createTransport({
+  host: 'smtp.gmail.com',
+  port: 465,
+  secure: true,
+  auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD },
+});
+
 try {
   await sql`
     insert into tokens (token, account_id, message_id, recipient_email, subject, sender_ip)
@@ -88,13 +98,6 @@ try {
 // (src/pixel.ts), not the markup.
 const html = `<p>Tracking calibration test. Please open this once, normally, `
   + `then reply "done".</p><img alt="" src="${process.env.PIXEL_BASE}/o/${token}.png">`;
-
-const transport = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 465,
-  secure: true,
-  auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD },
-});
 
 try {
   await transport.sendMail({

@@ -286,6 +286,15 @@ See `docs/frontend-guide.md` for the routing rules and proposed stack.
   web UI is invisible until the Chrome extension expansion ships.
 - **L6. Gmail IMAP limits:** ~15 concurrent connections and ~2.5 GB/day
   download per account. Sync must respect both.
+- **L7. The burst half of `scanner` classification (5.4) is unreachable as
+  built.** The endpoint checks `isDuplicate()` against `recentHitTimes`
+  before calling `classifyHit()`, and returns early on any prior hit inside
+  the 10s dedupe window — which fully contains the burst rule's 5s window.
+  So `classifyHit()` only ever runs with `recentHitTimes: []` in production;
+  `isScannerBurst` is exercised only by direct unit-test calls. Known-vendor
+  UA matching still classifies `scanner` correctly; only the hit-count burst
+  path is dead. The real fix — classify before dedupe, or track raw
+  arrivals separately from recorded opens — is deferred to a later plan.
 
 ## 10. Success Criteria
 
