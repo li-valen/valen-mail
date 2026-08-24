@@ -6,6 +6,15 @@ import pg from 'pg';
  *  are configured, since IMAP connections are separate from this pool. */
 const MAX_POOL_SIZE = 4;
 
+/** Defensive truncation applied to `snippet` at the write path, independent
+ *  of Task 3's own truncation to 280 chars. This is NOT a CHECK constraint:
+ *  a constraint would reject the whole insert on a caller bug, silently
+ *  halting sync for that message; truncating here just bounds storage
+ *  unconditionally, with no failure mode. Deliberately larger than 280 so a
+ *  future change to the intended limit does not silently get masked by
+ *  this one. */
+const SNIPPET_MAX_LENGTH = 500;
+
 export interface MessageInput {
   readonly accountId: string;
   readonly uid: number;
@@ -69,7 +78,7 @@ export function openDb(databaseUrl: string): Db {
         `insert into messages (account_id, uid, folder, message_id, thread_id, subject,
            from_name, from_email, to_emails, cc_emails, date, snippet, flags, labels,
            has_attach, size_bytes)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,left($12, ${SNIPPET_MAX_LENGTH}),$13,$14,$15,$16)
          on conflict (account_id, folder, uid) do update set
            subject=excluded.subject, flags=excluded.flags, labels=excluded.labels,
            snippet=excluded.snippet, has_attach=excluded.has_attach`,

@@ -17,6 +17,13 @@ create table if not exists messages (
   to_emails    text[],
   cc_emails    text[],
   date         timestamptz,
+  -- Bounded at the write path, not by a constraint here: upsertMessage
+  -- wraps this parameter in left($n, 500) before insert. A CHECK would
+  -- reject the whole insert on a caller bug and silently stop that
+  -- message from syncing; truncation just bounds storage unconditionally.
+  -- Task 3's normalizeMessage truncates to 280 chars before this is ever
+  -- called; 500 here is deliberate headroom so a future change to that
+  -- 280 limit does not silently get masked by this one.
   snippet      text,
   flags        text[],
   labels       text[],
