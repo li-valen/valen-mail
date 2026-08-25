@@ -61,6 +61,13 @@ export default function App() {
 
       <main className="inbox" aria-label="Inbox" aria-busy={gate.status === 'checking'}>
         <div className="inbox__inner">
+          {/* Visually hidden, not absent: day rules render as <h2> inside
+              InboxList, and with no <h1> anywhere in the shell a screen
+              reader's document outline started at level 2. DESIGN.md's
+              layout calls for no visible page title (client/DESIGN.md has
+              no chrome for one), so this gives the outline a real root
+              without adding anything to look at. */}
+          <h1 className="visually-hidden">Inbox</h1>
           {gate.status === 'error' && <SessionError message={gate.message} onRetry={retry} />}
           {gate.status === 'authorized' && <InboxList />}
         </div>

@@ -24,6 +24,10 @@
   display: grid;
   grid-template-columns: 1fr auto;
   column-gap: var(--s-4);
+  row-gap: var(--s-1); /* DESIGN.md §4.1's .row sample — inert with no
+                           snippet line rendered today (nothing wraps to a
+                           second grid row yet), kept anyway so this rule
+                           does not silently drift from the token contract. */
   align-items: baseline;
   min-height: var(--row-min-h);
   padding-block: var(--s-2);
@@ -66,12 +70,17 @@
   color: var(--fg-secondary);
 }
 
+/* DESIGN.md §3.3 puts tabular-nums on the .row__meta CONTAINER, not just
+   the timestamp — it inherits, so this also covers .row__account (the
+   account-id stub), which is correct: DESIGN.md's own §3.3 selector list
+   includes .row__meta by name. */
 .row__meta {
   display: flex;
   align-items: center;
   gap: var(--s-2);
   flex-shrink: 0;
   color: var(--fg-secondary);
+  font-variant-numeric: tabular-nums;
 }
 
 .row__account {
@@ -87,6 +96,5 @@
 .row__time {
   font-family: var(--font-mono);
   font-size: var(--t-xs);
-  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }

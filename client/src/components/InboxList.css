@@ -12,14 +12,31 @@
   gap: var(--s-2);
 }
 
-/* The day rule (DESIGN.md §3.1, §4.2): Bricolage Grotesque, condensed —
-   the ONLY element in the product that uses the display face. --s-10
-   above / --s-4 below, per §4.2 ("more space above a heading than
-   below it"), except the very first one, which needs no lead-in. */
+/* The day rule (DESIGN.md §3.1, §4.2, §6 component #6): Bricolage
+   Grotesque, condensed — the ONLY element in the product that uses the
+   display face. --s-10 above / --s-4 below, per §4.2 ("more space above a
+   heading than below it"), except the very first one, which needs no
+   lead-in.
+
+   Component #6's states are "default / stuck", and its anatomy line says
+   "sticky at the inbox scroller top" — DESIGN.md specifies no visual
+   difference for the stuck state beyond that (no border, no shadow: this
+   product kills hairline rules and card-adjacent chrome outright, §8), so
+   nothing is invented here beyond what sticking requires functionally:
+   `background: var(--bg-inbox)` opaque (the same token .inbox's own
+   background already uses, so it's not a new colour — without it,
+   scrolling rows would show through the stuck header, which reads as a
+   rendering bug, not a design choice), and `z-index: 1` so the next
+   section's stuck header cleanly replaces this one rather than the two
+   overlapping ambiguously as they hand off. */
 .day-rule__label {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   margin: 0;
   margin-block-start: var(--s-10);
   margin-block-end: var(--s-4);
+  padding-block: 2px; /* keeps the opaque stuck background off the glyphs' edges */
   font-family: var(--font-display);
   font-variation-settings: 'wdth' 85, 'opsz' 24;
   font-size: var(--t-xl);
@@ -27,6 +44,7 @@
   line-height: 1.15;
   letter-spacing: -0.02em;
   color: var(--fg-primary);
+  background: var(--bg-inbox);
 }
 
 .inbox-list__day:first-child .day-rule__label {
@@ -128,6 +146,15 @@
 }
 
 .inbox-list__load-more-button:hover:not(:disabled) {
+  background: var(--bg-active);
+}
+
+/* DESIGN.md §4.3 ("iOS PWA specifics"): never remove the tap highlight
+   without pairing a real :active — this button strips
+   -webkit-tap-highlight-color above, so it needs its own press feedback
+   for touch, where :hover never fires. Matches .inbox-list__retry's own
+   :active rule above it. */
+.inbox-list__load-more-button:active:not(:disabled) {
   background: var(--bg-active);
 }
 
