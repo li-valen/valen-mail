@@ -522,6 +522,26 @@ export function createFakeDb(): FakeDb {
     async setSyncState(accountId, folder, state) {
       syncStates.set(`${accountId}|${folder}`, state);
     },
+    async updateStoredFlag(accountId, folder, uid, flag, value) {
+      // The pool suites never exercise the flag write path — it is an API
+      // route, not part of the sync cycle — so this is the minimum that
+      // keeps this fake a complete `Db`. It applies the change to whatever
+      // this fake already recorded via upsertMessage, idempotently in both
+      // directions, exactly like the real UPDATE.
+      const index = upserts.findIndex(
+        (message) =>
+          message.accountId === accountId && message.folder === folder && message.uid === uid,
+      );
+      if (index === -1) return false;
+      const message = upserts[index]!;
+      const present = message.flags.includes(flag);
+      if (value === present) return true;
+      const flags = value
+        ? [...message.flags, flag]
+        : message.flags.filter((existing) => existing !== flag);
+      upserts[index] = { ...message, flags };
+      return true;
+    },
     async close() {},
   };
 }

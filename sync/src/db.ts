@@ -210,6 +210,35 @@ export interface Db {
   getSyncState(accountId: string, folder: string): Promise<SyncStateInput | null>;
   /** See getSyncState above. */
   setSyncState(accountId: string, folder: string, state: SyncStateInput): Promise<void>;
+  /**
+   * Applies ONE already-committed IMAP flag change to the stored row, so
+   * the change survives until the next sync cycle re-reads the real flags
+   * off the server.
+   *
+   * Called only AFTER the IMAP write succeeded (see api/flags.ts) — this
+   * is a cache repair, never the source of truth, and it must never run
+   * optimistically ahead of the remote write. Without it the row reverts
+   * to bold on the next poll and the user watches a message they just
+   * opened mark itself unread again.
+   *
+   * Idempotent in both directions, and deliberately not a
+   * read-modify-write: adding a flag the row already carries and removing
+   * one it does not are both no-ops inside a single UPDATE, so there is no
+   * window between reading the array and writing it back for a concurrent
+   * sync cycle's `upsertMessage` to fall into.
+   *
+   * Returns true when a row was updated, false when none matched — a
+   * message the API can address on the server but which this store has
+   * never synced (an old UID below the backfill watermark) is a real,
+   * non-exceptional case, and the remote write still stands.
+   */
+  updateStoredFlag(
+    accountId: string,
+    folder: string,
+    uid: number,
+    flag: string,
+    value: boolean,
+  ): Promise<boolean>;
   close(): Promise<void>;
 }
 
@@ -580,6 +609,35 @@ export function openDb(databaseUrl: string): Db {
         [accountId, folder, state.uidValidity?.toString() ?? null,
          state.lastSeenUid.toString(), state.backfillDone],
       );
+    },
+
+    async updateStoredFlag(accountId, folder, uid, flag, value) {
+      // Fully parameterized, including the flag itself — never string-built
+      // SQL from a route parameter. The flag is already constrained to two
+      // literals by ../imap/flags.ts's WRITABLE_FLAGS, and it is bound here
+      // anyway for the same reason pushFolderClause binds '\Flagged': an
+      // inlined backslash literal's meaning depends on the
+      // `standard_conforming_strings` GUC, and a bound parameter is never
+      // subject to that parsing at all.
+      //
+      // The CASE is what makes this idempotent without a prior read:
+      // array_append only when the flag is absent (so a repeat add cannot
+      // produce `{\Seen,\Seen}`), array_remove unconditionally (already a
+      // no-op when the flag is absent).
+      const result = await pool.query(
+        `update messages
+            set flags = case
+              when $5::boolean then
+                case when $4::text = any(coalesce(flags, '{}'::text[]))
+                     then flags
+                     else array_append(coalesce(flags, '{}'::text[]), $4::text) end
+              else array_remove(coalesce(flags, '{}'::text[]), $4::text)
+            end
+          where account_id = $1 and folder = $2 and uid = $3
+          returning uid`,
+        [accountId, folder, uid, flag, value],
+      );
+      return result.rows.length > 0;
     },
 
     async close() {

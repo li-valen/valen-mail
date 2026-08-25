@@ -31,19 +31,73 @@ export interface FakeDownloadCall {
   readonly partId: string | undefined;
 }
 
+/**
+ * One `messageFlagsAdd`/`messageFlagsRemove` call the fake IMAP client
+ * saw (Plan: flags write path).
+ *
+ * `operation` is the half that matters most: a test asserting "clearing
+ * \Seen used the SUBTRACTIVE op" is asserting that this service never
+ * read-modify-writes a whole flag set, which is the property that keeps a
+ * concurrent star from the Gmail app from being clobbered. `range` and
+ * `flags` are recorded verbatim so a test can prove exactly one UID and
+ * exactly one flag crossed the wire.
+ */
+export interface FakeFlagCall {
+  readonly operation: 'add' | 'remove';
+  readonly range: unknown;
+  readonly flags: readonly string[];
+  readonly options: Record<string, unknown> | undefined;
+  /** The mailbox that was open when the STORE was issued. */
+  readonly mailbox: string | null;
+}
+
 export function makeFakeConnection(options: {
   chunks?: readonly Buffer[];
   onDownload?: (call: FakeDownloadCall) => void;
   downloadError?: Error;
+  /** Records every flag write this connection is asked to perform. A
+   *  suite that expects NO write asserts the array it owns stayed empty. */
+  onFlags?: (call: FakeFlagCall) => void;
+  /** Every getMailboxLock path, in order — including the ones a flag write
+   *  opens, so a test can prove a rejected request opened nothing. */
+  onMailboxOpen?: (path: string) => void;
+  /** When set, both flag ops reject with it — a STORE that fails on the
+   *  wire. */
+  flagError?: Error;
+  /** What both flag ops RESOLVE to. Defaults true. `false` is how imapflow
+   *  reports a STORE the server did not apply (unresolvable UID, mailbox
+   *  open read-only) — it does not reject, which is exactly why that case
+   *  needs its own coverage. */
+  flagResult?: boolean;
+  /** accountId the fake reports, mirroring ImapConnection.accountId — read
+   *  by src/imap/flags.ts for its audit log. */
+  accountId?: string;
 }) {
+  let openMailbox: string | null = null;
+
+  const applyFlags =
+    (operation: 'add' | 'remove') =>
+    async (range: unknown, flags: readonly string[], storeOptions?: Record<string, unknown>) => {
+      options.onFlags?.({ operation, range, flags, options: storeOptions, mailbox: openMailbox });
+      if (options.flagError) throw options.flagError;
+      return options.flagResult ?? true;
+    };
+
   return {
+    accountId: options.accountId ?? 'acct1',
     rawClient: () => ({
-      getMailboxLock: async () => ({ release: () => {} }),
+      getMailboxLock: async (path: string) => {
+        openMailbox = path;
+        options.onMailboxOpen?.(path);
+        return { release: () => { openMailbox = null; } };
+      },
       download: async (uid: string, partId: string | undefined) => {
         options.onDownload?.({ uid, partId });
         if (options.downloadError) throw options.downloadError;
         return { content: bufferStream(options.chunks ?? [Buffer.from('bytes')]) };
       },
+      messageFlagsAdd: applyFlags('add'),
+      messageFlagsRemove: applyFlags('remove'),
     }),
   } as never;
 }
@@ -64,10 +118,50 @@ export function makeFakeDb(overrides: Record<string, unknown> = {}) {
     upsertAttachment: async () => {},
     getSyncState: async () => null,
     setSyncState: async () => {},
+    // Defaults to "a row was updated", which is the ordinary case for a
+    // message the client can see. A suite covering the partial-failure
+    // contract overrides it to return false or to throw.
+    updateStoredFlag: async () => true,
     applySchema: async () => {},
     close: async () => {},
     ...overrides,
   } as never;
+}
+
+/**
+ * One local flag write the fake store was asked to make, plus a db whose
+ * `updateStoredFlag` records into it.
+ *
+ * Separate from makeFakeDb's default because the flag suite needs to
+ * assert BOTH directions: that a successful IMAP write updated the row,
+ * and — the case that actually matters — that a FAILED one did not.
+ * `matched` stands in for "a row existed"; `error` makes the local write
+ * throw, which is the partial-failure path.
+ */
+export interface FakeStoredFlagCall {
+  readonly accountId: string;
+  readonly folder: string;
+  readonly uid: number;
+  readonly flag: string;
+  readonly value: boolean;
+}
+
+export function makeFlagRecordingDb(options: { matched?: boolean; error?: Error } = {}) {
+  const storedFlagCalls: FakeStoredFlagCall[] = [];
+  const db = makeFakeDb({
+    updateStoredFlag: async (
+      accountId: string,
+      folder: string,
+      uid: number,
+      flag: string,
+      value: boolean,
+    ) => {
+      storedFlagCalls.push({ accountId, folder, uid, flag, value });
+      if (options.error) throw options.error;
+      return options.matched ?? true;
+    },
+  });
+  return { db, storedFlagCalls };
 }
 
 export interface BudgetCall {

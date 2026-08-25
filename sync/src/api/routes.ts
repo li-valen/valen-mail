@@ -20,6 +20,7 @@ import { handlePushKey, handlePushSubscribe, handlePushUnsubscribe } from './pus
 import type { VapidConfig } from '../push/vapid';
 import { handleIdentities } from './identities.ts';
 import { handleMessage } from './message.ts';
+import { handleSetFlag } from './flags.ts';
 import {
   handleSend,
   SEND_RATE_LIMIT_MAX_ATTEMPTS,
@@ -503,6 +504,25 @@ export function createRouter(
         nowMs: Date.now(),
         fetchImpl,
       });
+    }
+
+    // The first route in this service that WRITES to a real mailbox, and
+    // the reason it is matched here rather than below: like the push and
+    // send writes above, it would otherwise fall through to the GET-only
+    // 404. Matched on PATCH alone, so any other method on this path takes
+    // that same 404 rather than a special-cased 405 — the convention every
+    // non-GET route in this file already follows.
+    //
+    // Everything it does lives in ./flags.ts, including the refusal of any
+    // flag name other than the two supported ones. Deliberately AFTER the
+    // auth gate and before the GET-only check; deliberately not reachable
+    // by GET at all.
+    const flagsMatch = path.match(/^\/api\/message\/([^/]+)\/([^/]+)\/([^/]+)\/flags$/);
+    if (flagsMatch && request.method === 'PATCH') {
+      const decoded = decodeSegments([flagsMatch[1] ?? '', flagsMatch[2] ?? '']);
+      if (decoded instanceof Response) return decoded;
+      const [accountId, folder] = decoded;
+      return handleSetFlag(db, pool, request, accountId!, folder!, flagsMatch[3] ?? '');
     }
 
     if (request.method !== 'GET') {
