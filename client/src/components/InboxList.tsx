@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, getInbox } from '../api';
 import type { InboxCursor, InboxMessage } from '../api';
 import type { AccountSummary } from '../accountRoster';
@@ -12,6 +12,7 @@ import { EmptyState } from '../ui/EmptyState';
 import { Skeleton } from '../ui/Skeleton';
 import MessageRow from './MessageRow';
 import { groupByDay } from './inboxDates';
+import { isCurrentSelection, resolveLoadMorePage } from './inboxPaging';
 import { messageKey } from './messageBody';
 
 // Re-exported so `InboxList.tsx` stays the one public entry point for both
@@ -145,6 +146,26 @@ export default function InboxList({
   // does not silently relabel a message from "Today" to "Yesterday" out
   // from under the reader mid-scroll.
   const [now] = useState(() => new Date());
+  /**
+   * Bumped once per {folder, account} selection — the fetch effect below
+   * does it on every run, including the initial mount. `loadMore` reads
+   * this synchronously right before it fetches, and again inside its
+   * `.then`/`.catch`: if the two reads disagree, the selection moved on
+   * while the request was in flight, and the page must be discarded (see
+   * ./inboxPaging's `resolveLoadMorePage`).
+   *
+   * A `ref`, not state: this is read inside async callbacks where a
+   * captured state value would just be a stale closure — the whole point
+   * is to see the CURRENT selection, not the one active when `loadMore`
+   * was called — and bumping it must not itself cause a render (the
+   * effect's own `setLoad`/`setCursor`/etc. already do that).
+   *
+   * This is the same discipline the fetch effect's local `cancelled` flag
+   * already uses, generalized: `loadMore` is a `useCallback` outside that
+   * effect, so it cannot close over its local flag and needs a
+   * ref-held equivalent instead.
+   */
+  const selectionRef = useRef(0);
 
   // Refetches whenever the selection changes, and only then: `folder` and
   // `account` are primitives, so a re-render that hands down an
@@ -156,8 +177,19 @@ export default function InboxList({
   // which would otherwise blink to zero on every folder switch.
   useEffect(() => {
     let cancelled = false;
+    // A new selection supersedes any `loadMore` still in flight for the
+    // previous one — bumped BEFORE the request below goes out, so even a
+    // resolution that lands on the very next tick already sees a
+    // mismatch. `isLoadingMore` is reset here too: it is the OLD
+    // selection's "Load more" button state, and without this it would
+    // stay stuck at "Loading…" on the new selection until the stale
+    // request settles — resolveLoadMorePage discards that settlement's
+    // page, but discarding also means it correctly skips the
+    // `setIsLoadingMore(false)` that would otherwise have cleared it.
+    selectionRef.current += 1;
     setLoad({ status: 'loading' });
     setLoadMoreError(null);
+    setIsLoadingMore(false);
 
     getInbox({ limit: PAGE_SIZE, folder, account }).then(
       (page) => {
@@ -195,6 +227,10 @@ export default function InboxList({
 
   const loadMore = useCallback(() => {
     if (isLoadingMore || cursor === null) return;
+    // Captured now, before the request goes out, so the resolution below
+    // can tell whether the selection it was issued for is still current.
+    // See `selectionRef` above and ./inboxPaging's `resolveLoadMorePage`.
+    const selectionId = selectionRef.current;
     setIsLoadingMore(true);
     setLoadMoreError(null);
 
@@ -207,14 +243,28 @@ export default function InboxList({
     // `InboxRequest` is shaped so they cannot travel apart.
     getInbox({ limit: PAGE_SIZE, folder, account, cursor }).then(
       (page) => {
+        // TRAP 2. The user may have switched folder/account while this
+        // request was in flight — the fetch effect above can cancel its
+        // OWN stale requests via `cancelled`, but has no way to cancel a
+        // promise this callback owns instead. Applying the page anyway
+        // would splice the OLD selection's rows onto the NEW selection's
+        // list, and the next `loadMore` click would page the wrong
+        // folder/account again right after. `resolveLoadMorePage` discards
+        // the page entirely once the selection has moved on; the loading
+        // flag was already reset by the fetch effect in that case, so this
+        // branch must not touch any state, including it.
+        const resolution = resolveLoadMorePage(selectionId, selectionRef.current, page);
+        if (resolution.kind === 'discard') return;
         // Functional update: a load-more that lands after a fast second
         // click (guarded above, but also after any future retry path)
         // must append to the latest list, not a stale closure over it.
-        setMessages((previous) => [...previous, ...page.messages]);
-        setCursor(page.nextCursor);
+        setMessages((previous) => [...previous, ...resolution.messages]);
+        setCursor(resolution.cursor);
         setIsLoadingMore(false);
       },
       (error: unknown) => {
+        // Same TRAP 2 discard, for the rejection path.
+        if (!isCurrentSelection(selectionId, selectionRef.current)) return;
         console.error('InboxList: load-more fetch failed', error);
         setLoadMoreError(messageFor(error));
         setIsLoadingMore(false);

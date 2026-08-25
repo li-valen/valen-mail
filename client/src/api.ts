@@ -102,7 +102,16 @@ export interface InboxAttachment {
   readonly partId: string;
   readonly filename: string | null;
   readonly mimeType: string | null;
-  readonly sizeBytes: string | null;
+  /** A JSON `number`, unlike `InboxMessage.size_bytes` below even though
+   *  both mirror the same `bigint` column. MESSAGE_SELECT (sync/src/db.ts)
+   *  emits this one through `json_build_object('sizeBytes',
+   *  att.size_bytes)`, and Postgres serialises a bigint inside
+   *  `json_build_object` unquoted — never through the pg driver's row
+   *  mapping, which is what forces `InboxMessage.size_bytes` to stay a
+   *  string. Confirmed against real Postgres in sync/tests/db.test.ts
+   *  (`sizeBytes: 51_201`, a numeric literal that a string would fail).
+   *  Not a typo; do not "fix" this to match its sibling. */
+  readonly sizeBytes: number | null;
 }
 
 /**
@@ -135,6 +144,12 @@ export interface InboxMessage {
   readonly flags: readonly string[] | null;
   readonly labels: readonly string[] | null;
   readonly has_attach: boolean;
+  /** A `string`, unlike `InboxAttachment.sizeBytes` above even though both
+   *  mirror the same `bigint` column: this field comes straight off the
+   *  `messages` row, so it takes the pg driver's bigint→string mapping
+   *  (see interface doc above), while the attachment field is built by
+   *  `json_build_object`, which serialises a bigint as an unquoted JSON
+   *  number instead. Not a typo. */
   readonly size_bytes: string | null;
   readonly attachments: readonly InboxAttachment[];
 }
@@ -390,10 +405,11 @@ export interface ParsedAddress {
  * with it:
  *
  *  - **`sizeBytes` here is the DECODED byte length** — the size of the
- *    saved file, a `number`. `InboxAttachment.sizeBytes` is the ENCODED
- *    size from BODYSTRUCTURE, as a `string`, roughly 4/3 larger for
- *    base64. Same field name, ~33% apart. This is the one to display;
- *    never cross-reference the other.
+ *    saved file, a `number`. `InboxAttachment.sizeBytes` is also a
+ *    `number` on the wire, but it is the ENCODED size from BODYSTRUCTURE,
+ *    roughly 4/3 larger for base64 — same field name, same JSON type,
+ *    ~33% apart in VALUE. This is the one to display; never
+ *    cross-reference the other.
  *  - **`partId` may be the empty string**, meaning the server could not
  *    establish an IMAP part number for it and refused to guess one. That
  *    is "not addressable", not "part zero": see
