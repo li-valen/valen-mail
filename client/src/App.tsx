@@ -7,8 +7,11 @@ import { foldAccountRoster } from './accountRoster';
 import { DEFAULT_FILTER } from './inboxFilters';
 import type { FolderId } from './inboxFilters';
 import type { InboxMessage } from './api';
+import Compose, { DISCARD_DRAFT_PROMPT } from './components/Compose';
+import type { ResultSummary } from './components/composeResults';
 import InboxList from './components/InboxList';
 import MessageView from './components/MessageView';
+import SentNotice from './components/SentNotice';
 import { messageKey } from './components/messageBody';
 import OpensRail from './components/OpensRail';
 import OpensView from './components/OpensView';
@@ -154,6 +157,22 @@ export default function App() {
   const contentRef = useRef<HTMLElement | null>(null);
   const listScrollRef = useRef(0);
   const openedKeyRef = useRef<string | null>(null);
+  // The all-ok confirmation for a send. Held HERE rather than in
+  // Compose.tsx because the composer closes on success — a confirmation
+  // rendered inside it would appear and vanish in the same frame.
+  const [sentNotice, setSentNotice] = useState<ResultSummary | null>(null);
+  // The sidebar's Compose button, so closing the composer returns focus
+  // to what opened it (AppShell's `composeRef` documents what happens at
+  // widths where that button is not focusable).
+  const composeTriggerRef = useRef<HTMLButtonElement | null>(null);
+  // Where to go back to when the composer closes. Opening Compose from
+  // the Opens page and landing on the Inbox afterwards would read as the
+  // app having forgotten where the user was.
+  const viewBeforeComposeRef = useRef<ViewId>('inbox');
+  // Whether the open composer holds anything worth losing. A ref, not
+  // state: it must never cause a render, and it is read exactly once, in
+  // the click handler of a sidebar control.
+  const isComposeDirtyRef = useRef(false);
 
   // Stable identity: InboxList lists this in an effect's dependency array.
   //
@@ -204,38 +223,89 @@ export default function App() {
     listScrollRef.current = 0;
   }, []);
 
+  /**
+   * Asks before a sidebar click throws away an unsent draft, and answers
+   * false if the user says no.
+   *
+   * Compose.tsx asks the SAME question (with the same wording — it owns
+   * the string) for Esc and its own Cancel button. This is the other half:
+   * a folder click while composing would otherwise discard the draft
+   * silently, which is the same unacceptable loss by a different route.
+   */
+  const canLeaveCompose = useCallback((): boolean => {
+    if (view !== 'compose') return true;
+    if (!isComposeDirtyRef.current) return true;
+    return window.confirm(DISCARD_DRAFT_PROMPT);
+  }, [view]);
+
   // Changing view closes the reader: coming back to the mail list later
   // and finding a message still open — one the user navigated away from —
   // reads as the app having ignored the navigation.
   const changeView = useCallback(
     (next: ViewId) => {
+      if (next === 'compose') {
+        // Remembered before the switch, and only from a non-compose view,
+        // so a second Compose click while composing cannot make the
+        // composer its own return destination.
+        if (view !== 'compose') viewBeforeComposeRef.current = view;
+        isComposeDirtyRef.current = false;
+        // A new message supersedes the last one's confirmation; leaving
+        // it up would have the shell reporting an older send above a
+        // composer the user is filling in now.
+        setSentNotice(null);
+        leaveReader();
+        setView('compose');
+        return;
+      }
+      if (!canLeaveCompose()) return;
+      isComposeDirtyRef.current = false;
       leaveReader();
       setView(next);
     },
-    [leaveReader],
+    [view, canLeaveCompose, leaveReader],
   );
+
+  /** Leaves the composer WITHOUT asking — Compose.tsx has already asked,
+   *  or there was nothing to ask about (a completed send). */
+  const closeCompose = useCallback(() => {
+    isComposeDirtyRef.current = false;
+    setView(viewBeforeComposeRef.current);
+    composeTriggerRef.current?.focus();
+  }, []);
+
+  const handleSent = useCallback((summary: ResultSummary) => {
+    setSentNotice(summary);
+  }, []);
+
+  const handleComposeDirtyChange = useCallback((isDirty: boolean) => {
+    isComposeDirtyRef.current = isDirty;
+  }, []);
 
   // Selecting a folder ALSO returns to the list view: the five folders are
   // the mail nav, so picking one from the Opens page means "show me that
   // mail", not "remember it for later". The account filter is untouched.
   const changeFolder = useCallback(
     (next: FolderId) => {
+      if (!canLeaveCompose()) return;
+      isComposeDirtyRef.current = false;
       leaveReader();
       setView('inbox');
       setFolder(next);
     },
-    [leaveReader],
+    [canLeaveCompose, leaveReader],
   );
 
   // Same, from the other axis: the folder is untouched, so
   // folder=sent + account=harvard is reachable in either click order.
   const changeAccount = useCallback(
     (next: string | null) => {
+      if (!canLeaveCompose()) return;
+      isComposeDirtyRef.current = false;
       leaveReader();
       setView('inbox');
       setAccount(next);
     },
-    [leaveReader],
+    [canLeaveCompose, leaveReader],
   );
 
   /**
@@ -296,6 +366,7 @@ export default function App() {
       accounts={accounts}
       isBusy={gate.status === 'checking'}
       contentRef={contentRef}
+      composeRef={composeTriggerRef}
       // ThemeToggle renders unconditionally: it is a device preference,
       // not a mailbox operation, so it needs no session. PushToggle stays
       // gated on `authorized`, not merely on the shell rendering: every
@@ -320,8 +391,22 @@ export default function App() {
 
       {gate.status === 'checking' && <ShellSkeleton />}
 
+      {isAuthorized && sentNotice !== null && (
+        <SentNotice summary={sentNotice} onDismiss={() => setSentNotice(null)} />
+      )}
+
       {isAuthorized &&
-        (view === 'inbox' ? (
+        (view === 'compose' ? (
+          // Replaces the list rather than overlaying it, for the same
+          // reason MessageView does: writing a message is the whole task
+          // while it is open. See Compose.tsx's header for why this is a
+          // view and not a dialog.
+          <Compose
+            onClose={closeCompose}
+            onSent={handleSent}
+            onDirtyChange={handleComposeDirtyChange}
+          />
+        ) : view === 'inbox' ? (
           // The list state is two columns at desktop (the shell's own
           // `lg:` breakpoint): the message list (flex, shrinks first)
           // plus OpensRail, which is `hidden` below `lg:` and simply

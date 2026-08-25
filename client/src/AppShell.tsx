@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import type { ReactNode, Ref } from 'react';
-import { Activity, Mailbox, Menu, X } from 'lucide-react';
+import { Activity, Mailbox, Menu, SquarePen, X } from 'lucide-react';
 
 import AccountList from './components/AccountList';
 import type { AccountSummary } from './accountRoster';
 import { FOLDER_ICONS } from './folderIcons';
 import { FOLDER_IDS, FOLDER_LABELS, headingFor } from './inboxFilters';
 import type { FolderId } from './inboxFilters';
+import { Button } from './ui/Button';
 import { cn } from './ui/cn';
 
 /**
@@ -60,7 +61,20 @@ import { cn } from './ui/cn';
  * of its own beyond whether the mobile drawer is open.
  */
 
-export type ViewId = 'inbox' | 'opens';
+/**
+ * PLAN 4 TASK 4 added `compose`.
+ *
+ * Compose is a VIEW, not a boolean beside one, and that is what buys the
+ * three things a separate `isComposing` flag would each have needed code
+ * for: the shell's `<h1>` announces "New message" instead of lying about
+ * a folder the user is not looking at, the mobile topbar's breadcrumb
+ * says the same, and `aria-current="page"` comes off every folder,
+ * because none of them IS the current page while the composer is open.
+ *
+ * It is still reached by an ACTION — the primary button below, not a nav
+ * item — because "write a new message" is not a place in the mailbox.
+ */
+export type ViewId = 'inbox' | 'opens' | 'compose';
 
 /** Re-exported so the existing
  *  `import type { AccountSummary } from './AppShell'` call sites keep
@@ -71,6 +85,7 @@ export type { AccountSummary };
 const VIEW_TITLES: Readonly<Record<ViewId, string>> = {
   inbox: 'Inbox',
   opens: 'Opens',
+  compose: 'New message',
 };
 
 /** Plunk's own nav-item classes, lifted to a helper so the folder list,
@@ -178,6 +193,21 @@ export interface AppShellProps {
    * that gives it meaning, and the shell stays a layout.
    */
   readonly contentRef?: Ref<HTMLElement>;
+  /**
+   * A ref onto the DESKTOP copy of the Compose button, so the composer
+   * can return focus to what opened it.
+   *
+   * The desktop copy specifically, because `sidebarContent` is rendered
+   * TWICE — once in the `hidden lg:flex` desktop rail and once in the
+   * mobile drawer — and a single ref handed to both would keep whichever
+   * mounted last. Below `lg:` the desktop copy is `display:none` and the
+   * drawer copy is `inert` the moment it closes, so NEITHER is focusable
+   * there and `focus()` is a harmless no-op: focus falls to the document,
+   * whose first stop is the drawer's own menu button. That is the honest
+   * degradation, not an oversight — a mobile drawer cannot hold focus for
+   * a view that replaced the thing behind it.
+   */
+  readonly composeRef?: Ref<HTMLButtonElement>;
   readonly children: ReactNode;
 }
 
@@ -192,6 +222,7 @@ export default function AppShell({
   sidebarFooter,
   isBusy = false,
   contentRef,
+  composeRef,
   children,
 }: AppShellProps) {
   const [isMobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -217,7 +248,12 @@ export default function AppShell({
   const isInbox = view === 'inbox';
   const heading = isInbox ? headingFor(folder, account) : VIEW_TITLES[view];
 
-  const sidebarContent = (
+  /**
+   * A function rather than a single JSX value because the sidebar is
+   * rendered twice (desktop rail and mobile drawer) and exactly one of
+   * those two copies may carry `composeRef` — see the prop's own note.
+   */
+  const renderSidebar = (composeButtonRef?: Ref<HTMLButtonElement>): ReactNode => (
     <>
       <div className="h-16 flex items-center justify-between px-6 border-b border-neutral-200 dark:border-border shrink-0">
         <Wordmark size="md" />
@@ -229,6 +265,24 @@ export default function AppShell({
           <X className="h-5 w-5" aria-hidden="true" />
           <span className="sr-only">Close menu</span>
         </button>
+      </div>
+
+      {/* The primary action, above the folder nav and deliberately
+          OUTSIDE the `<nav>` landmark below: writing a message is not a
+          place in the mailbox, so listing it among the folders would make
+          landmark navigation announce an action as a destination. Plunk's
+          button idiom, full-bleed to the nav's own `px-3` gutter. */}
+      <div className="px-3 pt-4 shrink-0">
+        <Button
+          ref={composeButtonRef}
+          type="button"
+          onClick={() => selectView('compose')}
+          aria-current={view === 'compose' ? 'page' : undefined}
+          className="w-full justify-start gap-3"
+        >
+          <SquarePen aria-hidden="true" />
+          Compose
+        </Button>
       </div>
 
       {/* ONE navigation landmark for the whole sidebar. Folders, the Opens
@@ -268,7 +322,7 @@ export default function AppShell({
   return (
     <div className="flex h-dvh bg-neutral-50 dark:bg-background">
       <div className="hidden lg:flex w-64 bg-card border-r border-neutral-200 dark:border-border flex-col">
-        {sidebarContent}
+        {renderSidebar(composeRef)}
       </div>
 
       {isMobileMenuOpen && (
@@ -289,7 +343,7 @@ export default function AppShell({
            duplicate of the nav. */
         inert={!isMobileMenuOpen}
       >
-        <div className="flex flex-col h-full">{sidebarContent}</div>
+        <div className="flex flex-col h-full">{renderSidebar()}</div>
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
