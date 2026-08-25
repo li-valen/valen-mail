@@ -14,19 +14,11 @@ const MIN_TOKEN_LENGTH = 32;
  */
 const MAX_SENDS = 25;
 
-/**
- * tracking has no identity/account config of its own — that's sync's
- * domain (Plan 4 Task 2's GET /api/identities, backed by loadConfig's
- * accounts). `tokens.account_id` is NOT NULL regardless (schema.sql), and
- * this route's wire contract carries no accountId, so every row minted
- * here is recorded under this fixed, documented sentinel rather than a
- * guessed or empty value. Rows written by other paths (scripts/
- * send-test.mjs) keep a real account id; rows written through this route
- * are simply excluded from `tokens_account_sent`'s per-account grouping
- * until a later task threads a real identity through end to end — a known
- * limitation, not an oversight (see task-p4t1-report.md).
- */
-const UNATTRIBUTED_ACCOUNT_ID = 'unattributed';
+/** Fix round 1 bound on accountId — an account slug/email, not free text. */
+const MAX_ACCOUNT_ID_CHARS = 64;
+
+/** Fix round 1 bound on messageId — an RFC 5322 Message-ID value, stored verbatim. */
+const MAX_MESSAGE_ID_CHARS = 256;
 
 /** Single fixed string for every "the request body doesn't fit the contract" case. */
 const INVALID_BODY_ERROR = 'invalid request body';
@@ -53,22 +45,51 @@ function extractBearerToken(request: Request): string | null {
   return match ? match[1]! : null;
 }
 
+/**
+ * Fix round 1: widened from {recipientEmail,subject}. accountId and
+ * messageId are now required, non-synthesized fields — see the
+ * `buildRow`/`isSendInput` comments below for why, and
+ * task-p4t1-report.md's "Fix round 1" section for the full reconciliation.
+ */
 interface SendInput {
   readonly recipientEmail: string;
   readonly subject: string;
+  readonly accountId: string;
+  readonly messageId: string;
 }
 
+/**
+ * All four fields are required non-empty strings; accountId and messageId
+ * are additionally length-capped (64 / 256) as a sanity bound on values
+ * that get stored verbatim — not a format check. messageId in particular
+ * is deliberately validated on length and non-emptiness ONLY: whether the
+ * caller includes angle brackets or matches RFC 5322's inner grammar is
+ * sync's business, not this route's; this function stores whatever
+ * message id sync intends to stamp on the outgoing mail, unmodified.
+ */
 function isSendInput(value: unknown): value is SendInput {
   if (typeof value !== 'object' || value === null) return false;
   const record = value as Record<string, unknown>;
   return (
     typeof record.recipientEmail === 'string' &&
     record.recipientEmail.length > 0 &&
-    typeof record.subject === 'string'
+    typeof record.subject === 'string' &&
+    typeof record.accountId === 'string' &&
+    record.accountId.length > 0 &&
+    record.accountId.length <= MAX_ACCOUNT_ID_CHARS &&
+    typeof record.messageId === 'string' &&
+    record.messageId.length > 0 &&
+    record.messageId.length <= MAX_MESSAGE_ID_CHARS
   );
 }
 
-/** Returns null for anything that isn't `{sends: SendInput[]}` — the single "malformed" verdict. */
+/**
+ * Returns null for anything that isn't
+ * `{sends: {recipientEmail,subject,accountId,messageId}[]}` — the single
+ * "malformed" verdict. `every` over the whole array means one bad element
+ * fails the entire batch: there is no partial mint, by construction (the
+ * caller below never sees a partially-valid array to iterate over).
+ */
 function parseSends(body: unknown): SendInput[] | null {
   if (typeof body !== 'object' || body === null) return null;
   const sends = (body as Record<string, unknown>).sends;
@@ -77,25 +98,20 @@ function parseSends(body: unknown): SendInput[] | null {
 }
 
 /**
- * `message_id` is NOT NULL on `tokens` (schema.sql), but no real SMTP
- * Message-ID exists yet at mint time — tokens are minted *before* the SMTP
- * send, per Plan 4 Task 3's ordering — and the wire contract has no field
- * for one. Each row gets a deterministic, token-derived placeholder in the
- * same `...@postbox.local` shape `scripts/send-test.mjs` already
- * established for a locally generated correlation id: unique via the
- * token's own uniqueness, and unambiguous to anyone reading the table that
- * it is not a captured header.
+ * Fix round 1: accountId/messageId are no longer synthesized here. They
+ * arrive from the caller (sync knows the sending account, and generates
+ * messageId before the SMTP send so it can stamp the same value on the
+ * outgoing mail's Message-ID header — see task-p4t1-report.md's "Fix
+ * round 1" section) and are stored verbatim, parameterized, in
+ * insertTokens. thread_id stays unset here by omission from
+ * InsertTokenInput/insertTokens entirely — threads attach on the receive
+ * side later, not at mint time.
  */
-function placeholderMessageId(token: string): string {
-  return `${token}@postbox.local`;
-}
-
 function buildRow(send: SendInput): InsertTokenInput {
-  const token = generateToken();
   return {
-    token,
-    accountId: UNATTRIBUTED_ACCOUNT_ID,
-    messageId: placeholderMessageId(token),
+    token: generateToken(),
+    accountId: send.accountId,
+    messageId: send.messageId,
     recipientEmail: send.recipientEmail,
     subject: send.subject,
   };
@@ -130,7 +146,10 @@ export default async function handler(request: Request): Promise<Response> {
 
   const sends = parseSends(body);
   if (!sends) {
-    console.error('tokens: rejected — request body did not match {sends:[{recipientEmail,subject}]}');
+    console.error(
+      'tokens: rejected — request body did not match ' +
+        '{sends:[{recipientEmail,subject,accountId,messageId}]}',
+    );
     return json({ error: INVALID_BODY_ERROR }, 400);
   }
   if (sends.length > MAX_SENDS) {

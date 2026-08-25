@@ -67,8 +67,33 @@ function rawBody(text: string, headers: Record<string, string> = AUTH): Request 
   });
 }
 
+/**
+ * Fix round 1: the wire contract widened to require accountId and
+ * messageId per send (in addition to recipientEmail and subject). This
+ * helper builds a fully-valid send with sensible defaults, overridable
+ * per field, so every test below stays terse instead of repeating all
+ * four fields inline — and so a future field addition has one place to
+ * update rather than N call sites drifting apart.
+ */
+function validSend(overrides: Partial<{
+  recipientEmail: string;
+  subject: string;
+  accountId: string;
+  messageId: string;
+}> = {}) {
+  return {
+    recipientEmail: 'a@x.com',
+    subject: 'hi',
+    accountId: 'acct-1',
+    messageId: '<m@postbox.example>',
+    ...overrides,
+  };
+}
+
 function sendsOfLength(n: number) {
-  return Array.from({ length: n }, (_, i) => ({ recipientEmail: `r${i}@x.com`, subject: 'hi' }));
+  return Array.from({ length: n }, (_, i) =>
+    validSend({ recipientEmail: `r${i}@x.com`, messageId: `<m${i}@postbox.example>` }),
+  );
 }
 
 afterAll(() => {
@@ -130,7 +155,7 @@ describe('tokens endpoint auth: bearer token check', () => {
     delete process.env.DATABASE_URL;
     const handler = await freshHandler();
 
-    const res = await handler(postBody({ sends: [{ recipientEmail: 'a@x.com', subject: 'hi' }] }, {}));
+    const res = await handler(postBody({ sends: [validSend()] }, {}));
 
     expect(res.status).toBe(401);
   });
@@ -160,7 +185,7 @@ describe('malformed body: fixed 400', () => {
     process.env.READ_API_TOKEN = TOKEN;
     const { handler } = await freshHandlerWithFakeDb();
 
-    const res = await handler(postBody({ sends: [{ subject: 'hi' }] }));
+    const res = await handler(postBody({ sends: [{ subject: 'hi', accountId: 'a', messageId: '<m@x>' }] }));
 
     expect(res.status).toBe(400);
   });
@@ -169,7 +194,7 @@ describe('malformed body: fixed 400', () => {
     process.env.READ_API_TOKEN = TOKEN;
     const { handler } = await freshHandlerWithFakeDb();
 
-    const res = await handler(postBody({ sends: [{ recipientEmail: '', subject: 'hi' }] }));
+    const res = await handler(postBody({ sends: [validSend({ recipientEmail: '' })] }));
 
     expect(res.status).toBe(400);
   });
@@ -178,9 +203,99 @@ describe('malformed body: fixed 400', () => {
     process.env.READ_API_TOKEN = TOKEN;
     const { handler } = await freshHandlerWithFakeDb();
 
-    const res = await handler(postBody({ sends: [{ recipientEmail: 'a@x.com', subject: 42 }] }));
+    const res = await handler(
+      postBody({ sends: [{ recipientEmail: 'a@x.com', subject: 42, accountId: 'a', messageId: '<m@x>' }] }),
+    );
 
     expect(res.status).toBe(400);
+  });
+
+  it('rejects a send item missing accountId', async () => {
+    process.env.READ_API_TOKEN = TOKEN;
+    const { handler, calls } = await freshHandlerWithFakeDb();
+
+    const res = await handler(
+      postBody({ sends: [{ recipientEmail: 'a@x.com', subject: 'hi', messageId: '<m@postbox.example>' }] }),
+    );
+
+    expect(res.status).toBe(400);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('rejects a send item whose accountId is an empty string', async () => {
+    process.env.READ_API_TOKEN = TOKEN;
+    const { handler } = await freshHandlerWithFakeDb();
+
+    const res = await handler(postBody({ sends: [validSend({ accountId: '' })] }));
+
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a send item missing messageId', async () => {
+    process.env.READ_API_TOKEN = TOKEN;
+    const { handler, calls } = await freshHandlerWithFakeDb();
+
+    const res = await handler(
+      postBody({ sends: [{ recipientEmail: 'a@x.com', subject: 'hi', accountId: 'acct-1' }] }),
+    );
+
+    expect(res.status).toBe(400);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('rejects a send item whose messageId is an empty string', async () => {
+    process.env.READ_API_TOKEN = TOKEN;
+    const { handler } = await freshHandlerWithFakeDb();
+
+    const res = await handler(postBody({ sends: [validSend({ messageId: '' })] }));
+
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects an accountId longer than 64 characters', async () => {
+    process.env.READ_API_TOKEN = TOKEN;
+    const { handler } = await freshHandlerWithFakeDb();
+
+    const res = await handler(postBody({ sends: [validSend({ accountId: 'a'.repeat(65) })] }));
+
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a messageId longer than 256 characters', async () => {
+    process.env.READ_API_TOKEN = TOKEN;
+    const { handler } = await freshHandlerWithFakeDb();
+
+    const res = await handler(postBody({ sends: [validSend({ messageId: 'm'.repeat(257) })] }));
+
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts accountId/messageId at exactly the length caps (64 / 256)', async () => {
+    process.env.READ_API_TOKEN = TOKEN;
+    const { handler } = await freshHandlerWithFakeDb();
+
+    const res = await handler(
+      postBody({ sends: [validSend({ accountId: 'a'.repeat(64), messageId: 'm'.repeat(256) })] }),
+    );
+
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects the whole batch when any single element is missing a required field — no partial mint', async () => {
+    process.env.READ_API_TOKEN = TOKEN;
+    const { handler, calls } = await freshHandlerWithFakeDb();
+
+    const res = await handler(
+      postBody({
+        sends: [
+          validSend({ recipientEmail: 'good@x.com' }),
+          { recipientEmail: 'bad@x.com', subject: 'hi' }, // missing accountId/messageId
+        ],
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    expect(calls).toHaveLength(0);
   });
 
   it('uses the identical fixed error string across every malformed-body case', async () => {
@@ -189,8 +304,13 @@ describe('malformed body: fixed 400', () => {
 
     const notJson = await handler(rawBody('nope'));
     const noSends = await handler(postBody({}));
+    const missingAccountId = await handler(
+      postBody({ sends: [{ recipientEmail: 'a@x.com', subject: 'hi', messageId: '<m@x>' }] }),
+    );
 
-    expect(await notJson.json()).toEqual(await noSends.json());
+    const bodies = await Promise.all([notJson.json(), noSends.json(), missingAccountId.json()]);
+    expect(bodies[0]).toEqual(bodies[1]);
+    expect(bodies[1]).toEqual(bodies[2]);
   });
 });
 
@@ -224,8 +344,8 @@ describe('token shape and ordering', () => {
     const res = await handler(
       postBody({
         sends: [
-          { recipientEmail: 'a@x.com', subject: 'hi' },
-          { recipientEmail: 'b@x.com', subject: 'yo' },
+          validSend({ recipientEmail: 'a@x.com' }),
+          validSend({ recipientEmail: 'b@x.com', messageId: '<m2@postbox.example>' }),
         ],
       }),
     );
@@ -254,23 +374,55 @@ describe('token shape and ordering', () => {
     const order = ['zed@x.com', 'amy@x.com', 'mel@x.com'];
 
     const res = await handler(
-      postBody({ sends: order.map((recipientEmail) => ({ recipientEmail, subject: 'hi' })) }),
+      postBody({
+        sends: order.map((recipientEmail, i) =>
+          validSend({ recipientEmail, messageId: `<m${i}@postbox.example>` }),
+        ),
+      }),
     );
     const body = await res.json();
 
     expect(body.tokens.map((t: { recipientEmail: string }) => t.recipientEmail)).toEqual(order);
   });
 
-  it('response items carry only token and recipientEmail — subject never echoed back', async () => {
+  it('response items carry only token and recipientEmail — subject/accountId/messageId never echoed back', async () => {
     process.env.READ_API_TOKEN = TOKEN;
     const { handler } = await freshHandlerWithFakeDb();
 
     const res = await handler(
-      postBody({ sends: [{ recipientEmail: 'a@x.com', subject: 'a secret-ish subject' }] }),
+      postBody({ sends: [validSend({ subject: 'a secret-ish subject', accountId: 'acct-secret' })] }),
     );
     const body = await res.json();
 
     expect(Object.keys(body.tokens[0])).toEqual(['token', 'recipientEmail']);
+  });
+});
+
+describe('accountId / messageId carried through verbatim (fix round 1)', () => {
+  it('binds accountId and messageId as parameters to the insert, unmodified', async () => {
+    process.env.READ_API_TOKEN = TOKEN;
+    const { handler, calls } = await freshHandlerWithFakeDb();
+    const accountId = 'sender-acct-1';
+    const messageId = '<real-message-id@gmail.com>';
+
+    const res = await handler(postBody({ sends: [validSend({ accountId, messageId })] }));
+
+    expect(res.status).toBe(200);
+    expect(calls[0]!.params).toContain(accountId);
+    expect(calls[0]!.params).toContain(messageId);
+  });
+
+  it('never synthesizes the old sentinels — no "unattributed" account id, no @postbox.local placeholder', async () => {
+    process.env.READ_API_TOKEN = TOKEN;
+    const { handler, calls } = await freshHandlerWithFakeDb();
+
+    const res = await handler(
+      postBody({ sends: [validSend({ accountId: 'real-acct', messageId: '<real@gmail.com>' })] }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(calls[0]!.params).not.toContain('unattributed');
+    expect(calls[0]!.params.some((p) => typeof p === 'string' && p.endsWith('@postbox.local'))).toBe(false);
   });
 });
 
@@ -282,7 +434,7 @@ describe('database failure', () => {
     });
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    const res = await handler(postBody({ sends: [{ recipientEmail: 'a@x.com', subject: 'hi' }] }));
+    const res = await handler(postBody({ sends: [validSend()] }));
 
     expect(res.status).toBe(500);
     const body = await res.json();

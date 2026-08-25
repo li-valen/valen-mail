@@ -181,18 +181,23 @@ export async function recordOpen(input: RecordOpenInput): Promise<void> {
 
 /**
  * Row shape accepted by `insertTokens` (Plan 4 Task 1, POST /api/tokens).
- * `account_id` and `message_id` are NOT NULL on `tokens` (see schema.sql),
- * but that route's wire contract — `{sends:[{recipientEmail,subject}]}` —
- * carries neither: identities are sync's domain (Plan 4 Task 2), not
- * tracking's, and this service has no account config of its own to
- * consult (contrast `scripts/send-test.mjs`, which had `GMAIL_USER`
- * available because it ran as that account). A real SMTP Message-ID also
- * doesn't exist yet at mint time — tokens are minted *before* the SMTP
- * send, per Plan 4 Task 3's ordering. `api/tokens.ts` is responsible for
- * filling both fields with its documented placeholders before calling
- * this function; `insertTokens` itself just persists whatever
- * fully-formed row it's given, matching every other function in this
- * file (compare `RecordOpenInput` above).
+ * `account_id` and `message_id` are NOT NULL on `tokens` (see schema.sql).
+ *
+ * Fix round 1: the wire contract widened to
+ * `{sends:[{recipientEmail,subject,accountId,messageId}]}` — both fields
+ * are now required, caller-supplied values (sync knows the sending
+ * account, and generates the RFC 5322 Message-ID before the SMTP send so
+ * the same value can be stamped on the outgoing mail — see
+ * task-p4t1-report.md's "Fix round 1" section for the full
+ * reconciliation). The two placeholder values this module briefly used
+ * (a fixed `'unattributed'` account id and a token-derived
+ * `...@postbox.local` message id, back when the contract carried neither
+ * field) are gone entirely — a leftover placeholder path would silently
+ * mask a caller bug now that real values are expected on every element.
+ * `api/tokens.ts` validates both fields (non-empty, length-capped) and
+ * passes them straight through unmodified; `insertTokens` itself still
+ * just persists whatever fully-formed row it's given, matching every
+ * other function in this file (compare `RecordOpenInput` above).
  */
 export interface InsertTokenInput {
   readonly token: string;
