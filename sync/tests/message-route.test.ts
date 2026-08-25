@@ -120,6 +120,21 @@ describe('parsed message route / html + text + attachment', () => {
     const response = await get(routerServing('html-text-attachment'));
     expect(response.headers.get('cache-control')).toBe('private, no-store');
   });
+
+  // Deliberate absence, not an oversight. The reader iframe's
+  // self-navigation gap (task-p6t2-report.md's "Residual gap") is closed
+  // by a `Content-Security-Policy: frame-src 'none'` header — see
+  // sync/src/api/static.ts's CONTENT_SECURITY_POLICY doc comment — but
+  // only on the app shell response, never here: a browser only ever
+  // interprets a Content-Security-Policy header on a response that
+  // becomes a Document (or a Worker), and this route's JSON is read via
+  // `fetch()`/`.json()` and never becomes one. The document that actually
+  // creates — and would risk — the reader's iframe is the app shell that
+  // later renders this data, not this response.
+  it('carries no Content-Security-Policy header — this JSON response never becomes a Document', async () => {
+    const response = await get(routerServing('html-text-attachment'));
+    expect(response.headers.get('content-security-policy')).toBeNull();
+  });
 });
 
 describe('parsed message route / bodies that are missing', () => {

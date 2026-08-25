@@ -43,6 +43,47 @@ describe('createStaticHandler — serving a real fixture tree', () => {
     expect(response.headers.get('cache-control')).toBe('no-cache');
   });
 
+  // Closes the reader iframe's self-navigation gap (task-p6t2-report.md's
+  // "Residual gap"): a `<meta http-equiv="refresh">` inside a message body
+  // cannot be stopped by the CSP `<meta>` inside its own srcdoc (a document
+  // cannot restrict where it navigates itself) or by any sandbox token (a
+  // meta-refresh is declarative, not scripting). `frame-src` on THIS
+  // document — the one that creates the reader's iframe — is enforced
+  // against every later navigation of that nested browsing context
+  // regardless of who triggers it, which is what actually closes it. See
+  // ../src/api/static.ts's CONTENT_SECURITY_POLICY doc comment for the
+  // full reasoning, including the empirical browser check behind it.
+  it('serves index.html with a frame-src \'none\' Content-Security-Policy header', async () => {
+    const response = await serve('GET', '/index.html');
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-security-policy')).toBe("frame-src 'none'");
+  });
+
+  it('serves the bare root path with the same CSP header, not just /index.html directly', async () => {
+    const response = await serve('GET', '/');
+    expect(response.headers.get('content-security-policy')).toBe("frame-src 'none'");
+  });
+
+  it('the SPA fallback (a client-side route with no matching file) also carries the CSP header', async () => {
+    const response = await serve('GET', '/thread/abc123');
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-security-policy')).toContain("frame-src 'none'");
+  });
+
+  // Non-vacuity + scope: proves the header is not a blanket addition to
+  // every response. If CONTENT_SECURITY_POLICY's conditional were dropped
+  // (always attached) this would fail; if it were never attached at all,
+  // the three tests above would fail instead — together they pin the
+  // header to exactly the html responses, nothing else.
+  it('does not send a Content-Security-Policy header on non-html responses', async () => {
+    const asset = await serve('GET', '/assets/app-Abc123.js');
+    const worker = await serve('GET', '/sw.js');
+    const manifest = await serve('GET', '/manifest.webmanifest');
+    expect(asset.headers.get('content-security-policy')).toBeNull();
+    expect(worker.headers.get('content-security-policy')).toBeNull();
+    expect(manifest.headers.get('content-security-policy')).toBeNull();
+  });
+
   it('serves sw.js with no-cache — a stale service worker is nearly impossible to evict', async () => {
     const response = await serve('GET', '/sw.js');
     expect(response.status).toBe(200);

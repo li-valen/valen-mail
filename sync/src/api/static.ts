@@ -31,6 +31,69 @@ const IMMUTABLE_LONG_CACHE = 'public, max-age=31536000, immutable';
 const NOSNIFF = 'nosniff';
 
 /**
+ * Closes a gap the message reader's own report named and could not close
+ * from `client/` (.superpowers/sdd/2026-08-24-web-client/task-p6t2-
+ * report.md's "Residual gap" section): the reader embeds a
+ * message's unsanitised html in `<iframe sandbox="allow-popups
+ * allow-popups-to-escape-sandbox" srcdoc="...">` (no `allow-scripts`, no
+ * `allow-same-origin`) with a CSP `<meta>` INSIDE that srcdoc
+ * (client/src/components/messageBody.ts's `contentSecurityPolicyFor`).
+ * That inner CSP cannot help here: a document cannot use its own policy to
+ * restrict where it navigates ITSELF, and no sandbox token blocks a
+ * `<meta http-equiv="refresh">` from doing exactly that — it is a
+ * declarative HTML navigation, not scripting, so the missing
+ * `allow-scripts` flag does not touch it either. A message can therefore
+ * plant a meta-refresh that silently swaps the sandboxed message body for
+ * attacker-chosen content inside the same visual chrome.
+ *
+ * `frame-src` is enforced by the EMBEDDER against every navigation of a
+ * nested browsing context it owns — the srcdoc iframe's *initial* load
+ * included — for as long as that browsing context lives, regardless of
+ * who triggers a later navigation of it (the parent, or the framed
+ * content itself). That makes it exactly the tool for this: set here, on
+ * THIS document (the one that creates the reader's iframe), it blocks any
+ * later meta-refresh/self-navigation of that iframe to a real URL.
+ *
+ * Verified empirically (not from memory of the spec) before shipping this,
+ * because the risk of a wrong guess is exactly "blanks the app": a
+ * headless Chromium check of `frame-src 'none'` alongside a sandboxed
+ * `srcdoc` iframe showed (1) the srcdoc iframe's OWN initial content still
+ * renders — `frame-src` does not gate the special `about:srcdoc` load, so
+ * the reader keeps working — while (2) a `<meta http-equiv="refresh">`
+ * inside that same srcdoc, pointed at a real external URL, is blocked with
+ * the browser's own console error naming the exact directive: `Framing
+ * '<url>' violates ... "frame-src 'none'". The request has been blocked.`
+ * That is this fix, confirmed working before being written down as one.
+ *
+ * No other directive is added. `default-src` is deliberately NOT set:
+ * this app shell loads same-origin hashed assets, a Google Fonts
+ * stylesheet and its font files, and makes same-origin `fetch` calls —
+ * none of that is broken today only because no CSP exists yet, and
+ * `default-src 'self'` would immediately require re-permitting
+ * script-src (incl. the inline dark-mode script in <head>), style-src,
+ * font-src and connect-src by hand, which is exactly the "sprawling
+ * policy" risk this task warns against for a fix that only needs to say
+ * "no navigable frames." `frame-ancestors` (who may embed THIS page) is a
+ * different, unrelated threat — clickjacking of the whole app, not
+ * self-navigation of a frame it creates — so it is left for whoever picks
+ * that up, not folded in here. `child-src`, frame-src's older superset
+ * fallback, is not added either: every browser this app targets has
+ * understood `frame-src` since CSP Level 2, so the fallback adds surface
+ * without covering anything frame-src does not already.
+ *
+ * Applied only to text/html responses (see tryServeFile) — the only
+ * responses from this module that can ever become a Document capable of
+ * embedding a frame in the first place. sync/src/api/message.ts's parsed-
+ * message JSON is deliberately NOT given this header: a
+ * Content-Security-Policy header on a response consumed via `fetch()` and
+ * read as JSON is never interpreted as a policy by any browser — CSP only
+ * takes effect on a response that becomes a Document (or a Worker), and
+ * that response never does. The document that actually creates and later
+ * risks the iframe's self-navigation is this one.
+ */
+const CONTENT_SECURITY_POLICY = "frame-src 'none'";
+
+/**
  * The three paths (plus the extensionless directory root, which always
  * resolves to `/index.html` — see resolvePathWithinRoot) that must never be
  * cached beyond revalidation.
@@ -222,16 +285,22 @@ async function tryServeFile(
   }
 
   const cacheControl = forcedCacheControl ?? cacheControlFor(resolved.rootRelativePath);
-  // Built as one immutable literal (a conditional spread for the one
-  // optional header) rather than a mutable object assigned into after
+  const contentType = contentTypeFor(resolved.absolutePath);
+  // Built as one immutable literal (a conditional spread for the two
+  // optional headers) rather than a mutable object assigned into after
   // construction — this project's coding style treats "build the whole
   // value, then hand it over" as the default, not "build a shell, then
   // mutate it into shape".
   const headers: Record<string, string> = {
-    'content-type': contentTypeFor(resolved.absolutePath),
+    'content-type': contentType,
     'x-content-type-options': NOSNIFF,
     'content-length': String(data.length),
     ...(cacheControl ? { 'cache-control': cacheControl } : {}),
+    // Only an html response can ever become a Document that embeds a
+    // frame — see CONTENT_SECURITY_POLICY's own doc comment for the full
+    // reasoning and why every other response type (assets, sw.js,
+    // manifest) is deliberately left without it.
+    ...(contentType === CONTENT_TYPES['.html'] ? { 'content-security-policy': CONTENT_SECURITY_POLICY } : {}),
   };
 
   return new Response(isHead ? null : data, { status: 200, headers });
