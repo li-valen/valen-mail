@@ -1,5 +1,6 @@
 import { getPushKey, savePushSubscription, deletePushSubscription } from './pushApi';
 import { urlBase64ToUint8Array } from './pushSupport';
+import { ApiError } from './api';
 
 /**
  * Turning push on and off, as three functions with their dependencies
@@ -16,6 +17,29 @@ import { urlBase64ToUint8Array } from './pushSupport';
  * PushToggle.tsx: a copy in the component is free to drift into a mount
  * effect, which is exactly the shape that fails.
  */
+
+/**
+ * A log-safe description of a caught error (fix round 1).
+ *
+ * `console.error('...', error)` printed the raw object, and a
+ * `DOMException` from `pushManager.subscribe()` or `unsubscribe()` can
+ * name the subscription endpoint in its message. An endpoint is a
+ * capability URL — whoever reads one out of a console, a screenshot, or a
+ * pasted bug report can push to that device — so ./pushApi.ts's header
+ * rule ("nothing here logs an endpoint") has to hold on this side of the
+ * boundary too, not just for the requests.
+ *
+ * The error's TYPE is what is actually diagnostic here (`NotAllowedError`
+ * vs `AbortError` vs `NotSupportedError` are three different problems with
+ * three different fixes), and the type is exactly the part that carries no
+ * endpoint. `ApiError` additionally contributes its status, which is
+ * likewise safe — its own message is only a path plus a status code.
+ */
+function describeError(error: unknown): string {
+  if (error instanceof ApiError) return `ApiError (status ${error.status})`;
+  if (error instanceof Error) return error.name;
+  return 'a non-Error value';
+}
 
 /** Where the service worker is served from. Site root, so its scope is
  *  "/" — a worker registered from a subdirectory can only receive pushes
@@ -102,11 +126,11 @@ export async function enablePush(deps: EnablePushDeps): Promise<EnableResult> {
     await deps.saveSubscription(subscription.toJSON());
     return { ok: true };
   } catch (error) {
-    // The caught error is logged, not returned: an ApiError from
-    // savePushSubscription names only a path and a status, but a
-    // DOMException from `subscribe` can name the endpoint, and the
-    // returned message is rendered on screen.
-    console.error('push: could not subscribe this browser', error);
+    // Neither the returned message nor the log line carries the error's
+    // own text: the returned one is rendered on screen and the logged one
+    // lands in a console, and a DOMException from `subscribe` can name the
+    // endpoint. The type is the diagnostic part and is endpoint-free.
+    console.error(`push: could not subscribe this browser — ${describeError(error)}`);
     return failure('failed');
   }
 }
@@ -141,7 +165,7 @@ export async function disablePush(deps: DisablePushDeps): Promise<DisableResult>
     await deps.deleteSubscription(subscription.endpoint);
     return { ok: true };
   } catch (error) {
-    console.error('push: could not fully unsubscribe this browser', error);
+    console.error(`push: could not fully unsubscribe this browser — ${describeError(error)}`);
     return { ok: false, message: 'Postbox could not turn notifications off completely.' };
   }
 }
@@ -162,7 +186,7 @@ export async function readPushState(deps: ReadPushStateDeps): Promise<boolean> {
   try {
     return (await deps.getSubscription()) !== null;
   } catch (error) {
-    console.error('push: could not read the current subscription state', error);
+    console.error(`push: could not read the current subscription state — ${describeError(error)}`);
     return false;
   }
 }

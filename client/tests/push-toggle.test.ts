@@ -587,3 +587,143 @@ describe('the PushToggle guards themselves (not vacuous)', () => {
     expect('<button type="button" className="push-toggle">On</button>').not.toMatch(SWITCH_ROLE);
   });
 });
+
+// =====================================================================
+// Fix round 1
+// =====================================================================
+
+/**
+ * Fix 5. Neither the rendered message nor the CONSOLE may carry a
+ * subscription endpoint.
+ *
+ * The returned-message half was already covered; this is the console
+ * half, which was not. `console.error('...', error)` printed the raw
+ * object, and a DOMException from `subscribe()`/`unsubscribe()` can name
+ * the endpoint in its message — a capability URL, readable by anyone who
+ * sees a screenshot or a pasted bug report.
+ */
+describe('push logging never carries an endpoint', () => {
+  const SECRET = 'https://push.example/SECRET-SUBSCRIPTION-PATH';
+
+  /** What a browser really throws here: the endpoint is in `message`,
+   *  never in `name`. */
+  function domExceptionLike(): Error {
+    const error = new Error(`Registration failed for ${SECRET}`);
+    error.name = 'NotAllowedError';
+    return error;
+  }
+
+  function captureConsole() {
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      lines.push(args.map(String).join(' '));
+    });
+    return { lines, restore: () => spy.mockRestore() };
+  }
+
+  it('enablePush logs the error TYPE, not an endpoint-bearing message', async () => {
+    const { lines, restore } = captureConsole();
+    await enablePush({
+      requestPermission: async () => 'granted' as NotificationPermission,
+      getPublicKey: async () => 'aGVsbG8',
+      registerWorker: async () => ({
+        pushManager: {
+          subscribe: async () => {
+            throw domExceptionLike();
+          },
+        },
+      }),
+      saveSubscription: async () => {},
+    } as never);
+    restore();
+
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.join(' ')).not.toContain('SECRET-SUBSCRIPTION-PATH');
+    // Still diagnostic: NotAllowedError, AbortError and NotSupportedError
+    // are three different problems with three different fixes.
+    expect(lines.join(' ')).toContain('NotAllowedError');
+  });
+
+  it('disablePush logs the error TYPE, not an endpoint-bearing message', async () => {
+    const { lines, restore } = captureConsole();
+    await disablePush({
+      getSubscription: async () => ({
+        endpoint: SECRET,
+        unsubscribe: async () => {
+          throw domExceptionLike();
+        },
+        toJSON: () => ({}),
+      }),
+      deleteSubscription: async () => {},
+    } as never);
+    restore();
+
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.join(' ')).not.toContain('SECRET-SUBSCRIPTION-PATH');
+  });
+
+  it('readPushState logs the error TYPE, not an endpoint-bearing message', async () => {
+    const { lines, restore } = captureConsole();
+    await readPushState({
+      getSubscription: async () => {
+        throw domExceptionLike();
+      },
+    } as never);
+    restore();
+
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.join(' ')).not.toContain('SECRET-SUBSCRIPTION-PATH');
+  });
+
+  it('reports an ApiError with its status, which is safe, and no body', async () => {
+    const { lines, restore } = captureConsole();
+    await readPushState({
+      getSubscription: async () => {
+        throw new ApiError(503, `/api/push/subscribe returned 503 for ${SECRET}`);
+      },
+    } as never);
+    restore();
+
+    expect(lines.join(' ')).toContain('503');
+    expect(lines.join(' ')).not.toContain('SECRET-SUBSCRIPTION-PATH');
+  });
+});
+
+/**
+ * Fix 7. `showNotification` rejects if permission was revoked between
+ * subscribing and delivery, and `openWindow` can be refused. An unhandled
+ * rejection inside a worker is invisible from the app and cannot be
+ * debugged from it, so every `waitUntil` ends in a `.catch`.
+ */
+const WAIT_UNTIL = /waitUntil\(/;
+
+describe('sw.js — no unhandled rejection can escape a handler', () => {
+  const waitUntilLines = swSource.split(String.fromCharCode(10)).filter((line) => WAIT_UNTIL.test(line));
+
+  it('has the waitUntil calls this worker is supposed to have', () => {
+    // Guards the guard below: if the handlers were rewritten to drop
+    // waitUntil entirely, filtering would yield an empty list and the
+    // per-line assertion would pass vacuously.
+    expect(waitUntilLines).toHaveLength(3);
+  });
+
+  it('catches on every one of them', () => {
+    for (const line of waitUntilLines) {
+      expect(line, `waitUntil without a .catch: ${line.trim()}`).toMatch(/\.catch\(/);
+    }
+  });
+
+  it('no longer claims nothing can reject', () => {
+    // The old header comment asserted "none of them can reject", which was
+    // wrong about showNotification specifically.
+    expect(swSource).not.toMatch(/none of them can reject/);
+  });
+});
+
+describe('the waitUntil guard itself (not vacuous)', () => {
+  it('flags a waitUntil with no catch', () => {
+    const buggy = '  event.waitUntil(showFromPush(event.data));';
+    expect(WAIT_UNTIL.test(buggy)).toBe(true);
+    expect(buggy).not.toMatch(/\.catch\(/);
+  });
+});

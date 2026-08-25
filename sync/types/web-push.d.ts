@@ -31,14 +31,21 @@ declare module 'web-push' {
     };
   }
 
+  /**
+   * Exactly the options sync/src/push/send.ts passes, and no more.
+   *
+   * `urgency` and `topic` were declared and never used; they are gone (fix
+   * round 1). This interface is the reason `SendImpl` can be typed rather
+   * than taking a `Record<string, unknown>` — an index signature would
+   * accept `vapidDetais` silently, producing an unsigned push. Adding an
+   * option means adding it here first, which is the intended friction.
+   */
   export interface RequestOptions {
     readonly vapidDetails?: VapidDetails;
     /** Seconds the push service may hold an undelivered message. */
     readonly TTL?: number;
     /** Milliseconds before the HTTP request to the push service is aborted. */
     readonly timeout?: number;
-    readonly urgency?: string;
-    readonly topic?: string;
   }
 
   export interface SendResult {
@@ -61,13 +68,16 @@ declare module 'web-push' {
     readonly endpoint: string;
   }
 
+  /** `generateVAPIDKeys` is deliberately NOT declared: the keypair is
+   *  generated once by the `npx web-push generate-vapid-keys` CLI, never
+   *  by this service at runtime. Declaring it would be an unused
+   *  declaration and an invitation to mint a key on a code path. */
   const webpush: {
     sendNotification(
       subscription: WebPushSubscription,
       payload?: string | Buffer | null,
       options?: RequestOptions,
     ): Promise<SendResult>;
-    generateVAPIDKeys(): { publicKey: string; privateKey: string };
   };
 
   export default webpush;

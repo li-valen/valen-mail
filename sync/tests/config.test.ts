@@ -174,6 +174,60 @@ describe('loadConfig', () => {
  * which is what routes.ts's handleOpens uses to skip the network call
  * entirely and answer `available: false`.
  */
+/**
+ * Fix round 1, Fix 2. loadConfig's OWN vapidConfig field.
+ *
+ * parseVapidConfig is exhaustively tested in isolation (tests/push.test.ts)
+ * and createRouter is tested with an injected config, but until this block
+ * existed nothing asserted that loadConfig actually calls parseVapidConfig
+ * and puts the result on the returned config. Deleting that line left the
+ * whole suite green while production reported push unavailable forever —
+ * a causally-inert gap of exactly the shape this project has shipped
+ * before. The other half of the seam (server.ts -> createRouter) is
+ * covered by tests/push.test.ts's createRouterFromConfig block.
+ */
+describe('loadConfig vapidConfig', () => {
+  const withVapid = (overrides: Record<string, string>): NodeJS.ProcessEnv =>
+    ({ ...ENV, ...overrides } as NodeJS.ProcessEnv);
+
+  it('is populated when both VAPID_* vars are set', () => {
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const config = loadConfig(
+      ONE,
+      withVapid({
+        VAPID_PUBLIC_KEY: 'pub',
+        VAPID_PRIVATE_KEY: 'priv',
+        VAPID_SUBJECT: 'https://postbox.example',
+      }),
+    );
+    expect(config.vapidConfig).toEqual({
+      publicKey: 'pub',
+      privateKey: 'priv',
+      subject: 'https://postbox.example',
+    });
+    spy.mockRestore();
+  });
+
+  it('defaults the subject rather than refusing when VAPID_SUBJECT is absent', () => {
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const config = loadConfig(ONE, withVapid({ VAPID_PUBLIC_KEY: 'pub', VAPID_PRIVATE_KEY: 'priv' }));
+    expect(config.vapidConfig?.publicKey).toBe('pub');
+    expect(config.vapidConfig?.subject).toMatch(/^https:\/\//);
+    spy.mockRestore();
+  });
+
+  it('is null, and the whole config still loads, when the keys are absent', () => {
+    // The degradation rule at the level that matters: loadConfig RETURNS
+    // rather than throwing, so the service starts and email sync runs.
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const config = loadConfig(ONE, ENV);
+    expect(config.vapidConfig).toBeNull();
+    expect(config.accounts).toHaveLength(1);
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+});
+
 describe('loadConfig trackingConfig', () => {
   const withTracking = (overrides: Record<string, string>): NodeJS.ProcessEnv =>
     ({ ...ENV, ...overrides } as NodeJS.ProcessEnv);
@@ -227,13 +281,30 @@ describe('loadConfig trackingConfig', () => {
   });
 
   it('returns a populated TrackingConfig and does not warn when both are set and valid', () => {
+    // Fix round 1: this assertion is `not.toHaveBeenCalled()`, NOT a
+    // filtered count. It is the suite's only canary for "no unexpected
+    // warning anywhere in loadConfig" — a future spurious warn in
+    // parseAccount or parsePort has to fail somewhere, and this is that
+    // somewhere. Filtering it to TRACKING_ would have made it blind to
+    // exactly the class of regression the file header cares about.
+    //
+    // The VAPID_* vars are supplied so that parseVapidConfig, the other
+    // optional config, is also fully configured and legitimately silent.
+    // That is the right fix: satisfy every warner, rather than narrow the
+    // assertion until it stops noticing them.
     const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const config = loadConfig(
       ONE,
-      withTracking({ TRACKING_BASE_URL: 'https://t.example', TRACKING_READ_TOKEN: 'r'.repeat(32) }),
+      withTracking({
+        TRACKING_BASE_URL: 'https://t.example',
+        TRACKING_READ_TOKEN: 'r'.repeat(32),
+        VAPID_PUBLIC_KEY: 'pub',
+        VAPID_PRIVATE_KEY: 'priv',
+        VAPID_SUBJECT: 'https://postbox.example',
+      }),
     );
     expect(config.trackingConfig).toEqual({ baseUrl: 'https://t.example', readToken: 'r'.repeat(32) });
-    expect(trackingWarnings(spy)).toHaveLength(0);
+    expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
   });
 

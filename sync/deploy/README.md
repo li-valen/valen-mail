@@ -740,6 +740,13 @@ thing to read.
   or any Cache Storage use appears in that file.
 - **The worker is registered only when someone turns notifications on**,
   never at app start — a worker is hard to evict from an installed PWA.
+- **Whatever serves `/sw.js` must send a `Cache-Control: max-age` of 86400
+  or less** (Task 8 owns static serving). A browser caches a service
+  worker like any other file, so a long max-age on this one means a broken
+  worker cannot be replaced by shipping a fixed one — it stays in control
+  of an installed PWA until the cache expires. This is the one static file
+  on this origin where the freshness header is a recoverability property
+  rather than a performance one.
 - **Endpoints are credentials.** A `push_subscriptions.endpoint` is a
   capability URL: whoever holds one can push to that device. Nothing in
   this service logs, echoes or returns one, and neither should any

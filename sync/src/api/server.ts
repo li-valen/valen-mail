@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { loadConfig } from '../config.ts';
-import type { AccountConfig } from '../config';
+import type { AccountConfig, SyncConfig } from '../config';
 import { openDb } from '../db.ts';
 import type { Db } from '../db';
 import { ConnectionPool } from '../imap/pool.ts';
@@ -349,6 +349,42 @@ export function createShutdown(
   });
 }
 
+/**
+ * Builds the router from a loaded SyncConfig.
+ *
+ * Extracted from startServer's body and exported for one reason (fix
+ * round 1): this call is a positional argument list, and every optional
+ * feature the service has is passed through it. Deleting
+ * `config.vapidConfig` here — or transposing it with `fetchImpl` — left
+ * the whole suite green while production reported push unavailable
+ * forever. parseVapidConfig was tested exhaustively and createRouter was
+ * tested with an injected config, but NOTHING tested the wire between
+ * them, which is exactly the causally-inert shape this project has
+ * shipped before.
+ *
+ * startServer itself cannot be called from a test without a live Postgres
+ * and four IMAP connections, so the seam is pulled out to where it can be.
+ * tests/push.test.ts drives it with fakes and asserts GET /api/push/key
+ * reports the configured key.
+ */
+export function createRouterFromConfig(
+  db: Db,
+  pool: ConnectionPool,
+  apiToken: string,
+  config: SyncConfig,
+): (request: Request) => Promise<Response> {
+  return createRouter(
+    db,
+    pool,
+    apiToken,
+    config.trackingConfig,
+    // Production always uses the real global fetch; the parameter exists
+    // so tests can stub the /api/opens proxy (see routes.ts).
+    undefined,
+    config.vapidConfig,
+  );
+}
+
 export async function startServer(): Promise<{ close(): Promise<void> }> {
   const apiToken = requireApiToken(process.env);
 
@@ -370,16 +406,7 @@ export async function startServer(): Promise<{ close(): Promise<void> }> {
     console.error('api: connection pool stopped unexpectedly', error);
   });
 
-  const router = createRouter(
-    db,
-    pool,
-    apiToken,
-    config.trackingConfig,
-    // Production always uses the real global fetch; the parameter
-    // exists so tests can stub the /api/opens proxy (see routes.ts).
-    undefined,
-    config.vapidConfig,
-  );
+  const router = createRouterFromConfig(db, pool, apiToken, config);
   const server = createServer((nodeRequest, nodeResponse) => {
     void handleRequest(router, nodeRequest, nodeResponse);
   });

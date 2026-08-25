@@ -1,4 +1,5 @@
 import webpush from 'web-push';
+import type { RequestOptions } from 'web-push';
 import { shouldPruneOnStatus } from './vapid.ts';
 import type { PushSubscription, VapidConfig } from './vapid';
 
@@ -53,22 +54,96 @@ export interface PushResult {
  *  news, and the message is still in the inbox either way. */
 const TTL_SECONDS = 4 * 60 * 60;
 
+/**
+ * Field bounds, mirroring client/public/sw.js's own MAX_TITLE_LENGTH /
+ * MAX_BODY_LENGTH so the two ends of the wire agree.
+ *
+ * Fix round 1. Push services reject a payload over roughly 4 KB, and
+ * `title`/`body` come from an email subject and sender name — attacker-
+ * authored, unbounded. Without this, an oversized notification degraded
+ * "safely" (413 -> `{ok: false, prune: false}`, no subscription harmed)
+ * but was SILENTLY LOST: nobody sees the notification and nothing in the
+ * product says why.
+ *
+ * The bound lives here, at the one chokepoint that talks to a push
+ * service, rather than being inherited as an obligation by Task 7's
+ * dispatcher — an obligation a second caller would eventually forget.
+ * `url` and `tag` are bounded for the same reason even though Postbox
+ * authors them: the guarantee should hold for whatever any future caller
+ * passes, not for what today's caller happens to pass.
+ */
+const MAX_TITLE_LENGTH = 120;
+const MAX_BODY_LENGTH = 300;
+const MAX_URL_LENGTH = 256;
+const MAX_TAG_LENGTH = 64;
+
+/**
+ * Bounds one field and strips control characters.
+ *
+ * The strip is what makes the size guarantee arithmetic rather than
+ * hopeful. `JSON.stringify` escapes a control character to six bytes
+ * (`\u0000`), so a subject of 300 of them would serialise to 1800 bytes
+ * from 300 slots; with them gone, the worst case is 3 UTF-8 bytes per
+ * UTF-16 unit. The four bounds then cap the serialised payload at
+ * (120 + 300 + 256 + 64) x 3 + keys ~= 2.3 KB, comfortably inside every
+ * push service's limit. Control characters are also not something anyone
+ * wants rendered in an OS notification.
+ *
+ * `.slice()` on a bounded string returns a new string; the caller's
+ * payload object is never modified.
+ */
+function boundedText(value: string, maxLength: number): string {
+  return value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, maxLength);
+}
+
+/** Same, for a field that may be absent. An absent field is left absent
+ *  rather than becoming an empty string — a smaller payload, and the
+ *  service worker already has a fallback for each one. */
+function boundedOptional(value: string | undefined, maxLength: number): string | undefined {
+  if (value === undefined) return undefined;
+  const bounded = boundedText(value, maxLength);
+  return bounded.length > 0 ? bounded : undefined;
+}
+
+/**
+ * A new payload with every field bounded. Returns a fresh object; the
+ * caller's `payload` is only read.
+ */
+function boundPayload(payload: PushPayload): PushPayload {
+  return {
+    title: boundedText(payload.title, MAX_TITLE_LENGTH) || 'Postbox',
+    body: boundedOptional(payload.body, MAX_BODY_LENGTH),
+    url: boundedOptional(payload.url, MAX_URL_LENGTH),
+    tag: boundedOptional(payload.tag, MAX_TAG_LENGTH),
+  };
+}
+
 /** The push service is a third party on its own network path; a hung
  *  connection must not hang whatever loop is dispatching. Same reasoning
  *  and same value as ../api/opens.ts's REQUEST_TIMEOUT_MS. */
 const REQUEST_TIMEOUT_MS = 5000;
 
-/** `web-push`'s own send, isolated behind a type so a test can inject a
- *  stub — the same shape as opens.ts's `fetchImpl`. Production always
- *  uses the default; this is not a runtime knob. */
+/**
+ * `web-push`'s own send, isolated behind a type so a test can inject a
+ * stub — the same shape as opens.ts's `fetchImpl`. Production always uses
+ * the default; this is not a runtime knob.
+ *
+ * `options` is `RequestOptions` from ../../types/web-push.d.ts, NOT a
+ * `Record<string, unknown>` (fix round 1). An index signature accepts any
+ * key, so `vapidDetais` would have type-checked cleanly and produced an
+ * unsigned push that every push service rejects at runtime — a typo in
+ * the one security-relevant field, caught by nothing. A declared type
+ * gives the call site excess-property checking instead, which is the
+ * entire reason that declaration file exists.
+ */
 export type SendImpl = (
   subscription: PushSubscription,
   payload: string,
-  options: Readonly<Record<string, unknown>>,
+  options: RequestOptions,
 ) => Promise<{ readonly statusCode: number }>;
 
 const defaultSendImpl: SendImpl = (subscription, payload, options) =>
-  webpush.sendNotification(subscription, payload, options as never);
+  webpush.sendNotification(subscription, payload, options);
 
 /**
  * Reads a numeric `statusCode` off a rejected value without assuming it is
@@ -101,7 +176,7 @@ export async function sendPush(
   sendImpl: SendImpl = defaultSendImpl,
 ): Promise<PushResult> {
   try {
-    await sendImpl(subscription, JSON.stringify(payload), {
+    await sendImpl(subscription, JSON.stringify(boundPayload(payload)), {
       vapidDetails: {
         subject: vapid.subject,
         publicKey: vapid.publicKey,

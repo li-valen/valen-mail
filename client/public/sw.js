@@ -19,8 +19,15 @@
  *
  * Kept small for a second reason: a worker that throws is very hard to
  * evict from an installed PWA. Every path below either shows a
- * notification or falls back to one, and none of them can reject before it
- * does.
+ * notification or falls back to one.
+ *
+ * That is not the same as "nothing can reject", and the earlier version of
+ * this comment overstated it (fix round 1). `showNotification` itself
+ * rejects if the permission was revoked between subscribing and delivery,
+ * and `openWindow` can be refused. Those are outside this file's control,
+ * so every `waitUntil` below ends in a `.catch` — an unhandled rejection
+ * inside a worker is invisible from the app and cannot be debugged from
+ * it.
  *
  * Plain JavaScript, no build step: this file is served verbatim from the
  * site root, which is what gives it a scope of "/".
@@ -41,8 +48,18 @@ self.addEventListener('install', () => {
   self.skipWaiting();
 });
 
+/**
+ * Swallows a rejection that this worker cannot do anything about, leaving
+ * a trace for anyone who does attach a debugger. Deliberately does not
+ * rethrow: the alternative is an unhandled rejection in a context with no
+ * UI, no error boundary and no way for the app to notice.
+ */
+function reportWorkerError(error) {
+  console.warn(SW_VERSION + ': handler failed —', error && error.name ? error.name : error);
+}
+
 self.addEventListener('activate', (event) => {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil(self.clients.claim().catch(reportWorkerError));
 });
 
 /**
@@ -120,7 +137,7 @@ function showFromPush(data) {
 }
 
 self.addEventListener('push', (event) => {
-  event.waitUntil(showFromPush(event.data));
+  event.waitUntil(showFromPush(event.data).catch(reportWorkerError));
 });
 
 /**
@@ -152,5 +169,5 @@ async function openApp(target) {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const data = event.notification.data;
-  event.waitUntil(openApp(sameOriginPath(data && data.url)));
+  event.waitUntil(openApp(sameOriginPath(data && data.url)).catch(reportWorkerError));
 });

@@ -68,22 +68,32 @@
 .push-toggle__track {
   position: relative;
   flex: none;
-  inline-size: var(--s-8);
-  block-size: var(--s-5);
+  /* border-box, explicitly: this project has no global box-sizing reset,
+     so without it the 1px border sits OUTSIDE the declared 32x20 and every
+     inset below is computed against the wrong box — which is how the knob
+     ended up 2px from the left and 4px from the right (fix round 1). */
+  box-sizing: border-box;
+  inline-size: var(--s-8); /* 32 */
+  block-size: var(--s-5); /* 20 */
   background: var(--bg-active);
   border: 1px solid var(--line-border);
   border-radius: var(--r-full);
   transition: background-color var(--dur-fast) var(--ease-out);
 }
 
+/* Padding box is 30x18 (32x20 less the 1px borders). The knob is 12x12,
+   inset 3px from the leading edge, and centred vertically by translation
+   rather than by a hand-computed offset — (18 - 12) / 2 = 3 is only true
+   while both numbers hold, and 50% stays true if either changes. */
 .push-toggle__knob {
   position: absolute;
-  inset-block-start: 2px;
-  inset-inline-start: 2px;
-  inline-size: var(--s-3);
+  inset-block-start: 50%;
+  inset-inline-start: 3px;
+  inline-size: var(--s-3); /* 12 */
   block-size: var(--s-3);
   background: var(--fg-secondary);
   border-radius: var(--r-full);
+  transform: translate(0, -50%);
   transition:
     transform var(--dur-fast) var(--ease-out),
     background-color var(--dur-fast) var(--ease-out);
@@ -96,8 +106,10 @@
 
 .push-toggle__switch[aria-checked='true'] .push-toggle__knob {
   background: var(--fg-on-accent);
-  /* track 32 - knob 12 - inset 2 - inset 2 - borders 2 = 14 */
-  transform: translateX(14px);
+  /* padding box 30 - knob 12 - leading inset 3 - trailing inset 3 = 12.
+     Symmetric: 3px of track shows on both sides in both positions. The
+     -50% is restated because `transform` replaces the whole list. */
+  transform: translate(12px, -50%);
 }
 
 /**

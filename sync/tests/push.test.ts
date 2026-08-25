@@ -8,6 +8,7 @@ import {
 } from '../src/push/vapid';
 import { sendPush } from '../src/push/send';
 import { createRouter } from '../src/api/routes';
+import { createRouterFromConfig } from '../src/api/server';
 import { makeFakeDb, makeFakePool, readJson, TOKEN, AUTH } from './helpers/api-fakes.ts';
 
 /**
@@ -490,5 +491,221 @@ describe('push route registration does not disturb the existing router', () => {
   it('a PUT to the subscribe path is 404, not a silent success', async () => {
     const request = new Request('http://x/api/push/subscribe', { method: 'PUT', headers: AUTH });
     expect((await routerWith(VAPID)(request)).status).toBe(404);
+  });
+});
+
+// =====================================================================
+// Fix round 1
+// =====================================================================
+
+/**
+ * Fix 1. `sendPush` bounds every payload field before serialising.
+ *
+ * Before this, an email with a pathological subject produced a payload
+ * over the ~4 KB every push service enforces. It degraded safely — 413,
+ * no subscription pruned — but the notification was SILENTLY LOST, which
+ * is exactly the confident-wrong-answer this product exists to refuse.
+ */
+describe('sendPush payload bounds', () => {
+  /** A subject an attacker would actually send: long, with astral-plane
+   *  characters (2 UTF-16 units, 4 UTF-8 bytes each). */
+  const PATHOLOGICAL = `${'\u{1F600}'.repeat(2000)} ${'x'.repeat(5000)}`;
+
+  /** Control characters, which JSON.stringify escapes to six bytes each
+   *  (\u0007) — the case that makes a character-count bound insufficient
+   *  as a byte-count guarantee. */
+  const WITH_CONTROLS = `a\u0007b\u0008c`;
+
+  function capture() {
+    const sent: string[] = [];
+    const sendImpl = async (_s: unknown, payload: string) => {
+      sent.push(payload);
+      return { statusCode: 201 };
+    };
+    return { sent, sendImpl: sendImpl as never };
+  }
+
+  it('keeps a pathological subject deliverable, under the 4KB push limit', async () => {
+    const { sent, sendImpl } = capture();
+    const result = await sendPush(
+      VALID_SUBSCRIPTION,
+      {
+        title: PATHOLOGICAL,
+        body: PATHOLOGICAL,
+        url: `/m/${'y'.repeat(5000)}`,
+        tag: 'z'.repeat(500),
+      },
+      VAPID,
+      sendImpl,
+    );
+    expect(result).toEqual({ ok: true, prune: false });
+    // The assertion that matters: measured BYTES, not character count.
+    expect(Buffer.byteLength(sent[0]!, 'utf8')).toBeLessThan(4096);
+  });
+
+  it('truncates rather than dropping — the notification still says something', async () => {
+    const { sent, sendImpl } = capture();
+    await sendPush(VALID_SUBSCRIPTION, { title: `Re: ${'x'.repeat(5000)}` }, VAPID, sendImpl);
+    const payload = JSON.parse(sent[0]!) as { title: string };
+    expect(payload.title).toHaveLength(120);
+    expect(payload.title.startsWith('Re: ')).toBe(true);
+  });
+
+  it('bounds the body to the same length sw.js expects', async () => {
+    const { sent, sendImpl } = capture();
+    await sendPush(VALID_SUBSCRIPTION, { title: 'T', body: 'b'.repeat(5000) }, VAPID, sendImpl);
+    expect((JSON.parse(sent[0]!) as { body: string }).body).toHaveLength(300);
+  });
+
+  it('strips control characters, which JSON would escape to six bytes each', async () => {
+    const { sent, sendImpl } = capture();
+    await sendPush(VALID_SUBSCRIPTION, { title: WITH_CONTROLS }, VAPID, sendImpl);
+    expect((JSON.parse(sent[0]!) as { title: string }).title).toBe('a b c');
+  });
+
+  it('falls back to a usable title when the subject bounds away to nothing', async () => {
+    const { sent, sendImpl } = capture();
+    await sendPush(VALID_SUBSCRIPTION, { title: '   ' }, VAPID, sendImpl);
+    expect((JSON.parse(sent[0]!) as { title: string }).title).toBe('Postbox');
+  });
+
+  it('leaves an absent optional field absent rather than sending an empty string', async () => {
+    const { sent, sendImpl } = capture();
+    await sendPush(VALID_SUBSCRIPTION, { title: 'T' }, VAPID, sendImpl);
+    expect(Object.keys(JSON.parse(sent[0]!) as object)).toEqual(['title']);
+  });
+
+  it('passes an ordinary payload through unchanged', async () => {
+    const { sent, sendImpl } = capture();
+    const payload = {
+      title: 'Re: lunch',
+      body: 'from ada@example.com',
+      url: '/thread/42',
+      tag: 't42',
+    };
+    await sendPush(VALID_SUBSCRIPTION, payload, VAPID, sendImpl);
+    expect(JSON.parse(sent[0]!)).toEqual(payload);
+  });
+
+  it('does not mutate the payload it is handed', async () => {
+    const payload = { title: `Re: ${'x'.repeat(5000)}`, body: WITH_CONTROLS };
+    const snapshot = JSON.stringify(payload);
+    await sendPush(VALID_SUBSCRIPTION, payload, VAPID, async () => ({ statusCode: 201 }));
+    expect(JSON.stringify(payload)).toBe(snapshot);
+  });
+});
+
+/**
+ * Fix 8. `isUsableSubject`'s mailto: arm, which RFC 8292 §2.1 permits
+ * alongside https: and which nothing exercised.
+ */
+describe('parseVapidConfig — the mailto: subject arm', () => {
+  it('accepts a mailto: subject', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(
+      parseVapidConfig(
+        envWith({
+          VAPID_PUBLIC_KEY: 'pub',
+          VAPID_PRIVATE_KEY: 'priv',
+          VAPID_SUBJECT: 'mailto:ops@example.com',
+        }),
+      ),
+    ).toEqual({ publicKey: 'pub', privateKey: 'priv', subject: 'mailto:ops@example.com' });
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('rejects a bare "mailto:" carrying no address', () => {
+    // The inverse fixture. A plain `startsWith('mailto:')` with no length
+    // test passes this and signs every JWT with an empty contact.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(
+      parseVapidConfig(
+        envWith({ VAPID_PUBLIC_KEY: 'pub', VAPID_PRIVATE_KEY: 'priv', VAPID_SUBJECT: 'mailto:' }),
+      ),
+    ).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+});
+
+/**
+ * Fix 2. The seam between loadConfig and createRouter.
+ *
+ * parseVapidConfig was tested exhaustively and createRouter was tested
+ * with an injected config, but nothing tested the ARGUMENT LIST joining
+ * them — so deleting `config.vapidConfig` from server.ts left all 331
+ * tests green while production reported push unavailable forever. These
+ * drive the real exported seam, so that deletion now fails here.
+ */
+describe('createRouterFromConfig — the server.ts wiring', () => {
+  const BASE_CONFIG = {
+    accounts: [],
+    databaseUrl: 'postgresql://localhost/x',
+    port: 8080,
+    trackingConfig: null,
+  };
+
+  function routerFor(overrides: Record<string, unknown>, db: never = makeFakeDb()) {
+    return createRouterFromConfig(db, FAKE_POOL, TOKEN, {
+      ...BASE_CONFIG,
+      ...overrides,
+    } as never);
+  }
+
+  it('passes vapidConfig through, so GET /api/push/key reports the real key', async () => {
+    const response = await routerFor({ vapidConfig: VAPID })(
+      new Request('http://x/api/push/key', { headers: AUTH }),
+    );
+    expect(await readJson(response)).toEqual({ available: true, publicKey: VAPID.publicKey });
+  });
+
+  it('reports unavailable when the config carries no keypair', async () => {
+    const response = await routerFor({ vapidConfig: null })(
+      new Request('http://x/api/push/key', { headers: AUTH }),
+    );
+    expect(await readJson(response)).toEqual({ available: false, publicKey: null });
+  });
+
+  it('accepts a real subscription, proving vapidConfig reached the write path too', async () => {
+    // The key route alone would still pass if vapidConfig were somehow
+    // wired to it but not to the router as a whole; POST answers 503
+    // without it, so this covers the other branch that reads the config.
+    const { db, calls } = makeRecordingDb();
+    const response = await routerFor({ vapidConfig: VAPID }, db)(
+      new Request('http://x/api/push/subscribe', {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify(VALID_SUBSCRIPTION),
+      }),
+    );
+    expect(response.status).toBe(204);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('still passes trackingConfig through — one argument list carries both', async () => {
+    // Deliberately a MALFORMED baseUrl, so fetchOpens throws inside its own
+    // `new URL` and degrades without ever touching the network — a version
+    // of this test with a plausible hostname spent 1.3s on a real DNS
+    // lookup, which is not something a unit suite should do.
+    //
+    // The spy is what makes it causal. Both a correctly-wired non-null
+    // trackingConfig and a dropped one answer 200, so the status alone
+    // proves nothing; only the wired one reaches fetchOpens and logs
+    // 'opens: tracking service unreachable'. Drop the argument, or
+    // transpose it with fetchImpl, and this assertion fails.
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      errors.push(String(args[0]));
+    });
+
+    const response = await routerFor({
+      trackingConfig: { baseUrl: 'not a url', readToken: 'r'.repeat(32) },
+      vapidConfig: null,
+    })(new Request('http://x/api/opens', { headers: AUTH }));
+
+    spy.mockRestore();
+    expect(response.status).toBe(200);
+    expect(errors.some((line) => line.includes('tracking service unreachable'))).toBe(true);
   });
 });
