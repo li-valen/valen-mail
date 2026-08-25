@@ -169,19 +169,34 @@ describe('session cookie name (__Host- prefix)', () => {
     expect(SESSION_COOKIE_NAME.startsWith('__Host-')).toBe(true);
   });
 
-  it('satisfies all three preconditions the browser enforces for that prefix', () => {
-    // A browser silently refuses to store a __Host- cookie that breaks any
-    // of these, so each is asserted rather than assumed. The Domain check
-    // is the one a well-meaning future edit would break.
+  it('emits Secure + Path=/ and NO Domain — breaking any of the three makes the browser silently drop the cookie', () => {
+    // READ THIS BEFORE TOUCHING COOKIE ATTRIBUTES.
+    //
+    // `__Host-` is not a naming convention; it is a contract the browser
+    // enforces. A cookie carrying that prefix is REFUSED — not weakened,
+    // not warned about, refused — unless it is `Secure`, has `Path=/`, and
+    // carries no `Domain` attribute at all.
+    //
+    // The failure is silent and server-side invisible. The service still
+    // answers `204` with a perfectly good `Set-Cookie`; the browser just
+    // never stores it, so every following request is a 401 with nothing in
+    // the journal to explain why. In production that is indistinguishable
+    // from "sign-in does nothing", and it is a debugging session nobody
+    // should have to repeat.
+    //
+    // Adding `Domain=` is the plausible future edit — it looks like it
+    // would make the cookie work on a subdomain, and instead it stops the
+    // cookie working anywhere. Hence one assertion per precondition.
     const header = buildSessionCookie(mintSessionValue(TOKEN, NOW));
     expect(header).toContain('Secure');
     expect(header).toContain('Path=/');
     expect(header.toLowerCase()).not.toContain('domain=');
   });
 
-  it('keeps the prefix and the preconditions on the clearing header too', () => {
-    // A clearing cookie the browser refuses to store is a sign-out that
-    // silently does nothing.
+  it('keeps the prefix and all three preconditions on the clearing header too', () => {
+    // Same contract, same silent failure, worse consequence: a clearing
+    // cookie the browser refuses to store is a sign-out that reports
+    // success and leaves the session live.
     const header = buildClearedSessionCookie();
     expect(header.startsWith(`${SESSION_COOKIE_NAME}=`)).toBe(true);
     expect(header).toContain('Secure');

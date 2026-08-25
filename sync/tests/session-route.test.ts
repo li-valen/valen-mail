@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createRouter } from '../src/api/routes';
 import { SESSION_COOKIE_NAME, mintSessionValue, SESSION_TTL_MS } from '../src/api/session';
-import { SESSION_RATE_LIMIT_MAX_FAILURES } from '../src/api/rate-limit';
+import {
+  SESSION_RATE_LIMIT_MAX_FAILURES,
+  SESSION_RATE_LIMIT_WINDOW_MS,
+} from '../src/api/rate-limit';
 import { AUTH as auth, TOKEN, makeFakeDb, makeFakePool, readJson } from './helpers/api-fakes.ts';
 
 /**
@@ -266,8 +269,23 @@ describe('POST /api/session is rate limited, and nothing else is', () => {
 
     const refused = await failOnce(r);
     expect(refused.status).toBe(429);
-    expect(Number(refused.headers.get('retry-after'))).toBeGreaterThan(0);
     expect(refused.headers.get('cache-control')).toBe('no-store');
+
+    // Bounded, not merely present: the header must agree with the window
+    // the limiter is actually configured with, so a `Retry-After` computed
+    // from some other duration fails here.
+    //
+    // It does NOT pin the window's VALUE — the bound scales with the
+    // constant, so lengthening the window would keep this green. That is
+    // deliberate and it is why the value is pinned absolutely, once, in
+    // rate-limit.test.ts. Mutation-checked: raising the window to 15
+    // minutes fails there and only there.
+    //
+    // Floored at 1 because `Retry-After: 0` reads as "retry immediately",
+    // which is the opposite of a refusal.
+    const retryAfter = Number(refused.headers.get('retry-after'));
+    expect(retryAfter).toBeGreaterThan(0);
+    expect(retryAfter).toBeLessThanOrEqual(SESSION_RATE_LIMIT_WINDOW_MS / 1000);
   });
 
   it('refuses the CORRECT token too once the budget is spent — no bypass by finally guessing right', async () => {

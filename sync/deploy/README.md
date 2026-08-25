@@ -560,14 +560,33 @@ nothing to back up. Still $0.
   legitimately links into this app from elsewhere.
 - **Request bodies are capped at 8 KB** and answered `413` above it. Only
   `POST /api/session` reads a body at all.
-- **`POST /api/session` is rate limited: 10 failed attempts per 15
-  minutes**, answered `429` with a `Retry-After` once spent. Successful
+- **`POST /api/session` is rate limited: 10 failed attempts per 60
+  seconds**, answered `429` with a `Retry-After` once spent. Successful
   sign-ins never consume budget, so setting up several devices in a row is
-  fine. The counter is a single in-memory global — **restarting the service
-  clears it**, which is the documented way to unblock yourself if you ever
-  do trip it. No other route is limited, deliberately: they are all
-  authenticated and serve one person, and a limiter there would eventually
-  throttle your own inbox polling.
+  fine. **The worst case is a 60-second wait**, and restarting the service
+  clears the counter outright.
+
+  The window is short on purpose, and the reasoning matters if you are ever
+  tempted to lengthen it. Against a 256-bit token a longer window buys **no
+  security at all** — ten guesses per minute and ten per fifteen minutes
+  are both infeasible by a margin of billions of years. The limiter's real
+  job is to stop a flood burning CPU and filling the journal on a 955 MB
+  box, which 60 seconds does just as well. What a longer window *does* buy
+  is downtime: the counter is global, so anyone who knows this URL can
+  spend the budget with ten requests and hold **you** out of your own
+  mailbox for however long the window lasts, repeatedly.
+
+  **The counter is global rather than per-IP, and that is not an
+  oversight.** This process sits behind Caddy on loopback and the only
+  address it can see is whatever the client wrote in `X-Forwarded-For` — a
+  header the client controls. Keying on it would let an attacker step
+  around the limiter by rotating a string, while growing an unbounded map
+  in memory as they did it, turning a rate limiter into a
+  memory-exhaustion vector. Do not "fix" this into a per-IP limiter.
+
+  No other route is limited, also deliberately: they are all authenticated
+  and serve one person, and a limiter there would eventually throttle your
+  own inbox polling.
 - **Do not put a caching layer in front of `/api/*`.** Mailbox responses
   (`/api/inbox`, `/api/opens`, `/api/thread/*`, message bodies and
   attachments) now send `Cache-Control: private, no-store`, because they
@@ -587,7 +606,8 @@ curl -s -o /dev/null -w '%{http_code}\n' 'https://<duckdns-host>/api/inbox?limit
 
 # 3. Sign in, keeping the cookie in a jar — expect 204 and a Set-Cookie
 #    named __Host-postbox_session. A 429 here means the failure window is
-#    spent; wait it out or restart the service.
+#    spent; wait 60 seconds (Retry-After says how long) or restart the
+#    service to clear the counter.
 curl -s -D - -o /dev/null -c /tmp/postbox-cookies.txt \
   -H 'content-type: application/json' \
   -d "{\"token\":\"$API_TOKEN\"}" \

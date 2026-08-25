@@ -65,8 +65,16 @@ describe('fixed-window limiter', () => {
     expect(b.check(NOW).allowed).toBe(true);
   });
 
-  it('ships defaults sized for a human pasting a token, not for a crawler', () => {
+  it('ships a window measured in seconds, because a longer one buys availability loss and no security', () => {
+    // Pinned deliberately. Against a 256-bit token, ten attempts per minute
+    // and ten per fifteen minutes are the same number — both infeasible —
+    // so the window length trades purely against availability, and this
+    // counter is global. Lengthening it lets anyone who knows the URL hold
+    // the owner out of their own mailbox for that long, per burst, for ten
+    // requests. Sixty seconds still stops a flood from burning CPU and
+    // filling the journal, which is the limiter's real job here.
     expect(SESSION_RATE_LIMIT_MAX_FAILURES).toBe(10);
-    expect(SESSION_RATE_LIMIT_WINDOW_MS).toBe(15 * 60 * 1000);
+    expect(SESSION_RATE_LIMIT_WINDOW_MS).toBe(60 * 1000);
+    expect(SESSION_RATE_LIMIT_WINDOW_MS).toBeLessThanOrEqual(60 * 1000);
   });
 });
