@@ -26,7 +26,25 @@ function sql_(): NeonQueryFunction<false, false> {
   if (!client) {
     const url = process.env.DATABASE_URL;
     if (!url) throw new Error('DATABASE_URL is not set');
-    client = neon(url);
+    try {
+      client = neon(url);
+    } catch {
+      // neon() throws "Database connection string provided to `neon()` is
+      // not a valid URL. Connection string: <url>" for a malformed value —
+      // the raw DATABASE_URL, password included, interpolated straight
+      // into the message (confirmed in
+      // node_modules/@neondatabase/serverless/index.mjs). That original
+      // error must never propagate: every caller of sql_() catches
+      // whatever it throws and passes it to console.error, and Vercel
+      // ships that straight to its logs. Rethrowing a fixed message with
+      // no interpolated value closes that off at the one place every
+      // route's query path runs through, so no future call site has to
+      // remember to redact. Deliberately no `cause` either — most log
+      // serializers walk and print `cause`, which would carry the
+      // credential back in through the side door this rethrow exists to
+      // close.
+      throw new Error('DATABASE_URL is not a valid connection string');
+    }
   }
   return client;
 }

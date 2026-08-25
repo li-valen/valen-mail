@@ -54,27 +54,27 @@ export function classificationIsConfirmed(c: string): boolean {
  * input, which they already know, the same property `timingSafeEqual`
  * itself relies on by throwing on a length mismatch rather than comparing.
  *
- * The loop that follows has NO early exit, on purpose. Returning `false`
- * the instant a differing byte is found would reintroduce exactly the
+ * The byte comparison is deliberately a `reduce`, not a `for` loop, and
+ * that choice is the actual security property, not a style preference: a
+ * `for` loop lets a future edit slip in `if (diff) return false;` as an
+ * innocuous-looking "optimization," which would reintroduce exactly the
  * timing leak this function exists to prevent — just moved from "did the
  * whole token match" down to "how many leading bytes matched before the
- * first difference." Every byte pair is XORed into one accumulator across
- * the *entire* length no matter where they first diverge, and only the
- * final accumulator — zero if and only if every byte pair was equal — is
- * checked once, after the loop ends. A future edit that adds
- * `if (diff) return false;` inside the loop as an "optimization" would
- * silently undo this property; that's the thing to protect in review, since
- * nothing here or in the type system enforces it structurally.
+ * first difference." `reduce` has no `break`/early-return equivalent: it
+ * always visits every index up to `a.length`, so skipping the tail would
+ * require ripping out the fold and rewriting this as an imperative loop —
+ * a visible structural change a reviewer would see, not a one-line edit
+ * that's easy to wave through. Every byte pair is XORed into one
+ * accumulator across the *entire* length no matter where they first
+ * diverge, and only the final accumulator — zero if and only if every byte
+ * pair was equal — is checked once, after the fold completes.
  */
 export function tokenMatches(provided: string, expected: string): boolean {
   const a = new TextEncoder().encode(provided);
   const b = new TextEncoder().encode(expected);
   if (a.length !== b.length) return false;
 
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) {
-    diff |= a[i]! ^ b[i]!;
-  }
+  const diff = a.reduce((acc, byte, i) => acc | (byte ^ b[i]!), 0);
   return diff === 0;
 }
 
