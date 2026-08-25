@@ -111,6 +111,11 @@ function toWebHeaders(nodeHeaders: IncomingMessage['headers']): Headers {
  * refused here with an opaque 413 before auth, before the send limiter and
  * before any of the route's own validation, which made its documented
  * `MAX_TEXT_BODY_BYTES` unreachable. See `requestBodyLimit` below.
+ *
+ * This number and `MAX_CONCURRENT_CONNECTIONS` below together define the
+ * worst-case body-buffering footprint of this process (connections x the
+ * largest per-connection cap). Raising either means re-checking the
+ * product — see that constant for the current arithmetic.
  */
 export const MAX_REQUEST_BODY_BYTES = 8 * 1024;
 
@@ -147,6 +152,44 @@ function requestPath(rawUrl: string): string {
  *
  * Exported for the 413 log line below and for tests.
  */
+/**
+ * Ceiling on simultaneously accepted TCP connections (fix round 2).
+ *
+ * This exists because of the constant above it. Raising one route's
+ * per-connection buffer from 8 KiB to 768 KiB is a 96x change to the
+ * worst-case footprint, and nothing else bounded it: `toWebRequest`
+ * buffers the body BEFORE the router runs, so neither the auth gate nor
+ * the send limiter is between an arriving body and the memory it
+ * occupies. The send limiter in particular bounds requests per HOUR, not
+ * simultaneous in-flight buffering — two concurrent requests both pass a
+ * 30/hour check — so it is the wrong instrument for this and moving it
+ * earlier would not bound the footprint either. Connection count is.
+ *
+ * Worst case is the product of the two numbers:
+ *
+ *   64 connections x 768 KiB = 48 MB
+ *
+ * against a 955 MB box that also runs Postgres and up to ten IMAP
+ * connections. For scale, this service already tolerates a single
+ * attachment fetch holding MAX_BODY_PART_BYTES (32 MB, ../imap/fetch.ts)
+ * transiently, so a 48 MB ceiling across EVERY connection is the same
+ * order of magnitude as one buffer the design already accepts — not a new
+ * class of risk.
+ *
+ * 64 is far above realistic demand and that is the point of picking it
+ * rather than something tighter: this is a single-user service behind
+ * Caddy, an HTTP/1.1 browser opens about six connections per origin, and
+ * Caddy pools its upstream keep-alives — so even several devices plus a
+ * script stay comfortably under 25. Node DESTROYS sockets past this
+ * limit, so a number chosen close to the real peak would turn a burst
+ * into a user-visible failure. This one bounds the footprint without ever
+ * being reached in normal use.
+ *
+ * If either number changes, re-check the product. They are only safe
+ * together.
+ */
+export const MAX_CONCURRENT_CONNECTIONS = 64;
+
 export function requestBodyLimit(method: string, rawUrl: string): number {
   if (method.toUpperCase() !== 'POST') return MAX_REQUEST_BODY_BYTES;
   return requestPath(rawUrl) === '/api/send'
@@ -603,6 +646,11 @@ export async function startServer(): Promise<{ close(): Promise<void> }> {
   const server = createServer((nodeRequest, nodeResponse) => {
     void handleRequest(router, nodeRequest, nodeResponse);
   });
+  // Explicit, not Node's default of Infinity: see
+  // MAX_CONCURRENT_CONNECTIONS for the arithmetic tying this to the
+  // per-route body caps. Without it the worst-case buffering footprint of
+  // this process is unbounded by construction.
+  server.maxConnections = MAX_CONCURRENT_CONNECTIONS;
 
   await new Promise<void>((resolve) => server.listen(config.port, BIND_HOST, resolve));
   console.error(

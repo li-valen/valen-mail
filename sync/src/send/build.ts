@@ -44,9 +44,15 @@ export function escapeHtml(value: string): string {
 
 /**
  * Characters an email ADDRESS may never carry into a header or an SMTP
- * envelope: C0 controls and DEL (CR/LF being the injection vector), all
- * whitespace including the space itself, and the three delimiters that
- * would otherwise close the address and open something else.
+ * envelope: every character at or below U+0020 — the C0 controls, with
+ * CR/LF the injection vector, plus tab and the space itself — and U+007F
+ * (DEL), together with the three delimiters that would otherwise close
+ * the address and open something else.
+ *
+ * ASCII only, deliberately: this does NOT strip Unicode whitespace such
+ * as U+00A0 or U+2028. Those cannot terminate a header or an SMTP
+ * command, so removing them would silently corrupt an address rather
+ * than protect anything.
  *
  * Applies to the SENDER address only, which comes from operator config.
  * Recipient addresses are validated — not rewritten — at the route

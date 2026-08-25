@@ -16,6 +16,7 @@ import type { SendRouteDeps } from '../src/api/send';
 import { createRouter } from '../src/api/routes.ts';
 import {
   createRouterFromConfig,
+  requestBodyLimit,
   toWebRequest,
   MAX_REQUEST_BODY_BYTES,
 } from '../src/api/server.ts';
@@ -830,6 +831,35 @@ describe('POST /api/send — the request body cap at the transport seam', () => 
     );
 
     expect(request).not.toBeNull();
+  });
+
+  it('falls back to the TIGHT cap for a request target that is not a parseable URL', () => {
+    // `requestPath` resolves the target with `new URL('http://localhost' + raw)`
+    // and catches. '%zz' genuinely throws there (verified against this
+    // Node version — an invalid percent-escape lands in the HOST position
+    // when the target has no leading slash, which is exactly the shape a
+    // malformed client or a probe sends). The branch must fail CLOSED: an
+    // unparseable target gets the 8 KiB default, never the send route's
+    // 768 KiB. Mutating the catch to `return '/api/send'` fails this.
+    expect(requestBodyLimit('POST', '%zz')).toBe(MAX_REQUEST_BODY_BYTES);
+    expect(requestBodyLimit('POST', ':abc')).toBe(MAX_REQUEST_BODY_BYTES);
+  });
+
+  it('refuses an oversized body on an unparseable target rather than buffering it', () => {
+    // End to end through the adapter: the limit is chosen BEFORE the
+    // `new Request(...)` that a malformed target would throw on, so the
+    // body is capped at 8 KiB and refused. The refusal is a 413, and
+    // crucially not an exception escaping mid-buffer.
+    return expect(
+      toWebRequest(
+        fakeIncoming({
+          method: 'POST',
+          url: '%zz',
+          body: 'x'.repeat(MAX_REQUEST_BODY_BYTES + 1),
+          headers: AUTH,
+        }),
+      ),
+    ).resolves.toBeNull();
   });
 
   it('reserves enough transport budget for the worst-case JSON encoding of a maximal body', () => {
