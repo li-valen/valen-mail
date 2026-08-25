@@ -259,6 +259,8 @@ export async function insertTokens(rows: readonly InsertTokenInput[]): Promise<v
 
 export interface OpenRow {
   readonly token: string;
+  readonly accountId: string;
+  readonly messageId: string;
   readonly recipientEmail: string;
   readonly subject: string | null;
   readonly sentAt: number;
@@ -283,10 +285,16 @@ export interface OpenRow {
  *
  * Ordered newest-first so the caller can render "opened N ago" without a
  * second sort.
+ *
+ * `account_id`/`message_id` are projected alongside the existing columns
+ * (Plan: link an open back to its message) so a caller can resolve which
+ * message a given open belongs to. Both are NOT NULL on `tokens` — see
+ * `InsertTokenInput` above — so no null-handling is needed for them here,
+ * unlike `subject`/`device_class`/`os`.
  */
 export async function listRecentOpens(limit: number): Promise<OpenRow[]> {
   const rows = await sql_()`
-    select o.token, t.recipient_email, t.subject, t.sent_at,
+    select o.token, t.account_id, t.message_id, t.recipient_email, t.subject, t.sent_at,
            o.occurred_at, o.classification, o.device_class, o.os
     from opens o
     join tokens t on t.token = o.token
@@ -295,6 +303,8 @@ export async function listRecentOpens(limit: number): Promise<OpenRow[]> {
   `;
   return rows.map((row) => ({
     token: row.token,
+    accountId: row.account_id,
+    messageId: row.message_id,
     recipientEmail: row.recipient_email,
     subject: row.subject,
     sentAt: new Date(row.sent_at).getTime(),

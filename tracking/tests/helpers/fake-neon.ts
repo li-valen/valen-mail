@@ -33,3 +33,40 @@ export function createFakeSql(): {
   });
   return { fakeSql, calls };
 }
+
+/** One tagged-template call captured from a faked neon tag-function invocation. */
+export interface CapturedTaggedQuery {
+  /** The template's static strings joined with no separator — every
+   *  interpolation collapses to nothing, so a literal column name that
+   *  appears in the SQL text (never inside an interpolation, since values
+   *  are always parameters, not text) survives intact and can be matched
+   *  with a plain substring/regex check. */
+  readonly text: string;
+  readonly values: readonly unknown[];
+}
+
+/**
+ * A minimal stand-in for the object `@neondatabase/serverless`'s `neon()`
+ * returns, supporting the tagged-template call form — `` fakeSql`select
+ * ...` `` — used by every function in `src/db.ts` except `insertTokens`
+ * (which has its own fake, `createFakeSql` above, for the "ordinary
+ * function" form it uses instead).
+ *
+ * Returns `rows` for every call, so a test can seed exactly the row shape
+ * `listRecentOpens`'s mapping expects and assert the mapped result
+ * round-trips it. Every call is also recorded — text and interpolated
+ * values separately, mirroring `createFakeSql` — so a test can assert on
+ * the literal column list a db.ts function issued without a live
+ * database.
+ */
+export function createFakeTaggedSql(rows: readonly unknown[]): {
+  fakeSql: (strings: TemplateStringsArray, ...values: unknown[]) => Promise<readonly unknown[]>;
+  calls: CapturedTaggedQuery[];
+} {
+  const calls: CapturedTaggedQuery[] = [];
+  const fakeSql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    calls.push({ text: strings.join(''), values });
+    return rows;
+  });
+  return { fakeSql, calls };
+}
