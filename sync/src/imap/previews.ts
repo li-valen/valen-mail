@@ -91,11 +91,16 @@ async function resolvePreviewTargets(
  *    without previews. (The caller must record the HEADER bytes before
  *    calling this, or that reservation is measured against a snapshot
  *    that pretends the header fetch never happened — see syncFolder.)
- *  - Nothing here can fail the folder. A throw from fetchPreviews (the
- *    mailbox failing to re-open, say — one part group failing is already
- *    handled inside fetchPreviews itself) is logged and turned into an
- *    empty map, so every message is still upserted, just with `snippet`
- *    null.
+ *  - A throw from fetchPreviews cannot fail the folder. The mailbox
+ *    failing to re-open, say — one part group failing is already handled
+ *    inside fetchPreviews itself — is logged and turned into an empty map,
+ *    so every message is still upserted, just with `snippet` null.
+ *    Scoped deliberately to fetchPreviews: findUidsWithSnippet and
+ *    budget.reserve are OUTSIDE the try, and a throw from either does
+ *    propagate to syncFolder. That is correct rather than an oversight —
+ *    both are Postgres round trips, and a database this sync loop cannot
+ *    reach is not a preview problem to swallow; upsertMessage on the very
+ *    next line would fail too.
  *
  * Returns an empty map for a folder with nothing to preview, which is the
  * steady state.

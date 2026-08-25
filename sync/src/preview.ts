@@ -219,12 +219,30 @@ function fromCodePoint(value: number, original: string): string {
   return String.fromCodePoint(value);
 }
 
+/**
+ * Looks up a named entity WITHOUT consulting Object.prototype.
+ *
+ * A bare `NAMED_ENTITIES[name]` inherits from Object.prototype, so a
+ * sender could write `&constructor;` in an HTML body and have
+ * `function Object() { [native code] }` written into the stored,
+ * searchable snippet — attacker-controlled text reaching a column the
+ * user reads. (`&toString;` and `&hasOwnProperty;` happen to be saved
+ * today only because `.toLowerCase()` mangles them into keys that are not
+ * on the prototype; that is an accident of casing, not a guard.)
+ *
+ * Object.hasOwn closes the whole class rather than the one instance.
+ */
+function namedEntity(name: string, original: string): string {
+  const key = name.toLowerCase();
+  return Object.hasOwn(NAMED_ENTITIES, key) ? NAMED_ENTITIES[key]! : original;
+}
+
 function decodeEntities(text: string): string {
   return text
     .replace(/&#x([0-9a-f]{1,6});/gi, (match, hex: string) =>
       fromCodePoint(Number.parseInt(hex, 16), match))
     .replace(/&#(\d{1,7});/g, (match, digits: string) => fromCodePoint(Number(digits), match))
-    .replace(/&([a-z]+);/gi, (match, name: string) => NAMED_ENTITIES[name.toLowerCase()] ?? match);
+    .replace(/&([a-z]+);/gi, (match, name: string) => namedEntity(name, match));
 }
 
 /**

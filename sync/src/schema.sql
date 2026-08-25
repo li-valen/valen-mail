@@ -41,14 +41,14 @@ create table if not exists messages (
   -- Every reader — the inbox list, the search route's ILIKE, the client's
   -- row rendering — must treat NULL as ordinary, not exceptional.
   --
-  -- When it IS populated it will be bounded at the write path, not by a
-  -- constraint here: upsertMessage wraps this parameter in left($n, 500)
-  -- before insert. A CHECK would reject the whole insert on a caller bug
-  -- and silently stop that message from syncing; truncation just bounds
-  -- storage unconditionally. normalizeMessage truncates to 280 chars
-  -- before this is ever called; 500 here is deliberate headroom so a
-  -- future change to that 280 limit does not silently get masked by this
-  -- one.
+  -- It IS bounded at the write path, not by a constraint here:
+  -- upsertMessage wraps this parameter in left($n, 500) before insert. A
+  -- CHECK would reject the whole insert on a caller bug and silently stop
+  -- that message from syncing; truncation just bounds storage
+  -- unconditionally. applySnippet (src/normalize.ts) has already truncated
+  -- to SNIPPET_CHARS (280) before this is ever reached; 500 here is
+  -- deliberate headroom so a future change to that 280 limit does not
+  -- silently get masked by this one.
   snippet      text,
   flags        text[],
   labels       text[],

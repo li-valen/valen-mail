@@ -15,7 +15,6 @@ const RAW = {
     cc: [],
   },
   threadId: 'thread-9',
-  bodyText: 'Hi — attaching the numbers we discussed. Let me know if anything looks off.',
 };
 
 describe('normalizeMessage', () => {
@@ -36,14 +35,12 @@ describe('normalizeMessage', () => {
     expect(m.labels).toEqual(['\\Inbox', 'Work']);
   });
 
-  it('truncates the snippet to SNIPPET_CHARS', () => {
-    const long = { ...RAW, bodyText: 'x'.repeat(SNIPPET_CHARS + 200) };
-    expect(normalizeMessage(long, 'p', 'INBOX').snippet).toHaveLength(SNIPPET_CHARS);
-  });
-
-  it('collapses whitespace in the snippet', () => {
-    const messy = { ...RAW, bodyText: 'line one\n\n\n   line two\t\tend' };
-    expect(normalizeMessage(messy, 'p', 'INBOX').snippet).toBe('line one line two end');
+  it('always produces a null snippet, because the fetch it runs inside is header-only', () => {
+    // The honest contract as of Plan 7 Task 1: normalizeMessage has no body
+    // bytes to work from, so it never sets this field. applySnippet is the
+    // single path that can — see its own describe below, which is where the
+    // SNIPPET_CHARS cap and whitespace collapsing are now exercised.
+    expect(normalizeMessage(RAW, 'p', 'INBOX').snippet).toBeNull();
   });
 
   it('tolerates a message with no envelope sender', () => {
@@ -79,7 +76,7 @@ describe('applySnippet', () => {
   // The message as fetchHeaders produces it: header-only, so always
   // snippet-less. The preview arrives later, from the separate partial
   // PEEK fetch, which is why this overlay exists at all.
-  const headerOnly = normalizeMessage({ ...RAW, bodyText: undefined }, 'primary', 'INBOX');
+  const headerOnly = normalizeMessage(RAW, 'primary', 'INBOX');
 
   it('overlays the preview onto an otherwise unchanged message', () => {
     const result = applySnippet(headerOnly, 'Numbers are attached.');

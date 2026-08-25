@@ -313,10 +313,14 @@ describe('the preview fetch as IMAP actually sees it', () => {
 
   it('compiles to BODY.PEEK, never a bare BODY — fetching a preview must not set \\Seen', async () => {
     const command = await compilePreviewCommand('1', '7,9');
-    expect(command).toBe('A1 UID FETCH 7,9 (UID BODY.PEEK[1]<0.512>)');
-    // Belt and braces: the exact-string assertion above already fails on a
-    // bare BODY[, but this states the property the string is standing in
-    // for, so a future reader changing the string knows what must survive.
+    // THE EXACT-STRING ASSERTION ABOVE IS THE GUARD. The two below are
+    // documentation of what it is standing in for, and neither is capable
+    // of catching a regression on its own: imapflow hardcodes `.PEEK` for
+    // every rendering it emits, so no change to the query object can
+    // produce a bare `BODY[` — a `source: true` mutant compiles to
+    // `BODY.PEEK[]`, which satisfies both of them and fails only the
+    // toBe(). Read them as a note to whoever next edits the expected
+    // string, not as a second line of defence.
     expect(command).toContain('BODY.PEEK[');
     expect(command).not.toMatch(/[^.]BODY\[/);
   });
@@ -466,17 +470,44 @@ describe('fetchPreviews', () => {
     expect(fake.locksReleased()).toBe(1);
   });
 
-  it('logs the failure without ever putting body content in the log line', async () => {
+  it('logs the failure with ids and a count, and never the body it did fetch', async () => {
+    // The absence half is the point and needs a fixture where a body
+    // genuinely EXISTS to leak: uid 1's part fetches fine, uid 2's part
+    // group throws. A test that only ever threw before any body existed
+    // would assert the absence of something that was never there.
+    const secret = 'CONFIDENTIAL-BODY-TEXT-DO-NOT-LOG';
     const logged: unknown[][] = [];
+    const connection = {
+      accountId: 'primary',
+      rawClient: () => ({
+        getMailboxLock: async () => ({ release: () => {} }),
+        fetch: function* (range: unknown, query: Record<string, unknown>) {
+          const partId = (query.bodyParts as ReadonlyArray<{ key: string }>)[0]!.key;
+          if (partId === '9') throw new Error(`connection reset while reading ${secret}`);
+          yield { uid: Number(range), bodyParts: new Map([[partId, Buffer.from(secret)]]) };
+        },
+      }),
+    } as unknown as ImapConnection;
+
     const spy = vi.spyOn(console, 'error').mockImplementation((...args) => { logged.push(args); });
-    const fake = makeFakePreviewConnection({ fetchError: new Error('connection reset') });
-    await fetchPreviews(fake.connection, 'INBOX', [{ uid: 1, part: PLAIN_PART }]);
+    const result = await fetchPreviews(connection, 'INBOX', [
+      { uid: 1, part: PLAIN_PART },
+      { uid: 2, part: { partId: '9', mimeType: 'text/plain', encoding: null } },
+    ]);
     spy.mockRestore();
+
+    // The body really was fetched, so there was something to leak.
+    expect(result.previews.get(1)).toBe(secret);
 
     expect(logged).toHaveLength(1);
     const message = String(logged[0]![0]);
     expect(message).toContain('primary');
     expect(message).toContain('INBOX');
     expect(message).toContain('1 message(s)');
+    // The absence assertion the old name promised and did not make. Note
+    // this covers OUR log line only: the caught Error is passed to
+    // console.error as a separate argument, and what a server puts in its
+    // own error text is not ours to sanitize.
+    expect(message).not.toContain(secret);
   });
 });

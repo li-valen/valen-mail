@@ -3,12 +3,13 @@ import type { MessageInput } from './db';
 /** Long enough to judge a message from the list, short enough that 500k
  *  rows stay near 1 GB. Storing full bodies would be roughly 10x this.
  *
- *  LIVE as of Plan 7 Task 1. The sync path still fetches headers only —
- *  `raw.bodyText` remains undefined for every message fetchHeaders()
- *  produces — but ConnectionPool now follows that with a separate,
+ *  LIVE as of Plan 7 Task 1. normalizeMessage() still produces a null
+ *  snippet for every message — the sync path it runs inside is
+ *  header-only. ConnectionPool follows that with a separate,
  *  separately-budgeted partial PEEK fetch of the first text part and
- *  applies the result through applySnippet() below, which routes through
- *  the same makeSnippet() and therefore the same cap. */
+ *  applies the result through applySnippet() below, which is the single
+ *  path that can set this field and therefore the single place this cap
+ *  is applied. */
 export const SNIPPET_CHARS = 280;
 
 interface Address { readonly name?: string; readonly address?: string }
@@ -19,7 +20,6 @@ export interface RawImapMessage {
   readonly flags?: ReadonlySet<string> | readonly string[];
   readonly labels?: ReadonlySet<string> | readonly string[];
   readonly threadId?: string;
-  readonly bodyText?: string;
   readonly envelope?: {
     readonly messageId?: string;
     readonly date?: Date;
@@ -112,7 +112,11 @@ export function normalizeMessage(
     toEmails: addresses(envelope.to),
     ccEmails: addresses(envelope.cc),
     date: envelope.date ?? null,
-    snippet: makeSnippet(raw.bodyText),
+    // Always null here, by construction: the only producer of
+    // RawImapMessage is fetchHeaders(), which is header-only. The preview
+    // arrives later, from the separate partial PEEK fetch, and is applied
+    // by applySnippet() above — the one path that can actually set this.
+    snippet: null,
     flags: toSortedArray(raw.flags),
     labels: toSortedArray(raw.labels),
     hasAttach: false, // set by the caller from extractAttachments()

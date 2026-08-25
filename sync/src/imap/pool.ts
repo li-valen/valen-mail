@@ -6,13 +6,8 @@ import { ImapConnection } from './connection.ts';
 import { fetchHeaders, ESTIMATED_BYTES_PER_HEADER_FETCH } from './fetch.ts';
 import { collectPreviews } from './previews.ts';
 import { applySnippet } from '../normalize.ts';
-import {
-  discoverFolders,
-  folderSyncOrder,
-  missingFolderKinds,
-  type DiscoveredFolders,
-  type FolderKind,
-} from './folders.ts';
+import { folderSyncOrder, type DiscoveredFolders, type FolderKind } from './folders.ts';
+import { FolderCache } from './folder-cache.ts';
 import { KeyedMutex } from './keyed-mutex.ts';
 import { NewMailMarks } from './new-mail-marks.ts';
 import { ByteBudget } from '../budget.ts';
@@ -179,26 +174,9 @@ export class ConnectionPool {
   // stopped being correct once four folders shared it.
   private readonly marks = new NewMailMarks();
 
-  // Folder discovery result per CONNECTION, not per account. Keying on
-  // the connection object makes "re-discover after reconnect" automatic
-  // rather than something to remember to invalidate: runAccount() builds a
-  // fresh ImapConnection on every pass of its retry loop, so a reconnected
-  // account simply misses this cache and LISTs again — which is what we
-  // want, since a folder the user created (or a Trash re-enabled by
-  // policy) between connections should be picked up rather than pinned to
-  // whatever the process's first LIST saw. A WeakMap so a discarded
-  // connection's entry is collectable with it, instead of a reconnect loop
-  // accumulating one dead entry per attempt forever.
-  private readonly foldersByConnection = new WeakMap<ImapConnection, DiscoveredFolders>();
-
-  // Plan 5 Task 2: the SAME discovery, keyed by account id rather than by
-  // connection instance, so the API layer (./api/inbox.ts) can translate a
-  // logical folder name ('sent') into the native path to query. A plain
-  // Map, not a WeakMap: a caller here wants "whatever this account's
-  // folders currently resolve to", surviving a reconnect between two API
-  // requests, unlike foldersByConnection's per-socket cache. Never
-  // cleared, same as `statuses` below — bounded by MAX_ACCOUNTS (10).
-  private readonly foldersByAccount = new Map<string, DiscoveredFolders>();
+  // Folder discovery, its two differently-keyed caches, and the
+  // missing-folder log policy — see ./folder-cache.ts.
+  private readonly folderCache = new FolderCache();
 
   // Fix round 2, Fix A: every detached dispatch chain currently running
   // (Fix round 1, Fix 5 made dispatch fire-and-forget from syncOnce(), so
@@ -259,24 +237,12 @@ export class ConnectionPool {
     return this.connections.get(accountId);
   }
 
-  /**
-   * The most recently discovered folder mapping for one account, or
-   * `undefined` if it has never completed a LIST since this process
-   * started (never connected yet, every attempt so far failed first, or
-   * the id is unknown to this pool).
-   *
-   * `undefined` here and "discovered, but this kind is absent" (a real
-   * `null` field on DiscoveredFolders) are deliberately not distinguished
-   * by the caller (./api/inbox.ts's resolveFolderFilter): both mean "no
-   * native folder to query for this kind right now", and Plan 5 Task 2's
-   * contract is that either one degrades to an empty result, never a 500.
-   *
-   * Nothing inside this class needs this — like getConnection above, it
-   * exists for the API layer, so it can read the pool's own discovery
-   * instead of issuing a second LIST.
-   */
+  /** The API layer's read of this pool's own folder discovery, so it need
+   *  not issue a second LIST — see FolderCache.forAccount for the contract,
+   *  including why "never discovered" and "discovered but absent" are
+   *  deliberately indistinguishable to the caller. */
   getDiscoveredFolders(accountId: string): DiscoveredFolders | undefined {
-    return this.foldersByAccount.get(accountId);
+    return this.folderCache.forAccount(accountId);
   }
 
   /**
@@ -518,41 +484,6 @@ export class ConnectionPool {
     }
   }
 
-  /**
-   * Resolves this connection's folders, LISTing once per connection and
-   * reusing the answer for every later cycle on it (see
-   * foldersByConnection for why the cache is keyed that way).
-   *
-   * The missing-folder log fires inside the cache miss, so it is one line
-   * per connection rather than one per cycle — an account whose Trash is
-   * disabled would otherwise log every three minutes forever. Only the
-   * folder KIND is named, never a path or anything else from the listing.
-   *
-   * A LIST failure is not caught: imap/folders.ts documents why a
-   * connection that cannot enumerate its own mailboxes is a
-   * connection-health signal, which runAccount()'s catch already handles.
-   */
-  private async resolveFolders(
-    accountId: string,
-    connection: ImapConnection,
-  ): Promise<DiscoveredFolders> {
-    const cached = this.foldersByConnection.get(connection);
-    if (cached) return cached;
-
-    const folders = await discoverFolders(() => connection.listMailboxes());
-    this.foldersByConnection.set(connection, folders);
-    this.foldersByAccount.set(accountId, folders);
-
-    const missing = missingFolderKinds(folders);
-    if (missing.length > 0) {
-      console.error(
-        `account "${accountId}": server reported no special-use folder for ${missing.join(', ')} ` +
-          '— those folders will not be synced; the rest continue normally',
-      );
-    }
-    return folders;
-  }
-
   private async syncOnce(accountId: string, connection: ImapConnection): Promise<void> {
     // Amendment 2: reserve -> fetch -> record is serialised per account so
     // two overlapping cycles can never both reserve against the same
@@ -567,7 +498,7 @@ export class ConnectionPool {
     // imapflow client; a cycle that let go halfway would reopen exactly
     // that race, with the mailbox left pointing at Sent.
     const newMessages = await this.mutex.run(accountId, async (): Promise<readonly MessageInput[]> => {
-      const folders = await this.resolveFolders(accountId, connection);
+      const folders = await this.folderCache.resolve(accountId, connection);
 
       // BYTE BUDGET, worst case, stated here because this loop is what
       // multiplied it by four: 50 headers x 2 KB

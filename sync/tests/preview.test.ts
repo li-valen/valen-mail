@@ -208,6 +208,34 @@ describe('previewTextFrom — HTML fragments', () => {
     expect(preview('<p>Use &lt;b&gt; for bold</p>', HTML)).toBe('Use <b> for bold');
   });
 
+  it('never resolves a named entity through Object.prototype', () => {
+    // Fix round 1. `NAMED_ENTITIES[name]` on an object literal inherits
+    // from Object.prototype, so `&constructor;` in an attacker-authored
+    // HTML body resolved to "function Object() { [native code] }" and was
+    // written into the stored, searchable snippet. Not XSS — the client
+    // renders text — but attacker-controlled garbage in a column the user
+    // reads.
+    expect(preview('<p>&constructor; hello</p>', HTML)).toBe('&constructor; hello');
+  });
+
+  it('covers the whole prototype class, not just the one key that happened to land', () => {
+    // `&toString;` and `&hasOwnProperty;` were saved before the fix only
+    // because `.toLowerCase()` mangles them into keys that are not on the
+    // prototype — an accident of casing, not a guard. If the regex or the
+    // lowercasing ever changed they would land too, so the guard is
+    // asserted against the class rather than the single instance that was
+    // observably broken.
+    for (const key of ['toString', 'hasOwnProperty', 'valueOf', '__proto__', 'constructor']) {
+      expect(preview(`<p>&${key}; x</p>`, HTML)).toBe(`&${key}; x`);
+    }
+  });
+
+  it('still decodes the real named entities it does know', () => {
+    // The guard must not have been implemented by disabling the table.
+    expect(preview('<p>a &amp; b &lt;c&gt; &quot;d&quot; &apos;e&apos;&nbsp;f</p>', HTML))
+      .toBe(`a & b <c> "d" 'e' f`);
+  });
+
   it('leaves an out-of-range numeric entity as literal text instead of throwing', () => {
     // String.fromCodePoint throws above U+10FFFF, and the body is authored
     // by whoever sent the mail.
