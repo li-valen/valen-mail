@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { getInbox, getOpens, ApiError } from '../src/api';
 
 describe('api wrapper', () => {
@@ -102,6 +102,90 @@ describe('api wrapper', () => {
         status: 200,
         headers: { 'content-type': 'application/json' },
       }),
+    );
+    await expect(getOpens(20, f)).resolves.toEqual({ opens: [open], available: true });
+  });
+});
+
+/**
+ * Runtime validation at the network boundary (Task 3.5, minor finding 1).
+ * `response.json()` is `unknown`; casting it straight to a typed shape
+ * means a malformed row surfaces as a blank row or an `Invalid Date` deep
+ * in the UI instead of being refused here. Mirrors the narrow hand-written
+ * predicate in sync/src/api/opens.ts — no schema library, only the fields
+ * the rest of the system depends on structurally.
+ */
+describe('api response validation', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function jsonResponse(body: unknown): Response {
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+
+  const VALID_MESSAGE = {
+    account_id: 'primary',
+    uid: '42',
+    folder: 'INBOX',
+    date: '2026-08-01T00:00:00.000Z',
+    subject: 'hello',
+  };
+
+  it('drops a malformed inbox row and keeps its valid siblings', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const f = vi.fn().mockResolvedValue(
+      jsonResponse({ messages: [VALID_MESSAGE, { subject: 'no identity at all' }, null, 7] }),
+    );
+    await expect(getInbox(50, null, f)).resolves.toEqual([VALID_MESSAGE]);
+  });
+
+  it('drops an inbox row whose date is the wrong type rather than rendering Invalid Date', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const f = vi.fn().mockResolvedValue(
+      jsonResponse({ messages: [{ ...VALID_MESSAGE, date: 1_700_000_000_000 }] }),
+    );
+    await expect(getInbox(50, null, f)).resolves.toEqual([]);
+  });
+
+  it('keeps an inbox row with a null date, which is a legitimate value', async () => {
+    const row = { ...VALID_MESSAGE, date: null };
+    const f = vi.fn().mockResolvedValue(jsonResponse({ messages: [row] }));
+    await expect(getInbox(50, null, f)).resolves.toEqual([row]);
+  });
+
+  it('logs once per response, not once per dropped row', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const f = vi.fn().mockResolvedValue(jsonResponse({ messages: [{}, {}, {}, VALID_MESSAGE] }));
+    await getInbox(50, null, f);
+    expect(errors).toHaveBeenCalledTimes(1);
+    expect(String(errors.mock.calls[0]?.[0])).toContain('3');
+  });
+
+  it('does not log when every row is well formed', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const f = vi.fn().mockResolvedValue(jsonResponse({ messages: [VALID_MESSAGE] }));
+    await getInbox(50, null, f);
+    expect(errors).not.toHaveBeenCalled();
+  });
+
+  it('drops a malformed open event and keeps its valid siblings', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const open = {
+      token: 't1',
+      recipientEmail: 'kate@example.com',
+      subject: null,
+      sentAt: 1000,
+      occurredAt: 2000,
+      classification: 'open',
+      deviceClass: null,
+      os: null,
+    };
+    const f = vi.fn().mockResolvedValue(
+      jsonResponse({ opens: [open, { token: 't2' }, { occurredAt: 5 }], available: true }),
     );
     await expect(getOpens(20, f)).resolves.toEqual({ opens: [open], available: true });
   });

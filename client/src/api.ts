@@ -6,16 +6,18 @@
  * handleOpens). If a second base URL ever seems necessary here, that is a
  * design violation, not a missing feature.
  *
- * Auth: the sync service's own routes require a bearer token
- * (sync/src/api/routes.ts, extractBearerToken), but that token is
- * configuration for the SERVER, never a value this module holds or sends.
- * Every request below goes out with `credentials: 'same-origin'` and no
- * Authorization header — a token embedded in shipped JavaScript is
- * readable by anyone with devtools, which matters more here than usual
- * because this API fronts four real mailboxes. How a same-origin browser
- * request ends up authorized against the deployed service (a reverse-proxy
- * header injection, a future session mechanism, or similar) is a
- * deployment concern outside this task's scope — see task-3-report.md.
+ * Auth: the sync service's routes accept EITHER a bearer token or a
+ * session cookie (sync/src/api/session.ts, Task 3.5). This module only
+ * ever uses the second one, and only implicitly: every request goes out
+ * with `credentials: 'same-origin'` and no Authorization header, because a
+ * token embedded in shipped JavaScript is readable by anyone with
+ * devtools, and this API fronts four real mailboxes. The cookie is
+ * HttpOnly, so this module cannot read it either — it is established once
+ * by ./session.ts's `createSession` and then simply rides along.
+ *
+ * A 401 from any function here therefore means "no usable session", and
+ * `withSession` in ./session.ts is what turns that into a login prompt and
+ * a retry. Nothing in this file holds, stores, or logs a credential.
  */
 
 const REQUEST_INIT: RequestInit = { credentials: 'same-origin' };
@@ -49,6 +51,49 @@ function buildPath(pathname: string, params: Readonly<Record<string, string | un
   return `${url.pathname}${url.search}`;
 }
 
+/**
+ * Keeps the items an item-level predicate vouches for and drops the rest,
+ * logging ONCE per response rather than once per item.
+ *
+ * `response.json()` is `unknown`, and this client is the last place a
+ * malformed row can be refused before it reaches a component — after this
+ * point a missing `uid` is a dead link and a numeric `date` is a literal
+ * "Invalid Date" in the UI. Dropping the bad item and keeping its valid
+ * siblings is the right degradation for an inbox: one corrupt row must not
+ * blank a whole page of mail.
+ *
+ * Deliberately a hand-written predicate per caller rather than a schema
+ * library — no new dependency (client/CLAUDE.md), and this mirrors the
+ * boundary check sync/src/api/opens.ts already applies to the tracking
+ * service's response. `items` is only read; a new array is returned.
+ */
+function keepValid<T>(
+  items: readonly unknown[],
+  isValid: (value: unknown) => value is T,
+  label: string,
+): readonly T[] {
+  const valid = items.filter(isValid);
+  if (valid.length !== items.length) {
+    console.error(
+      `api: dropped ${items.length - valid.length} of ${items.length} ${label} from the ` +
+        'sync service response — the item did not carry the fields the UI depends on',
+    );
+  }
+  return valid;
+}
+
+/** True for a value that is a non-null object, narrowed for field access. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+/** A field that the wire shape declares as `string | null`. `undefined` is
+ *  tolerated the same as `null`: an absent optional field is not a
+ *  malformed row, but a number where a date string belongs is. */
+function isNullableString(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === 'string';
+}
+
 /** One attachment's metadata on an inbox message (sync/src/db.ts MESSAGE_SELECT). */
 export interface InboxAttachment {
   readonly partId: string;
@@ -63,6 +108,13 @@ export interface InboxAttachment {
  * the server does no camelCase translation). `uid` and `size_bytes` are
  * bigint columns, which the pg driver returns as strings to avoid silent
  * precision loss above 2^53, so they stay strings here too.
+ *
+ * **THE snake_case BELOW IS DELIBERATE. IT IS NOT A STYLE SLIP.** This
+ * project names things in camelCase everywhere else; these fields are the
+ * one exception because they are a verbatim mirror of a wire shape this
+ * client does not control. Renaming them to camelCase here would silently
+ * decouple the type from the JSON it describes, and the compiler would not
+ * say a word — every field would just be `undefined` at runtime.
  */
 export interface InboxMessage {
   readonly account_id: string;
@@ -106,8 +158,31 @@ export async function getInbox(
     limit: String(limit),
     before: before ?? undefined,
   });
-  const body = (await getJson(path, fetchImpl)) as { messages?: unknown };
-  return Array.isArray(body.messages) ? (body.messages as InboxMessage[]) : [];
+  const body = await getJson(path, fetchImpl);
+  const messages = isRecord(body) && Array.isArray(body.messages) ? body.messages : [];
+  return keepValid(messages, isInboxMessage, 'inbox message(s)');
+}
+
+/**
+ * Narrow boundary check, deliberately not a full schema.
+ *
+ * `account_id`, `uid` and `folder` are the message's identity and are what
+ * every body/attachment URL is built from, so a row missing any of them
+ * cannot be rendered as anything a user could act on. `date` is what the
+ * inbox sorts and formats by, so a wrong TYPE there is refused — though
+ * `null` is a legitimate value (a message with no Date header) and stays.
+ * Every other field is display-only and already tolerates `null`
+ * downstream, so requiring it here would make the inbox more fragile
+ * without protecting anything real.
+ */
+function isInboxMessage(value: unknown): value is InboxMessage {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.account_id === 'string' &&
+    typeof value.uid === 'string' &&
+    typeof value.folder === 'string' &&
+    isNullableString(value.date)
+  );
 }
 
 /** One open event, as returned by GET /api/opens (sync/src/api/opens.ts OpenEvent). */
@@ -156,14 +231,27 @@ export async function getOpens(
 ): Promise<OpensResponse> {
   const path = buildPath('/api/opens', { limit: String(limit) });
   try {
-    const body = (await getJson(path, fetchImpl)) as { opens?: unknown; available?: unknown };
-    if (!Array.isArray(body.opens)) return UNAVAILABLE;
+    const body = await getJson(path, fetchImpl);
+    if (!isRecord(body) || !Array.isArray(body.opens)) return UNAVAILABLE;
     return {
-      opens: body.opens as OpenEvent[],
+      opens: keepValid(body.opens, isOpenEvent, 'open event(s)'),
       available: body.available === true,
     };
   } catch (error) {
     console.error('api: opens rail degraded to unavailable', error);
     return UNAVAILABLE;
   }
+}
+
+/**
+ * The same two structural fields sync/src/api/opens.ts validates on its own
+ * side of this hop: `token` is the join key back to a tracked send and
+ * `occurredAt` is what the rail sorts and formats by. Checked again here
+ * because the sync service is a separate process that can be redeployed
+ * independently — "it was validated upstream" is an assumption, not a
+ * guarantee, at a network boundary.
+ */
+function isOpenEvent(value: unknown): value is OpenEvent {
+  if (!isRecord(value)) return false;
+  return typeof value.token === 'string' && typeof value.occurredAt === 'number';
 }
