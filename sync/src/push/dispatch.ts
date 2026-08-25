@@ -166,8 +166,15 @@ export function buildMailNotification(message: MessageInput): PushPayload {
   const from = message.fromName || message.fromEmail || 'New mail';
   const subject = message.subject && message.subject.length > 0 ? message.subject : '(no subject)';
 
+  // Gmail's shape, at the user's request: the SENDER is the title and the
+  // subject is the body. The OS already prefixes the app name on both
+  // platforms, so putting "Postbox" (or the app's own framing) in the title
+  // spends the most valuable line in the notification restating something
+  // the user can already see. Sender-as-title is also what makes a lock
+  // screen glanceable — "who wants me" before "about what".
   return {
-    title: `${from} — ${subject}`,
+    title: from,
+    body: subject,
     url: INBOX_URL,
     // Unique per message (never collapses two different new-mail
     // notifications into one), stable across a re-poll of the same UID
