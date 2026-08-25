@@ -59,12 +59,27 @@ describe('parseAccountParam', () => {
   it('rejects an id that is not among the configured accounts', () => {
     // The failure mode Plan 5 Task 2 calls out by name: a typo'd id must
     // not silently resolve to "no filter" or "empty result" — the caller
-    // needs to know its own input was wrong.
-    expect(parseAccountParam('nope', ACCOUNTS)).toBe('invalid');
+    // needs to know its own input was wrong. `undefined` (not a string
+    // sentinel) is what signals that — see the next test.
+    expect(parseAccountParam('nope', ACCOUNTS)).toBeUndefined();
   });
 
   it('rejects an empty accounts list the same way as any other unknown id', () => {
-    expect(parseAccountParam('a', [])).toBe('invalid');
+    expect(parseAccountParam('a', [])).toBeUndefined();
+  });
+
+  it('an account genuinely named "invalid" is accepted, not confused with the invalid-input signal', () => {
+    // Fix round 1: this function used to signal "not found" with the
+    // string 'invalid', which collided with a real account id that
+    // happened to equal that string — that account would 400 forever, on
+    // every request, regardless of whether it existed. `undefined` cannot
+    // collide with any account id, because config.ts's parseAccount
+    // requires every id to be a non-empty string and rejects duplicates,
+    // but never rejects the literal text "invalid".
+    const accountNamedInvalid: AccountConfig = {
+      id: 'invalid', email: 'invalid@example.com', appPassword: 'z'.repeat(16), isPrimary: false,
+    };
+    expect(parseAccountParam('invalid', [...ACCOUNTS, accountNamedInvalid])).toBe('invalid');
   });
 });
 

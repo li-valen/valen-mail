@@ -142,18 +142,30 @@ export function parseFolderParam(raw: string | null): InboxFolderParam | 'invali
  * target, just one whose folders (see resolveFolderFilter) may not be
  * discovered yet.
  *
- * Absent -> null ("all accounts", today's only behaviour). Present but not
- * a configured account id -> `'invalid'`: a typo'd id must 400, not
- * silently return an empty-but-200 response that reads exactly like "this
- * account genuinely has no mail" — that is the specific failure mode Plan
- * 5 Task 2's contract calls out as worth a dedicated status code.
+ * Three outcomes, and they use `null`/`undefined` rather than a string
+ * sentinel deliberately: `parseFolderParam` can safely return the fixed
+ * string `'invalid'` because its value set is closed (five known
+ * literals), but account ids are free-form and config.ts only requires
+ * one be non-empty — nothing stops a real account from being named
+ * "invalid", which would make a string sentinel collide with a legitimate
+ * id and make that one account permanently unfilterable.
+ *
+ *  - absent -> `null` ("all accounts", today's only behaviour);
+ *  - present and configured -> the account id itself (always a non-empty
+ *    string — see config.ts's parseAccount — so it can never be confused
+ *    with either of the other two outcomes);
+ *  - present but not a configured id -> `undefined`: a typo'd id must
+ *    400, not silently return an empty-but-200 response that reads
+ *    exactly like "this account genuinely has no mail" — that is the
+ *    specific failure mode Plan 5 Task 2's contract calls out as worth a
+ *    dedicated status code.
  */
 export function parseAccountParam(
   raw: string | null,
   accounts: readonly AccountConfig[],
-): string | null | 'invalid' {
+): string | null | undefined {
   if (raw === null) return null;
-  return accounts.some((account) => account.id === raw) ? raw : 'invalid';
+  return accounts.some((account) => account.id === raw) ? raw : undefined;
 }
 
 /**
@@ -219,7 +231,7 @@ export async function handleInbox(
   if (folderParam === 'invalid') return json({ error: INVALID_FOLDER_ERROR }, 400);
 
   const accountParam = parseAccountParam(url.searchParams.get('account'), accounts);
-  if (accountParam === 'invalid') return json({ error: INVALID_ACCOUNT_ERROR }, 400);
+  if (accountParam === undefined) return json({ error: INVALID_ACCOUNT_ERROR }, 400);
 
   const limit = parseLimit(url.searchParams.get('limit'));
   const cursor = parseInboxCursor(url);

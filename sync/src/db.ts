@@ -264,10 +264,17 @@ function pushFolderClause(clauses: string[], values: unknown[], folder: InboxFol
   if (folder.kind === 'all') return;
 
   if (folder.kind === 'starred') {
-    // A fixed literal, never derived from request input, so it needs no
-    // parameter placeholder — see the 'pairs' branch below for the clause
-    // that actually carries user-influenced values.
-    clauses.push(`'\\Flagged' = any(m.flags)`);
+    // Bound, not inlined, even though this value is a compile-time
+    // constant with no injection surface: an inlined `'\Flagged'` string
+    // literal's meaning depends on the `standard_conforming_strings` GUC
+    // (on by default, but not guaranteed) — if it were ever off, the
+    // backslash would be read as an escape-string escape character
+    // instead of a literal one, and this clause would silently stop
+    // matching any row (starred returns empty, not an error). A bound
+    // parameter's value is never subject to that parsing at all, which is
+    // what makes this immune to the GUC rather than dependent on it.
+    const idx = values.push('\\Flagged');
+    clauses.push(`$${idx} = any(m.flags)`);
     return;
   }
 
