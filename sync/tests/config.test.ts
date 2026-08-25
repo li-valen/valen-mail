@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { loadConfig, MAX_ACCOUNTS } from '../src/config';
 
 const ENV = { DATABASE_URL: 'postgresql://localhost/x', PORT: '8080' } as NodeJS.ProcessEnv;
@@ -146,5 +146,75 @@ describe('loadConfig', () => {
   it('ensures MAX_ACCOUNTS is 10 per spec', () => {
     // Spec: "up to 10 Gmail accounts"
     expect(MAX_ACCOUNTS).toBe(10);
+  });
+});
+
+/**
+ * Task 2, Amendment: TRACKING_BASE_URL/TRACKING_READ_TOKEN are the one
+ * deliberate exception to this file's fail-closed rule. A missing or
+ * malformed value must not throw — email sync must still start — but it
+ * must warn loudly exactly once at startup and leave trackingConfig null,
+ * which is what routes.ts's handleOpens uses to skip the network call
+ * entirely and answer `available: false`.
+ */
+describe('loadConfig trackingConfig', () => {
+  const withTracking = (overrides: Record<string, string>): NodeJS.ProcessEnv =>
+    ({ ...ENV, ...overrides } as NodeJS.ProcessEnv);
+
+  it('is null and warns once when both TRACKING_* vars are absent', () => {
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const config = loadConfig(ONE, ENV);
+    expect(config.trackingConfig).toBeNull();
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+  });
+
+  it('is null and warns when only TRACKING_BASE_URL is set', () => {
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const config = loadConfig(ONE, withTracking({ TRACKING_BASE_URL: 'https://t.example' }));
+    expect(config.trackingConfig).toBeNull();
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('is null and warns when only TRACKING_READ_TOKEN is set', () => {
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const config = loadConfig(ONE, withTracking({ TRACKING_READ_TOKEN: 'r'.repeat(32) }));
+    expect(config.trackingConfig).toBeNull();
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('is null and warns when TRACKING_BASE_URL is not a valid URL', () => {
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const config = loadConfig(
+      ONE,
+      withTracking({ TRACKING_BASE_URL: 'not a url', TRACKING_READ_TOKEN: 'r'.repeat(32) }),
+    );
+    expect(config.trackingConfig).toBeNull();
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('returns a populated TrackingConfig and does not warn when both are set and valid', () => {
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const config = loadConfig(
+      ONE,
+      withTracking({ TRACKING_BASE_URL: 'https://t.example', TRACKING_READ_TOKEN: 'r'.repeat(32) }),
+    );
+    expect(config.trackingConfig).toEqual({ baseUrl: 'https://t.example', readToken: 'r'.repeat(32) });
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('never includes the tracking token in a warning message', () => {
+    const secretToken = 'super-secret-tracking-token-value';
+    const warnings: unknown[] = [];
+    vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnings.push(args);
+    });
+    loadConfig(ONE, withTracking({ TRACKING_BASE_URL: 'not a url', TRACKING_READ_TOKEN: secretToken }));
+    expect(JSON.stringify(warnings)).not.toContain(secretToken);
+    vi.restoreAllMocks();
   });
 });

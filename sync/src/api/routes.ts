@@ -2,7 +2,9 @@ import { timingSafeEqual } from 'node:crypto';
 import type { Db, InboxCursor } from '../db';
 import type { ConnectionPool } from '../imap/pool';
 import type { ImapConnection } from '../imap/connection';
+import type { TrackingConfig } from '../config';
 import { fetchBodyPart, BodyPartTooLargeError, MAX_BODY_PART_BYTES } from '../imap/fetch.ts';
+import { fetchOpens } from './opens.ts';
 
 /** A client asking for `limit=999999` must not be honoured — this caps how
  *  many rows a single /api/inbox request can pull regardless of what the
@@ -214,6 +216,44 @@ async function handleInbox(db: Db, url: URL): Promise<Response> {
   return json({ messages, nextCursor: nextCursorFrom(messages, limit) });
 }
 
+/**
+ * Proxies open events from the tracking service so the browser client
+ * holds one base URL and one token (this service's own), never the
+ * tracking service's. Always answers 200 — never a non-2xx status to
+ * signal a tracking outage, which would make the client treat a perfectly
+ * working inbox load as a failed page load. `available` is what Task 5's
+ * rail branches on to distinguish "tracking is down" from "nobody has
+ * opened anything yet"; folding both into `opens: []` with no flag would
+ * make those indistinguishable, which is exactly the defect Amendment 1
+ * fixes upstream in fetchOpens's own return type.
+ *
+ * `tracking` is null when TRACKING_BASE_URL/TRACKING_READ_TOKEN were not
+ * configured at startup (config.ts logs that loudly once already) — that
+ * is handled the same way as a live fetchOpens failure, without making a
+ * network call at all.
+ */
+async function handleOpens(
+  url: URL,
+  tracking: TrackingConfig | null,
+  fetchImpl?: typeof fetch,
+): Promise<Response> {
+  if (!tracking) {
+    return json({ opens: [], available: false });
+  }
+
+  const limit = parseLimit(url.searchParams.get('limit'));
+  const result = await fetchOpens(limit, {
+    baseUrl: tracking.baseUrl,
+    token: tracking.readToken,
+    fetchImpl,
+  });
+
+  if (!result.ok) {
+    return json({ opens: [], available: false });
+  }
+  return json({ opens: result.opens, available: true });
+}
+
 async function handleThread(db: Db, threadId: string): Promise<Response> {
   // Resolution 3: an unknown thread id is not distinguished from an empty
   // one. A 404 here would let a caller probe which thread ids exist across
@@ -410,11 +450,21 @@ async function handleAttachment(
  * before any other route is matched, so an unauthenticated caller gets the
  * same 401 for a real route and a typo'd one — never a 404 that would
  * confirm a route exists before proving the caller is allowed to ask.
+ *
+ * `trackingConfig` and `fetchImpl` back the /api/opens proxy (Task 2).
+ * `trackingConfig` is null when TRACKING_BASE_URL/TRACKING_READ_TOKEN were
+ * not configured at startup — config.ts has already logged that loudly.
+ * `fetchImpl` is not a production knob: production always uses the real
+ * global `fetch` (the default). It exists so tests can inject a stub and
+ * exercise this route without a live network call, mirroring the
+ * FetchOpensDeps.fetchImpl pattern in opens.ts itself.
  */
 export function createRouter(
   db: Db,
   pool: ConnectionPool,
   apiToken: string,
+  trackingConfig: TrackingConfig | null = null,
+  fetchImpl?: typeof fetch,
 ): (request: Request) => Promise<Response> {
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
@@ -435,6 +485,10 @@ export function createRouter(
 
     if (path === '/api/inbox') {
       return handleInbox(db, url);
+    }
+
+    if (path === '/api/opens') {
+      return handleOpens(url, trackingConfig, fetchImpl);
     }
 
     const threadMatch = path.match(/^\/api\/thread\/([^/]+)$/);

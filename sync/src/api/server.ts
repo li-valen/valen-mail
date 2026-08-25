@@ -272,7 +272,7 @@ export async function startServer(): Promise<{ close(): Promise<void> }> {
     console.error('api: connection pool stopped unexpectedly', error);
   });
 
-  const router = createRouter(db, pool, apiToken);
+  const router = createRouter(db, pool, apiToken, config.trackingConfig);
   const server = createServer((nodeRequest, nodeResponse) => {
     void handleRequest(router, nodeRequest, nodeResponse);
   });

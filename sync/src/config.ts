@@ -14,10 +14,22 @@ export interface AccountConfig {
   readonly isPrimary: boolean;
 }
 
+/**
+ * Credentials the sync service uses to proxy GET /api/opens from the
+ * tracking service (a separate Vercel Edge + Neon deployment, Task 1) so
+ * the browser client only ever talks to one origin with one token. See
+ * parseTrackingConfig for why this is optional rather than fail-closed.
+ */
+export interface TrackingConfig {
+  readonly baseUrl: string;
+  readonly readToken: string;
+}
+
 export interface SyncConfig {
   readonly accounts: readonly AccountConfig[];
   readonly databaseUrl: string;
   readonly port: number;
+  readonly trackingConfig: TrackingConfig | null;
 }
 
 function parseAccount(raw: unknown, index: number): AccountConfig {
@@ -71,6 +83,44 @@ function parsePort(portStr: string | undefined): number {
   return port;
 }
 
+/**
+ * Reads TRACKING_BASE_URL/TRACKING_READ_TOKEN for the /api/opens proxy
+ * (src/api/opens.ts).
+ *
+ * Deliberate departure from this file's own fail-closed rule for
+ * DATABASE_URL/API_TOKEN: email sync is this service's primary job and
+ * must not be held hostage to a secondary feature. A missing API_TOKEN
+ * would expose four real mailboxes; a missing tracking config only removes
+ * the "opens" rail. So a missing or malformed value here does not throw —
+ * it degrades the feature and says so loudly, once, at startup, rather
+ * than failing the whole process or failing silently.
+ */
+function parseTrackingConfig(env: NodeJS.ProcessEnv): TrackingConfig | null {
+  const baseUrl = env.TRACKING_BASE_URL;
+  const readToken = env.TRACKING_READ_TOKEN;
+
+  if (!baseUrl || !readToken) {
+    console.warn(
+      'config: TRACKING_BASE_URL and/or TRACKING_READ_TOKEN not set — ' +
+      '/api/opens will report { available: false } until both are configured',
+    );
+    return null;
+  }
+
+  try {
+    // Constructed only for its validating side effect: throws on a
+    // malformed URL, which is treated the same as an absent one.
+    new URL(baseUrl);
+  } catch {
+    console.warn(
+      `config: TRACKING_BASE_URL is not a valid URL — /api/opens will report { available: false }`,
+    );
+    return null;
+  }
+
+  return { baseUrl, readToken };
+}
+
 export function loadConfig(raw: unknown, env: NodeJS.ProcessEnv): SyncConfig {
   if (!Array.isArray(raw)) throw new Error('accounts config must be a JSON array');
   if (raw.length === 0) throw new Error('accounts config is empty');
@@ -115,6 +165,7 @@ export function loadConfig(raw: unknown, env: NodeJS.ProcessEnv): SyncConfig {
   if (!databaseUrl) throw new Error('DATABASE_URL is not set');
 
   const port = parsePort(env.PORT);
+  const trackingConfig = parseTrackingConfig(env);
 
-  return { accounts, databaseUrl, port };
+  return { accounts, databaseUrl, port, trackingConfig };
 }
