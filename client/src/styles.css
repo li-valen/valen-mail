@@ -92,9 +92,25 @@
     --radius-md: calc(var(--radius) - 2px);
     --radius-sm: calc(var(--radius) - 4px);
 
-    /* Decelerating curves for overlay motion: arrive with confidence, no bounce. */
-    --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
-    --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+    /* THE MOTION CURVES (Plan 7 Task 2). Three, and only three, mirrored
+       byte-for-byte in src/motion/tokens.ts's `EASE_CSS` — one motion
+       identity across the CSS half of the system (a class toggle: the
+       mobile drawer, its scrim, press feedback) and the `motion/react`
+       half (an entrance on mount: the reader, the composer, a new rail
+       row). tests/motion-tokens.test.ts parses this block and fails if
+       the two ever diverge.
+
+       Tailwind v4's `--ease-*` namespace turns each into an `ease-<name>`
+       utility, so a className reaches a curve by NAME and never repeats
+       the control points.
+
+       These replace the unused `--ease-out-quint`/`--ease-out-quart`
+       pair that shipped with the Plunk port: nothing ever referenced
+       either, and two spare decelerating curves beside the three real
+       ones is exactly how a motion system starts drifting. */
+    --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
+    --ease-in-out-strong: cubic-bezier(0.77, 0, 0.175, 1);
+    --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 @layer base {
@@ -207,9 +223,29 @@
     }
 }
 
-/* Plunk's own floor, kept verbatim: every transition and animation in the
-   app — the sidebar drawer slide, the switch thumb, hover colour fades —
-   collapses to nothing for a viewer who asked for reduced motion. */
+/* Plunk's own floor, kept verbatim: every CSS transition and CSS
+   animation in the app — the switch thumb, hover colour fades,
+   `animate-pulse` on the skeletons — collapses to nothing for a viewer
+   who asked for reduced motion.
+
+   THIS FLOOR DOES NOT COVER THE `motion/react` LAYER, and assuming it did
+   would be the quiet way to ship an inaccessible app. `motion` animates
+   through the Web Animations API and inline style writes, neither of
+   which is a CSS transition or a CSS `@keyframes` animation, so neither
+   `transition-duration` nor `animation-duration` here touches them. That
+   half has its own mechanism, and it removes rather than shortens: every
+   animated component reads `useReducedMotion()` and passes the answer to
+   a `*VariantsFor(isReduced)` builder in src/motion/variants.ts, which
+   returns a variant pair whose two ends are IDENTICAL. `<MotionConfig
+   reducedMotion="user">` in src/main.tsx is the second line of defence.
+   tests/motion-reduced-guard.test.ts fails the build if a component
+   imports `motion/react` without one of those two.
+
+   The surfaces that ARE this floor's job — the mobile drawer and its
+   scrim, and Button's press scale — additionally carry explicit
+   `motion-reduce:transition-none` / `motion-safe:` gating at their call
+   sites, so those three do not merely become imperceptibly fast: they
+   have no transition to run at all. */
 @media (prefers-reduced-motion: reduce) {
     *,
     ::before,

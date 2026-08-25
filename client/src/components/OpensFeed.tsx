@@ -1,6 +1,10 @@
 import { CloudOff, Radio, User } from 'lucide-react';
+import { useEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
+import { motion, useReducedMotion } from 'motion/react';
 import type { OpenEvent } from '../api';
+import { Settle, railRowVariantsFor, scanNewEntries } from '../motion';
+import type { MotionVariants } from '../motion';
 import type { OpensLoadState } from '../useOpensFeed';
 import { Card, CardHeader } from '../ui/Card';
 import { Badge } from '../ui/Badge';
@@ -201,33 +205,25 @@ function OpensFeedBody({ load, now, compact, onOpenEvent }: OpensFeedBodyProps) 
           openEvents.ts), so this call site does not repeat the `> 0`
           check. */}
       <SelfCount count={selfCount} />
-      <Panel compact={compact}>
-        <CardHeader className="flex-row items-center justify-between space-y-0 border-b border-neutral-200 dark:border-border p-4">
-          {/* Plunk's CardTitle is a <div>; this needs to be a real heading
-              so the opens feed sits under the shell's <h1> in the document
-              outline, so it borrows the atom's classes rather than the atom. */}
-          <h2 className="text-sm font-semibold leading-none tracking-tight text-neutral-900 dark:text-foreground">
-            Recent opens
-          </h2>
-          <Badge variant="secondary" className="font-mono tabular-nums">
-            {displayable.length}
-          </Badge>
-        </CardHeader>
-        <ol className="divide-y divide-neutral-100 dark:divide-border">
-          {displayable.map((event) => (
-            // NOT `event.token` alone: the same token legitimately appears
-            // more than once (e.g. an mpp prefetch and a later real open on
-            // the same send), so `token` by itself collides as a React key
-            // and would silently drop one of the two rows.
-            <OpenEntry
-              key={`${event.token}:${event.occurredAt}:${event.classification}`}
-              event={event}
-              now={now}
-              onOpen={onOpenEvent}
-            />
-          ))}
-        </ol>
-      </Panel>
+      {/* PLAN 7 TASK 2 — the panel settles in ONCE, when the feed first
+          resolves. Individual rows animate only when they are genuinely
+          new; see OpenEntries below. */}
+      <Settle>
+        <Panel compact={compact}>
+          <CardHeader className="flex-row items-center justify-between space-y-0 border-b border-neutral-200 dark:border-border p-4">
+            {/* Plunk's CardTitle is a <div>; this needs to be a real heading
+                so the opens feed sits under the shell's <h1> in the document
+                outline, so it borrows the atom's classes rather than the atom. */}
+            <h2 className="text-sm font-semibold leading-none tracking-tight text-neutral-900 dark:text-foreground">
+              Recent opens
+            </h2>
+            <Badge variant="secondary" className="font-mono tabular-nums">
+              {displayable.length}
+            </Badge>
+          </CardHeader>
+          <OpenEntries displayable={displayable} now={now} onOpen={onOpenEvent} />
+        </Panel>
+      </Settle>
     </div>
   );
 }
@@ -244,10 +240,99 @@ function SelfCount({ count }: { readonly count: number }) {
   return <p className="px-1 text-xs text-neutral-500 dark:text-muted-foreground">{line}</p>;
 }
 
+/**
+ * The stable identity of one row, and the thing the whole
+ * "don't re-animate on every poll" requirement rests on.
+ *
+ * NOT `event.token` alone: the same token legitimately appears more than
+ * once (an mpp prefetch and a later real open on the same send), so
+ * `token` by itself collides as a React key and would silently drop one
+ * of the two rows. And NEVER the array index — the feed PREPENDS new
+ * events, so every index shifts when one arrives and an index key would
+ * report all fifty rows as new, forever.
+ *
+ * The three fields together are what the tracking service actually
+ * identifies an event by, and they do not change between polls, which is
+ * exactly the property `scanNewEntries` needs.
+ */
+function entryKey(event: OpenEvent): string {
+  return `${event.token}:${event.occurredAt}:${event.classification}`;
+}
+
+interface OpenEntriesProps {
+  readonly displayable: readonly OpenEvent[];
+  readonly now: number;
+  readonly onOpen: (event: OpenEvent) => void;
+}
+
+/**
+ * The row list, and the one place in this app where "which of these is
+ * NEW?" has to be answered before anything can animate.
+ *
+ * WHY IT IS ITS OWN COMPONENT. `OpensFeedBody` returns early for the
+ * loading and unavailable states, so hooks cannot live there — they would
+ * be called conditionally. Splitting the list out gives the hooks an
+ * unconditional home and keeps the state machine above it readable.
+ *
+ * THE DEFECT THIS PREVENTS. src/useOpensFeed.ts refetches on a timer.
+ * Every response is a fresh array of fresh objects, so `initial="hidden"`
+ * applied unconditionally would replay the entrance on all fifty rows
+ * every time the poll came back — a rail that twitches at the edge of
+ * vision while the user is reading something else. `scanNewEntries`
+ * (src/motion/newEntries.ts) is the pure half of the fix; the ref and the
+ * effect below are the half React insists on owning.
+ *
+ * THE FIRST SCAN REPORTS NOTHING AS NEW, on purpose: the initial response
+ * is fifty rows arriving at once, and fifty individual entrances is the
+ * opposite of "only new rows animate". The `<Settle>` around the panel
+ * covers that case with one entrance for the whole list.
+ *
+ * The ref is advanced in an EFFECT rather than during render, so a
+ * StrictMode double-render cannot mark this pass's new rows as already
+ * seen before they have had a chance to animate.
+ */
+function OpenEntries({ displayable, now, onOpen }: OpenEntriesProps) {
+  const isReduced = useReducedMotion() ?? false;
+  const keys = useMemo(() => displayable.map(entryKey), [displayable]);
+  const seenRef = useRef<ReadonlySet<string> | null>(null);
+  const scan = useMemo(() => scanNewEntries(seenRef.current, keys), [keys]);
+  useEffect(() => {
+    seenRef.current = scan.seen;
+  }, [scan]);
+
+  // Built once per render and shared by every row rather than rebuilt per
+  // row: fifty identical variant objects is fifty allocations and fifty
+  // reasons for `motion` to think a row's animation definition changed.
+  const variants = railRowVariantsFor(isReduced);
+
+  return (
+    <ol className="divide-y divide-neutral-100 dark:divide-border">
+      {displayable.map((event) => {
+        const key = entryKey(event);
+        return (
+          <OpenEntry
+            key={key}
+            event={event}
+            now={now}
+            onOpen={onOpen}
+            variants={variants}
+            isNew={scan.newKeys.has(key)}
+          />
+        );
+      })}
+    </ol>
+  );
+}
+
 interface OpenEntryProps {
   readonly event: OpenEvent;
   readonly now: number;
   readonly onOpen: (event: OpenEvent) => void;
+  /** Built once by `OpenEntries` above and shared across every row. */
+  readonly variants: MotionVariants;
+  /** True only for a row this feed has never rendered before — see
+   *  `OpenEntries`. False on the initial load, for every row. */
+  readonly isNew: boolean;
 }
 
 /**
@@ -368,14 +453,23 @@ interface OpenEntryProps {
  * App.tsx's job (`resolveOpenTarget`, openEvents.ts), not this
  * component's: OpenEntry only ever reports WHICH event was activated.
  */
-function OpenEntry({ event, now, onOpen }: OpenEntryProps) {
+function OpenEntry({ event, now, onOpen, variants, isNew }: OpenEntryProps) {
   const detail = expandedDetailFor(event);
   return (
-    <li>
+    // `initial={false}` — not `initial="hidden"` — for every row that is
+    // not new: it tells `motion` to render straight at the finished state
+    // with no animation at all, which is what keeps a poll from replaying
+    // fifty entrances. A new row drops in from ABOVE (ROW_ENTER_PX is
+    // negative, src/motion/tokens.ts) because new events are prepended to
+    // the top of this list: it enters from the direction it came from.
+    <motion.li variants={variants} initial={isNew ? 'hidden' : false} animate="visible">
       <button
         type="button"
         onClick={() => onOpen(event)}
-        className={`group flex w-full items-start gap-3 px-4 py-2 text-left transition-colors hover:bg-neutral-50 dark:hover:bg-accent ${ROW_FOCUS}`}
+        /* Pressed feedback matches MessageRow.tsx's exactly — a tint, not
+           a scale, for the same reason: these are full-bleed rows in a
+           divided list. See that file's note. */
+        className={`group flex w-full items-start gap-3 px-4 py-2 text-left transition-colors hover:bg-neutral-50 active:bg-neutral-100 dark:hover:bg-accent dark:active:bg-accent ${ROW_FOCUS}`}
       >
         <span className="pt-0.5">
           <ReadState classification={event.classification} />
@@ -409,6 +503,6 @@ function OpenEntry({ event, now, onOpen }: OpenEntryProps) {
           </span>
         </span>
       </button>
-    </li>
+    </motion.li>
   );
 }

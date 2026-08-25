@@ -5,6 +5,7 @@ import { Loader2, Send } from 'lucide-react';
 import { ApiError } from '../api';
 import { getIdentities, primaryIdentityId, sendMail } from '../composeApi';
 import type { Identity } from '../composeApi';
+import { Panel } from '../motion';
 import ComposeOutcome from './ComposeOutcome';
 import RecipientField from './RecipientField';
 import { includesRecipient, mergeRecipients, parseRecipients } from './composeRecipients';
@@ -276,7 +277,15 @@ export default function Compose({ onClose, onSent, onDirtyChange }: ComposeProps
   const canSend = !isSending && identityLoad.status === 'ready' && identities.length > 0;
 
   return (
-    <section aria-labelledby={titleId} onKeyDown={handleKeyDown}>
+    // PLAN 7 TASK 2 — the composer arrives on the same curve and at the
+    // same distance as the reader (src/motion/Panel.tsx): they are the
+    // two surfaces that replace the whole content column, so they should
+    // not enter differently. Its EXIT is the incoming view's entrance —
+    // closing the composer changes `view`, and App.tsx's view swap
+    // animates whatever comes back — so there is nothing to animate here
+    // on the way out.
+    <Panel>
+      <section aria-labelledby={titleId} onKeyDown={handleKeyDown}>
       <Card>
         <header className="flex items-center justify-between gap-3 border-b border-neutral-200 px-4 py-3 dark:border-border sm:px-6 sm:py-4">
           <h2 id={titleId} className="text-base font-semibold">
@@ -441,6 +450,7 @@ export default function Compose({ onClose, onSent, onDirtyChange }: ComposeProps
           </footer>
         </form>
       </Card>
-    </section>
+      </section>
+    </Panel>
   );
 }

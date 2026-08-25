@@ -102,7 +102,17 @@ export default function MessageRow({ message, now, onOpen }: MessageRowProps) {
         type="button"
         onClick={() => onOpen(message)}
         data-message-key={messageKey(message)}
-        className={`flex w-full cursor-pointer flex-wrap items-center gap-x-3 gap-y-0.5 px-4 py-2 text-left text-sm transition-colors hover:bg-neutral-50 dark:hover:bg-accent ${ROW_FOCUS} sm:h-11 sm:flex-nowrap sm:py-0`}
+        /* PLAN 7 TASK 2 — pressed feedback, as a TINT and never a scale.
+           A 3% scale is right for a button-shaped button (see
+           ui/Button.tsx); on a full-bleed row inside a divided list it
+           shrinks the row away from its own dividers and reads as a
+           glitch. A darker tint on `:active` gives the same "heard you"
+           on the one property a 50-row list can afford to animate.
+           `transition-colors` is Tailwind's 150ms, which is
+           DURATION_MS.hover (src/motion/tokens.ts). No `motion-safe:`
+           gate: this is a colour change with no movement in it, which is
+           the class of feedback reduced-motion guidance says to keep. */
+        className={`flex w-full cursor-pointer flex-wrap items-center gap-x-3 gap-y-0.5 px-4 py-2 text-left text-sm transition-colors hover:bg-neutral-50 active:bg-neutral-100 dark:hover:bg-accent dark:active:bg-accent ${ROW_FOCUS} sm:h-11 sm:flex-nowrap sm:py-0`}
       >
         {unread && <span className="sr-only">Unread. </span>}
 

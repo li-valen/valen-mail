@@ -10,6 +10,7 @@ import { Button } from '../ui/Button';
 import { Card } from '../ui/Card';
 import { EmptyState } from '../ui/EmptyState';
 import { Skeleton } from '../ui/Skeleton';
+import { Settle, SettleGroup } from '../motion';
 import MessageRow from './MessageRow';
 import { groupByDay } from './inboxDates';
 import { isCurrentSelection, resolveLoadMorePage } from './inboxPaging';
@@ -274,6 +275,13 @@ export default function InboxList({
 
   const retry = useCallback(() => setAttempt((previous) => previous + 1), []);
 
+  // NOT animated, deliberately, and this is the one branch in the file
+  // where the right answer is "no motion" (Plan 7 Task 2). The skeleton
+  // is what tells the user their sidebar click registered; anything that
+  // fades it in delays that acknowledgement by exactly as long as the
+  // fade. It appears on the same frame as the click, and the CONTENT that
+  // replaces it is what settles in. Instant, then smooth — never the
+  // other way round.
   if (load.status === 'loading') {
     return (
       <Card aria-busy="true">
@@ -295,14 +303,16 @@ export default function InboxList({
 
   if (load.status === 'error') {
     return (
-      <Alert variant="destructive">
-        <AlertDescription className="flex flex-wrap items-center gap-3">
-          <span>{load.message}</span>
-          <Button variant="outline" size="sm" onClick={retry}>
-            Try again
-          </Button>
-        </AlertDescription>
-      </Alert>
+      <Settle>
+        <Alert variant="destructive">
+          <AlertDescription className="flex flex-wrap items-center gap-3">
+            <span>{load.message}</span>
+            <Button variant="outline" size="sm" onClick={retry}>
+              Try again
+            </Button>
+          </AlertDescription>
+        </Alert>
+      </Settle>
     );
   }
 
@@ -313,22 +323,52 @@ export default function InboxList({
     // every string and the reasoning behind it.
     const copy = emptyStateFor(folder, account, { everSynced: syncedFolders.includes(folder) });
     return (
-      <Card>
-        <EmptyState icon={FOLDER_ICONS[folder]} title={copy.title} description={copy.description} />
-      </Card>
+      <Settle>
+        <Card>
+          <EmptyState icon={FOLDER_ICONS[folder]} title={copy.title} description={copy.description} />
+        </Card>
+      </Settle>
     );
   }
 
   const groups = groupByDay(messages, now);
 
   return (
-    <div className="space-y-6">
+    /*
+     * PLAN 7 TASK 2 — the mail settling into place.
+     *
+     * NO `key`, ON PURPOSE. This branch is only reachable from
+     * `status: 'loading'` or `'error'`, both of which render something
+     * else entirely, so React mounts this wrapper fresh every time a
+     * selection resolves and the entrance replays without being told to.
+     * Keying it on `{folder, account}` instead would fire one extra time
+     * per folder click — on the render where the folder has changed but
+     * the fetch effect has not yet run, i.e. against the OLD list — and
+     * animate content that is about to be replaced by the skeleton.
+     *
+     * THE STAGGER IS PER DAY GROUP, NEVER PER ROW. A page is 50 messages;
+     * at any per-row delay worth seeing that is seconds of animation and
+     * 50 simultaneously-compositing layers, on the one surface in this app
+     * that must never feel slow. Day groups number two to six, so the
+     * cascade is legible, costs under 200ms end to end, and composites a
+     * handful of layers. `settleGroupVariantsFor` drops the stagger
+     * entirely past its cap rather than compressing it — see
+     * src/motion/tokens.ts's MAX_STAGGERED_GROUPS.
+     *
+     * "Load more" appends pages WITHOUT re-keying this wrapper, so
+     * already-visible groups never re-animate; a genuinely new day group
+     * mounts under an already-`visible` parent and inherits the entrance,
+     * which is the behaviour we want for free.
+     */
+    <Settle className="space-y-6" groupCount={groups.length}>
       {groups.map((group) => (
         // A plain grouping div, not a landmark <section> — the <h2> below
         // already gives it heading structure, and a labelled <section> per
         // day would register one ARIA "region" landmark per group,
-        // cluttering landmark navigation for no benefit.
-        <div key={group.day}>
+        // cluttering landmark navigation for no benefit. `SettleGroup`
+        // renders exactly that div, plus the variant wiring that makes it
+        // one step of the cascade.
+        <SettleGroup key={group.day}>
           <h2 className="mb-2 px-1 text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-muted-foreground">
             {group.day}
           </h2>
@@ -344,7 +384,7 @@ export default function InboxList({
               ))}
             </ul>
           </Card>
-        </div>
+        </SettleGroup>
       ))}
 
       {cursor !== null && (
@@ -359,6 +399,6 @@ export default function InboxList({
           )}
         </div>
       )}
-    </div>
+    </Settle>
   );
 }

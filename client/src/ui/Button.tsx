@@ -11,9 +11,31 @@ import { cn } from './cn';
  * Postbox has no router and no link-shaped buttons, so the Slot branch —
  * and the dependency it needs — is dropped rather than vendored unused.
  * Everything else, including the focus-visible ring, is verbatim.
+ *
+ * PLAN 7 TASK 2 changed two things in the base string, both motion.
+ *
+ * **`transition-all` -> a named property list.** `all` transitions every
+ * animatable property a variant happens to set, including ones that
+ * trigger layout, and it is the single most common way an interface picks
+ * up motion nobody designed. The list names exactly the five properties
+ * these variants actually change.
+ *
+ * **`motion-safe:active:scale-[0.97]`.** A button with no pressed state
+ * gives the user nothing between the click and whatever it causes; 3% is
+ * enough to read as "heard you" and small enough that nobody would
+ * describe it as an animation. `duration-150` is DURATION_MS.hover /
+ * DURATION_MS.press's band (src/motion/tokens.ts), and Tailwind's
+ * default, so `transition-colors` elsewhere already agrees with it.
+ *
+ * `motion-safe:` rather than relying on styles.css's global reduced-motion
+ * floor: the floor would leave the scale in place and merely make it
+ * instant, and this project's contract is that reduced motion REMOVES
+ * motion. Under `prefers-reduced-motion: reduce` there is no scale at all.
+ * (Tailwind v4's `hover:` variant is already gated behind
+ * `@media (hover: hover)`, so the hover tints need no equivalent.)
  */
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 cursor-pointer',
+  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-[color,background-color,border-color,box-shadow,transform] duration-150 ease-out-strong motion-safe:active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 cursor-pointer',
   {
     variants: {
       variant: {

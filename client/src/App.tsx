@@ -24,6 +24,7 @@ import { Button } from './ui/Button';
 import { Card } from './ui/Card';
 import { Skeleton } from './ui/Skeleton';
 import { cn } from './ui/cn';
+import { Settle } from './motion';
 import { initialViewFromSearch } from './initialView';
 import { useOpensFeed } from './useOpensFeed';
 import { useSessionGate } from './useSessionGate';
@@ -499,8 +500,42 @@ export default function App() {
         <OpenNotFoundNotice onDismiss={() => setIsOpenNotFoundVisible(false)} />
       )}
 
-      {isAuthorized &&
-        (view === 'compose' ? (
+      {/*
+        PLAN 7 TASK 2 — the view swap. `key={view}` is what makes this a
+        transition at all: changing view remounts this wrapper, which
+        replays the entrance on whatever is inside it.
+
+        THE KEY IS `view` AND NOTHING ELSE, and that is load-bearing in
+        both directions.
+
+        It must not include `selected`. InboxList is kept MOUNTED behind
+        the reader on purpose (see the branch below) — that is what makes
+        Back instant and lossless — and folding the reader's open/closed
+        state into this key would unmount it on every open, costing a
+        refetch, every loaded page, and the restored scroll position.
+
+        It must not include `folder`/`account` either, for a subtler
+        reason: remounting InboxList also resets its `syncedFolders`
+        state, which is the client's ONLY evidence that a folder has ever
+        produced a row this session, and therefore the difference between
+        an honest "Trash is empty" and an honest "Trash may not have
+        synced yet" (components/../emptyState.ts's TRAP 3). Folder and
+        account changes get their own, narrower entrance INSIDE InboxList,
+        where remounting the list is not the price of animating it.
+
+        `view` alone happens to be exactly today's mount/unmount boundary
+        — the ternary below already unmounts each branch when the view
+        changes — so this wrapper adds an entrance without moving a single
+        component's lifetime.
+
+        `lift={false}`: fade only, no transform. A resting transform on
+        this element would make it a containing block and silently
+        un-stick OpensRail's `position: sticky` column. The lift lives one
+        level down, inside the message column. See src/motion/variants.ts.
+      */}
+      {isAuthorized && (
+        <Settle key={view} lift={false}>
+          {view === 'compose' ? (
           // Replaces the list rather than overlaying it, for the same
           // reason MessageView does: writing a message is the whole task
           // while it is open. See Compose.tsx's header for why this is a
@@ -558,7 +593,9 @@ export default function App() {
           </>
         ) : (
           <OpensView feed={feed} onOpenEvent={handleOpenEvent} />
-        ))}
+        )}
+        </Settle>
+      )}
     </AppShell>
   );
 }

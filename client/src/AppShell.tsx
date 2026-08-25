@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import type { ReactNode, Ref } from 'react';
 import { Activity, Mailbox, Menu, SquarePen, X } from 'lucide-react';
+import { motion, useReducedMotion } from 'motion/react';
 
 import AccountList from './components/AccountList';
+import { DURATION_MS, navPillTransitionFor } from './motion';
 import type { AccountSummary } from './accountRoster';
 import { FOLDER_ICONS } from './folderIcons';
 import { FOLDER_IDS, FOLDER_LABELS, headingFor } from './inboxFilters';
@@ -95,13 +97,73 @@ const VIEW_TITLES: Readonly<Record<ViewId, string>> = {
  *  Active and hover share `accent`/`accent-foreground` in dark mode
  *  deliberately (light keeps them as two different literals, neutral-100
  *  vs neutral-50 — too close to tell apart anyway) so a hover preview
- *  matches what clicking actually produces. */
+ *  matches what clicking actually produces.
+ *
+ *  PLAN 7 TASK 2 moved the ACTIVE background out of this string and into
+ *  `<NavPill>` below. The active item's own `bg-*` is gone, not
+ *  overridden: two backgrounds — one painted by the class and one by the
+ *  travelling pill — would double up at the destination for the length of
+ *  the transition and read as a flash. The active TEXT colour stays here,
+ *  because text is not what travels.
+ *
+ *  `relative` is what lets the pill be `absolute inset-0` against this
+ *  button; `isolate` keeps the pill's stacking to this row rather than
+ *  letting it interleave with anything else in the sidebar. */
 function navItemClass(isActive: boolean): string {
   return cn(
-    'w-full flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+    'relative isolate w-full flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
     isActive
-      ? 'bg-neutral-100 text-neutral-900 dark:bg-accent dark:text-accent-foreground'
+      ? 'text-neutral-900 dark:text-accent-foreground'
       : 'text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900 dark:text-muted-foreground dark:hover:bg-accent dark:hover:text-accent-foreground',
+  );
+}
+
+/**
+ * The selection: one pill that TRAVELS from the old nav item to the new
+ * one, rather than a background that blinks off here and on there.
+ *
+ * This is the direct answer to the user's report — "when I click the
+ * sidebar, it's, like, almost instant. It's, like, weird". The complaint
+ * is not that selection is fast; it is that nothing connects the item
+ * that was selected to the item that now is, so the eye has to re-find
+ * the highlight instead of following it. A shared-element transition
+ * (`layoutId`) is the one technique that makes that connection literal:
+ * `motion` measures the pill's box before the commit and after it, and
+ * animates the difference — so the SAME element appears to slide from
+ * Inbox down to Sent, or out of the folder list entirely and down into
+ * Activity › Opens.
+ *
+ * A SPRING, NOT A CURVE, and for a mechanical reason rather than a
+ * stylistic one: this is the only motion in the app the user can
+ * interrupt mid-flight. Clicking a third folder while the pill is still
+ * travelling to the second is Plan 7's named non-negotiable, and a
+ * duration-based tween handles it badly — it restarts from zero and
+ * visibly stutters. A spring carries its current velocity into the new
+ * target and simply bends toward it. See `NAV_PILL_SPRING` in
+ * src/motion/tokens.ts.
+ *
+ * `scope` NAMESPACES THE SHARED ELEMENT, and is not optional. This
+ * sidebar is rendered TWICE — once in the `hidden lg:flex` desktop rail
+ * and once in the mobile drawer, which stays mounted while closed. Two
+ * live elements sharing one `layoutId` is undefined behaviour in
+ * `motion`: it would try to animate a single pill between two copies of
+ * the same nav that are 320px apart and in different stacking contexts.
+ * Each copy therefore gets its own id and animates independently.
+ *
+ * `aria-hidden`, and no text of its own: `aria-current="page"` on the
+ * button is what actually announces the selection. The pill is the
+ * sighted user's channel for the same fact and must not become a second
+ * announcement of it.
+ */
+function NavPill({ scope }: { readonly scope: SidebarScope }) {
+  const isReduced = useReducedMotion() ?? false;
+  return (
+    <motion.span
+      layoutId={`nav-pill-${scope}`}
+      transition={navPillTransitionFor(isReduced)}
+      aria-hidden="true"
+      className="absolute inset-0 -z-10 rounded-lg bg-neutral-100 dark:bg-accent"
+    />
   );
 }
 
@@ -128,18 +190,23 @@ function Wordmark({ size }: { readonly size: 'sm' | 'md' }) {
   );
 }
 
+/** Which of the two copies of the sidebar a nav item belongs to. Exists
+ *  only to namespace `NavPill`'s `layoutId` — see that component. */
+type SidebarScope = 'desktop' | 'drawer';
+
 interface FolderNavProps {
   readonly folder: FolderId;
   /** False while the Opens view is showing: no folder is the current page
    *  then, and marking one anyway would make `aria-current` a lie. */
   readonly isActive: boolean;
   readonly onSelect: (folder: FolderId) => void;
+  readonly scope: SidebarScope;
 }
 
 /** A real list of real buttons — `<ul>` of `<li><button>` — so assistive
  *  tech announces "5 items" and the arrow-key/Tab behaviour is the
  *  platform's, not a re-implementation of it. */
-function FolderNav({ folder, isActive, onSelect }: FolderNavProps) {
+function FolderNav({ folder, isActive, onSelect, scope }: FolderNavProps) {
   return (
     <ul className="space-y-1">
       {FOLDER_IDS.map((id) => {
@@ -153,6 +220,7 @@ function FolderNav({ folder, isActive, onSelect }: FolderNavProps) {
               aria-current={isCurrent ? 'page' : undefined}
               className={navItemClass(isCurrent)}
             >
+              {isCurrent && <NavPill scope={scope} />}
               <Icon className="h-5 w-5 shrink-0" aria-hidden="true" />
               {FOLDER_LABELS[id]}
             </button>
@@ -252,8 +320,13 @@ export default function AppShell({
    * A function rather than a single JSX value because the sidebar is
    * rendered twice (desktop rail and mobile drawer) and exactly one of
    * those two copies may carry `composeRef` — see the prop's own note.
+   *
+   * `scope` is the second consequence of that double render: it
+   * namespaces the selection pill's `layoutId` so the two copies animate
+   * independently rather than fighting over one shared element. See
+   * `NavPill`.
    */
-  const renderSidebar = (composeButtonRef?: Ref<HTMLButtonElement>): ReactNode => (
+  const renderSidebar = (scope: SidebarScope, composeButtonRef?: Ref<HTMLButtonElement>): ReactNode => (
     <>
       <div className="h-16 flex items-center justify-between px-6 border-b border-neutral-200 dark:border-border shrink-0">
         <Wordmark size="md" />
@@ -291,7 +364,7 @@ export default function AppShell({
           short — the groups are already announced by their own headings
           and list semantics. */}
       <nav className="flex-1 px-3 py-4 overflow-y-auto" aria-label="Mailboxes">
-        <FolderNav folder={folder} isActive={isInbox} onSelect={selectFolder} />
+        <FolderNav folder={folder} isActive={isInbox} onSelect={selectFolder} scope={scope} />
 
         <div className="mt-6">
           <p className={SECTION_TITLE_CLASS}>Activity</p>
@@ -303,6 +376,7 @@ export default function AppShell({
                 aria-current={view === 'opens' ? 'page' : undefined}
                 className={navItemClass(view === 'opens')}
               >
+                {view === 'opens' && <NavPill scope={scope} />}
                 <Activity className="h-5 w-5 shrink-0" aria-hidden="true" />
                 {VIEW_TITLES.opens}
               </button>
@@ -322,20 +396,54 @@ export default function AppShell({
   return (
     <div className="flex h-dvh bg-neutral-50 dark:bg-background">
       <div className="hidden lg:flex w-64 bg-card border-r border-neutral-200 dark:border-border flex-col">
-        {renderSidebar(composeRef)}
+        {renderSidebar('desktop', composeRef)}
       </div>
 
-      {isMobileMenuOpen && (
-        <div className="fixed inset-0 z-40 lg:hidden" onClick={() => setMobileMenuOpen(false)}>
-          <div className="absolute inset-0 bg-black/50" />
-        </div>
-      )}
+      {/* PLAN 7 TASK 2 — the scrim now FADES, and is always mounted.
+          Plunk's version is conditionally rendered, which means it can
+          only ever appear and disappear as a hard cut: there is no
+          element left to animate on the way out. Keeping it mounted and
+          driving `opacity` gives the drawer a matched pair (the panel
+          slides, the ground behind it dims) at the cost of one
+          permanently-present, `pointer-events-none`, fully transparent
+          div below `lg:`.
+
+          A CSS transition rather than `motion`, deliberately: this is a
+          class toggle on a single opacity, which is the cheapest tool
+          that does the job — reaching for the JS layer here would buy
+          nothing and cost a component. `motion-reduce:transition-none`
+          is the removal (not a shortening) for anyone who asked for it;
+          styles.css's global floor would already collapse it, but stating
+          it at the call site is what makes the intent auditable.
+
+          `aria-hidden` and no label: the drawer's own Close button is the
+          announced way out. This is the sighted-user shortcut for the
+          same action, and a second announcement of it would be noise. */}
+      <div
+        onClick={() => setMobileMenuOpen(false)}
+        aria-hidden="true"
+        className={cn(
+          'fixed inset-0 z-40 bg-black/50 transition-opacity ease-drawer motion-reduce:transition-none lg:hidden',
+          isMobileMenuOpen ? 'opacity-100' : 'pointer-events-none opacity-0',
+        )}
+        style={{ transitionDuration: `${DURATION_MS.drawer}ms` }}
+      />
 
       <div
         className={cn(
-          'fixed inset-y-0 left-0 z-50 w-64 bg-card transform transition-transform duration-300 ease-in-out lg:hidden',
+          // `ease-drawer` is the iOS/Ionic curve published by
+          // src/styles.css's `@theme` and mirrored in
+          // src/motion/tokens.ts. It replaces Plunk's `ease-in-out`,
+          // which is the wrong family for a panel that enters and exits:
+          // an ease-IN withholds movement for the first frames, which is
+          // exactly when the thumb has just left the screen and the user
+          // is looking hardest. 260ms replaces 300ms for the same reason
+          // every other duration in this system sits where it does — see
+          // DURATION_MS.
+          'fixed inset-y-0 left-0 z-50 w-64 bg-card transform transition-transform ease-drawer motion-reduce:transition-none lg:hidden',
           isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full',
         )}
+        style={{ transitionDuration: `${DURATION_MS.drawer}ms` }}
         /* Plunk leaves the closed drawer in the tab order (it is only
            translated off-screen). `inert` takes it out of the tab order
            and the accessibility tree entirely while it is closed, so a
@@ -343,7 +451,7 @@ export default function AppShell({
            duplicate of the nav. */
         inert={!isMobileMenuOpen}
       >
-        <div className="flex flex-col h-full">{renderSidebar()}</div>
+        <div className="flex flex-col h-full">{renderSidebar('drawer')}</div>
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">

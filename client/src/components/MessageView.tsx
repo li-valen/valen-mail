@@ -7,6 +7,7 @@ import { Button } from '../ui/Button';
 import { Card } from '../ui/Card';
 import { EmptyState } from '../ui/EmptyState';
 import { Skeleton } from '../ui/Skeleton';
+import { Panel } from '../motion';
 import AttachmentList from './MessageAttachments';
 import ThreadContext from './ThreadContext';
 import { formatReceived } from './inboxDates';
@@ -329,7 +330,12 @@ export default function MessageView({ message, now, onBack, onOpen }: MessageVie
   const allow = useCallback(() => setAllowRemote(true), []);
 
   return (
-    <div className="space-y-4">
+    // PLAN 7 TASK 2 — the reader arrives. App.tsx keys this component on
+    // the message, so opening a different one from the thread rows below
+    // remounts and replays the entrance rather than swapping the body
+    // underneath a stationary frame. There is no matching exit: see
+    // src/motion/Panel.tsx for why Back is deliberately instant.
+    <Panel className="space-y-4">
       <Button variant="ghost" size="sm" onClick={onBack}>
         <ArrowLeft aria-hidden="true" />
         Back to inbox
@@ -377,6 +383,6 @@ export default function MessageView({ message, now, onBack, onOpen }: MessageVie
       )}
 
       <ThreadContext message={message} now={now} onOpen={onOpen} />
-    </div>
+    </Panel>
   );
 }
