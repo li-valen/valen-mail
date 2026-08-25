@@ -855,8 +855,20 @@ VM's own, from §8, must not be overwritten by the Mac's), `node_modules`
 (reinstalled on the VM in Step 3, not shipped — different OS/arch than a
 Mac dev machine), and `tests/` (never runs on the VM).
 
+The service is stopped before anything under `/opt/postbox/sync` is
+touched. Harmless today — amendment A5 means `postbox-sync` is not
+running yet — but this procedure is meant to be re-run for every future
+deploy too, and `rm -rf`'ing `src/` out from under a running process
+(below) is exactly the kind of thing that is fine until the one time it
+isn't. `|| true` because `systemctl stop` on an already-inactive unit is
+not a failure worth aborting the deploy over.
+
 ```bash
 export PATH=/opt/homebrew/share/google-cloud-sdk/bin:"$PATH"
+
+gcloud compute ssh postbox --zone=us-central1-a --quiet --command='
+  sudo systemctl stop postbox-sync || true
+'
 
 cd sync
 tar czf /tmp/postbox-sync-deploy.tar.gz \
@@ -905,29 +917,26 @@ gcloud compute ssh postbox --zone=us-central1-a --quiet --command='
 '
 ```
 
-### Step 4 — apply schema.sql idempotently
+### Step 4 — deleted: schema changes apply automatically, do not add a manual step here
 
-`schema.sql` is written to be safe to re-run (`create table if not
-exists`, etc.), so this is not a migration tool — just applying the
-current schema against whatever database `DATABASE_URL` in the VM's own
-`.env` already names. **Do not hardcode a database name here or assume it
-matches this file's own history (§5 created `postbox_sync`, but this
-procedure must not assume that still matches the live `.env` — read it
-fresh from the VM, every time:**
+There is deliberately no `psql -f schema.sql` command in this procedure. A draft of this
+section had one and it was removed after review — it was actively dangerous, not merely
+redundant:
 
-```bash
-gcloud compute ssh postbox --zone=us-central1-a --quiet --command='
-  set -e
-  DB_NAME=$(sudo grep -oP "(?<=^DATABASE_URL=).*" /opt/postbox/sync/.env \
-    | sed -E "s#.*/([^/?]+)\??.*#\1#")
-  echo "applying schema.sql to database: $DB_NAME"
-  sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" \
-    -f /opt/postbox/sync/src/schema.sql
-'
-```
-
-(`src/schema.sql` is already on the VM as of Step 2 — no separate copy
-needed.)
+- `psql -f` reads the file client-side as whatever OS user runs the command. `/opt/postbox`
+  is `750 postbox:postbox`, so running it as `postgres` (the role that owns the database)
+  gets a permission-denied reading `schema.sql` off disk, and `set -e` aborts the whole
+  deploy right there.
+- The obvious fix — copy `schema.sql` to `/tmp` first, matching §5's own pattern — makes
+  this WORSE: `psql` then succeeds, but as the Postgres **superuser**. Any table that does
+  not yet exist (`push_subscriptions`, which has never been created on the VM) gets created
+  owned by `postgres`, not `postbox`. The app connects as `postbox` and every subsequent
+  `insert`/`delete` against that table then fails with `permission denied for table
+  push_subscriptions` — silently, since the deploy itself reported success.
+- It is also simply unnecessary: `sync/src/api/server.ts`'s `startServer()` already calls
+  `await db.applySchema()` on every boot (§14 documents this), running as the `postbox` role
+  the app itself connects as — the only role that should ever own these tables. Step 6's
+  restart is what applies the schema; nothing manual is needed before or after it.
 
 ### Step 5 — the one thing to never do: copy `.env`
 
@@ -987,9 +996,10 @@ curl -s -o /dev/null -w '%{http_code} %{content_type}\n' "https://$HOST/"
 curl -s -D - -o /dev/null "https://$HOST/sw.js" | grep -i cache-control
 
 # 3. A hashed asset — expect Cache-Control: public, max-age=31536000,
-#    immutable. Replace with a real filename from `ls sync/public/assets/`.
-curl -s -D - -o /dev/null "https://$HOST/assets/<real-hashed-filename>.js" \
-  | grep -i cache-control
+#    immutable. Derived from the real build output rather than a
+#    placeholder filename, so this snippet is copy-pasteable as-is.
+ASSET=$(basename "$(ls sync/public/assets/*.js | head -1)")
+curl -s -D - -o /dev/null "https://$HOST/assets/$ASSET" | grep -i cache-control
 
 # 4. API health — expect 200, ok:true, one entry per account
 curl -s "https://$HOST/api/health" | jq
@@ -1003,9 +1013,13 @@ curl -s -o /dev/null -w '%{http_code}\n' "https://$HOST/api/inbox"
 curl -s -o /dev/null -w '%{http_code}\n' \
   -H "Authorization: Bearer $API_TOKEN" "https://$HOST/api/nope"
 
-# 7. Traversal attempt — expect 404 or the SPA fallback (200 with the app
-#    shell's own index.html), NEVER any file from outside sync/public
-curl -s -o /dev/null -w '%{http_code}\n' "https://$HOST/%2e%2e/%2e%2e/etc/passwd"
+# 7. Traversal attempt — status code alone proves nothing here: Caddy and
+#    the router's own `new URL()` both collapse "%2e%2e" during parsing,
+#    so a PASSING result is 200-with-the-app-shell, which is
+#    indistinguishable from 200-with-real-/etc/passwd by status code
+#    alone. Check the body instead — TRAVERSAL-FAIL must never print.
+curl -s "https://$HOST/%2e%2e/%2e%2e/etc/passwd" \
+  | grep -q 'root:' && echo TRAVERSAL-FAIL || echo ok
 
 # 8. Sign-in with a wrong token — expect 401
 curl -s -o /dev/null -w '%{http_code}\n' -X POST \

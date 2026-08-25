@@ -103,12 +103,24 @@ describe('static and SPA fallback, reached through the real router', () => {
     expect(await response.text()).toBe('');
   });
 
-  it('a traversal attempt through the real router never escapes the fixture root', async () => {
+  it('a traversal-shaped path reaches the static handler end to end and still fails closed', async () => {
+    // This is a wiring check, not the containment proof: `new Request(...)`
+    // followed by `new URL(request.url)` inside the router runs the
+    // WHATWG URL parser before ./static.ts ever sees a pathname, and that
+    // parser's own dot-segment handling can already neutralise some
+    // shapes of "../" before resolvePathWithinRoot runs at all. The
+    // load-bearing containment proof — that resolvePathWithinRoot itself
+    // rejects a path that decodes to an escape, independent of whatever a
+    // URL parser did first — lives in tests/static.test.ts, which calls
+    // createStaticHandler directly with a raw, unparsed pathname string.
+    // What this test proves is narrower and still worth having: a
+    // traversal-shaped request reaches the real router, the real
+    // dispatcher, and the real static handler, and comes out the other
+    // end as either the fixture's own index.html or a 404 — never a 500,
+    // never a hang, never anything else.
     const response = await fixtureRouter()(
       new Request('http://x/%2e%2e/%2e%2e/%2e%2e/secrets'),
     );
-    // Whichever way it fails closed (fallback or 404), it must never be a
-    // 200 carrying anything other than the fixture's own index.html.
     if (response.status === 200) {
       expect(await response.text()).toContain('fixture index.html');
     } else {

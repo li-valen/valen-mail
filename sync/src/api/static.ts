@@ -120,6 +120,18 @@ interface ResolvedPath {
  * every `..` segment BEFORE the prefix check runs, so `path.join` (which
  * normalizes but does not clamp to a base) would not be safe here — only
  * resolve-then-compare is.
+ *
+ * This containment check is LEXICAL, not filesystem-aware: it never calls
+ * `fs.realpath`, so a symlink under `root` that points outside it would
+ * still pass (the string comparison only inspects the requested path, not
+ * what any component of it resolves to on disk), and `tryServeFile`'s
+ * `readFile` follows symlinks like any other read. That is a deliberate
+ * choice, not an oversight: Vite's build never emits symlinks into
+ * `sync/public`, and the only way one could appear there is someone with
+ * write access to the deploy target choosing to put it there — at which
+ * point they can already read or write anything this process can, and a
+ * `realpath` check would add a syscall per request to defend against a
+ * threat model this service does not have.
  */
 function resolvePathWithinRoot(root: string, pathname: string): ResolvedPath | null {
   let decoded: string;
@@ -210,12 +222,17 @@ async function tryServeFile(
   }
 
   const cacheControl = forcedCacheControl ?? cacheControlFor(resolved.rootRelativePath);
+  // Built as one immutable literal (a conditional spread for the one
+  // optional header) rather than a mutable object assigned into after
+  // construction — this project's coding style treats "build the whole
+  // value, then hand it over" as the default, not "build a shell, then
+  // mutate it into shape".
   const headers: Record<string, string> = {
     'content-type': contentTypeFor(resolved.absolutePath),
     'x-content-type-options': NOSNIFF,
     'content-length': String(data.length),
+    ...(cacheControl ? { 'cache-control': cacheControl } : {}),
   };
-  if (cacheControl) headers['cache-control'] = cacheControl;
 
   return new Response(isHead ? null : data, { status: 200, headers });
 }

@@ -98,6 +98,12 @@ describe('createStaticHandler — serving a real fixture tree', () => {
     const response = await serve('GET', '/thread/abc123');
     expect(response.status).toBe(200);
     expect(response.headers.get('cache-control')).toBe('no-cache');
+    // nosniff is claimed to apply to "every static response" — the SPA
+    // fallback is its own code path (tryServeFile called with a forced
+    // cache-control from a synthesized /index.html lookup, not the
+    // requested path), so it gets its own assertion rather than trusting
+    // the hit/miss test above to have covered it by implication.
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff');
     expect(await response.text()).toContain('fixture index.html');
   });
 
@@ -166,6 +172,24 @@ describe('createStaticHandler — serving a real fixture tree', () => {
     // deterministic 404 rather than a fallback — and, more importantly,
     // never a thrown error from a null byte reaching fs.readFile.
     expect(response.status).toBe(404);
+  });
+
+  it('a leading "//" is treated as relative to root, never as its own filesystem root', async () => {
+    // The classic "absolute-path trick" named in Task 8's containment
+    // requirement: a naive `path.resolve(root, pathname)` with the
+    // leading slashes left intact could hand path.resolve something that
+    // LOOKS like a second absolute path and have it win. Stripping every
+    // leading "/" before resolving (see resolvePathWithinRoot) means
+    // "//etc/passwd" resolves to "<root>/etc/passwd" — contained, just
+    // nonexistent — not to the real /etc/passwd. No extension on the last
+    // segment means a miss here falls back to the SPA shell rather than
+    // 404ing, and that fallback body is the real assertion: it must be
+    // the fixture's own index.html, never real /etc/passwd content.
+    const response = await serve('GET', '//etc/passwd');
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain('fixture index.html');
+    expect(body).not.toContain('root:');
   });
 });
 
