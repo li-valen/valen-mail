@@ -32,6 +32,19 @@ export interface FakeFetchMessage {
   readonly size?: number;
   readonly envelope?: Record<string, unknown>;
   readonly bodyStructure?: unknown;
+  /** The bytes a PEEK'd partial fetch of this message's text part returns
+   *  (Plan 7 Task 1). Absent means the server answers the preview fetch
+   *  with no body part for this UID — exactly what a message whose part
+   *  vanished between the header fetch and the preview fetch looks like. */
+  readonly previewBytes?: Buffer;
+}
+
+/** One `client.fetch()` call the fake server saw, recorded so a test can
+ *  assert the SHAPE of what sync actually asked for — the header query, the
+ *  preview query, the UID set — rather than only its effects. */
+export interface FakeFetchCall {
+  readonly range: unknown;
+  readonly query: Record<string, unknown>;
 }
 
 /**
@@ -87,6 +100,10 @@ export interface FakeClientOptions {
   /** Injected between the download starting and its first chunk, so a test
    *  can hold an on-demand fetch open while it observes what else runs. */
   readonly downloadGate?: Promise<void>;
+  /** When set, any PREVIEW fetch (a query carrying `bodyParts`) rejects
+   *  with it, while header fetches keep working — how a part that fails to
+   *  fetch on an otherwise healthy connection presents. */
+  readonly previewError?: Error;
   /** Initial UIDVALIDITY the fake mailbox reports. Defaults to 1n. Typed
    *  `bigint`, not `number`, to mirror imapflow's own
    *  `MailboxObject.uidValidity` (imap-flow.d.ts) — fetch.ts reads this
@@ -238,11 +255,39 @@ export function createFakeClient(options: FakeClientOptions = {}) {
   const selectedState = (): FolderState | null =>
     selectedPath === null ? null : states.get(selectedPath) ?? null;
 
-  const fetch = vi.fn(function* fetchImpl() {
+  const fetchCalls: FakeFetchCall[] = [];
+
+  const fetch = vi.fn(function* fetchImpl(range: unknown, query: Record<string, unknown>) {
+    fetchCalls.push({ range, query });
+
+    const messages = selectedState()?.messages ?? [];
+
+    // A query carrying `bodyParts` is a PREVIEW fetch (Plan 7 Task 1), and
+    // a real server answers it with body parts, not envelopes. Keyed on the
+    // query rather than on a separate fake method so the production code
+    // reaches it through the same client.fetch() it uses for headers —
+    // which is what lets a test assert the emitted options.
+    const bodyParts = query?.bodyParts as
+      | readonly { key: string; start?: number; maxLength?: number }[]
+      | undefined;
+
+    if (bodyParts && bodyParts.length > 0) {
+      if (options.previewError) throw options.previewError;
+      const requested = new Set(String(range).split(',').map(Number));
+      const partId = bodyParts[0]!.key;
+      for (const message of messages) {
+        if (!requested.has(message.uid) || message.previewBytes === undefined) continue;
+        // imapflow strips the `<0>` partial suffix before building this
+        // map, so the key is the part number that was asked for.
+        yield { uid: message.uid, bodyParts: new Map([[partId, message.previewBytes]]) };
+      }
+      return;
+    }
+
     // Yields the SELECTED folder's messages: a cycle that opened Spam must
     // not be handed INBOX's mail, or every per-folder assertion in these
     // suites would be measuring the same array four times.
-    for (const message of selectedState()?.messages ?? []) yield message;
+    for (const message of messages) yield message;
   });
 
   const download = vi.fn(async (uid: string, partId: string | undefined) => {
@@ -309,6 +354,12 @@ export function createFakeClient(options: FakeClientOptions = {}) {
     list,
     download,
     downloadCalls,
+    /** Every client.fetch() call, in order, with the range and query it
+     *  was given. */
+    fetchCalls,
+    /** Just the preview fetches — the ones carrying `bodyParts`. */
+    previewFetchCalls: (): readonly FakeFetchCall[] =>
+      fetchCalls.filter((call) => call.query?.bodyParts !== undefined),
     /** Every getMailboxLock path, in order — the record of which mailboxes
      *  a cycle actually opened and in what sequence. */
     openedMailboxes,
@@ -332,7 +383,14 @@ export interface FakeDb extends Db {
   readonly upserts: MessageInput[];
   readonly attachmentUpserts: AttachmentInput[];
   readonly budgetRecordCalls: number[];
+  /** Every (accountId, folder, uids) findUidsWithSnippet was asked about,
+   *  so a test can prove the pool consults the store before spending
+   *  preview bytes rather than re-fetching every cycle. */
+  readonly snippetLookups: Array<{ accountId: string; folder: string; uids: readonly number[] }>;
   seedBytesUsedToday(accountId: string, bytes: number): void;
+  /** Marks a (accountId, folder, uid) as already having a preview stored,
+   *  which is what a second sync cycle over the same UIDs sees. */
+  seedSnippet(accountId: string, folder: string, uid: number): void;
 }
 
 /**
@@ -347,6 +405,8 @@ export function createFakeDb(): FakeDb {
   const upserts: MessageInput[] = [];
   const attachmentUpserts: AttachmentInput[] = [];
   const budgetRecordCalls: number[] = [];
+  const snippetLookups: Array<{ accountId: string; folder: string; uids: readonly number[] }> = [];
+  const storedSnippets = new Set<string>();
 
   const today = (): string => new Date().toISOString().slice(0, 10);
 
@@ -354,8 +414,16 @@ export function createFakeDb(): FakeDb {
     upserts,
     attachmentUpserts,
     budgetRecordCalls,
+    snippetLookups,
     seedBytesUsedToday(accountId, bytes) {
       bytesUsedByKey.set(`${accountId}|${today()}`, bytes);
+    },
+    seedSnippet(accountId, folder, uid) {
+      storedSnippets.add(`${accountId}|${folder}|${uid}`);
+    },
+    async findUidsWithSnippet(accountId, folder, uids) {
+      snippetLookups.push({ accountId, folder, uids });
+      return new Set(uids.filter((uid) => storedSnippets.has(`${accountId}|${folder}|${uid}`)));
     },
     async applySchema() {},
     async query(text, values = []) {

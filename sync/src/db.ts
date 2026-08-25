@@ -7,12 +7,10 @@ import pg from 'pg';
 const MAX_POOL_SIZE = 4;
 
 /** Defensive truncation applied to `snippet` at the write path, independent
- *  of Task 3's own truncation to 280 chars.
+ *  of normalize.ts's own truncation to SNIPPET_CHARS (280).
  *
- *  NOT YET EXERCISED: `snippet` is always NULL in the shipped service —
- *  normalizeMessage() derives it from `raw.bodyText`, which the only
- *  producer (fetchHeaders) deliberately never fetches. This truncation is
- *  the write-path bound for a future task that does fetch a body prefix.
+ *  LIVE as of Plan 7 Task 1, which added the bounded partial PEEK fetch
+ *  that finally populates this column.
  *
  *  It is NOT a CHECK constraint: a constraint would reject the whole insert
  *  on a caller bug, silently halting sync for that message; truncating here
@@ -33,7 +31,10 @@ export interface MessageInput {
   readonly toEmails: readonly string[];
   readonly ccEmails: readonly string[];
   readonly date: Date | null;
-  /** Always null today — see SNIPPET_MAX_LENGTH above. */
+  /** The message preview, or null when one could not be produced (no text
+   *  part, a failed preview fetch, or a fragment that stripped down to
+   *  nothing). Null NEVER erases a snippet a previous cycle stored — see
+   *  upsertMessage's ON CONFLICT. */
   readonly snippet: string | null;
   readonly flags: readonly string[];
   readonly labels: readonly string[];
@@ -137,11 +138,32 @@ export interface Db {
   query(text: string, values?: readonly unknown[]): Promise<any[]>;
   upsertMessage(message: MessageInput): Promise<void>;
   upsertAttachment(attachment: AttachmentInput): Promise<void>;
+  /**
+   * The subset of `uids` that ALREADY have a preview stored, in one round
+   * trip on the primary key's own (account_id, folder, uid) prefix.
+   *
+   * This is what keeps the sync loop's re-poll of the newest 50 UIDs from
+   * re-fetching 50 previews every cycle forever: the pool asks for the
+   * complement of this set and nothing else. Asking Postgres rather than
+   * tracking it in memory is deliberate — an in-memory set would forget
+   * across a restart and re-fetch (and re-charge the byte budget for)
+   * every visible message on the first cycle after every deploy.
+   */
+  findUidsWithSnippet(
+    accountId: string,
+    folder: string,
+    uids: readonly number[],
+  ): Promise<ReadonlySet<number>>;
   getUnifiedInbox(options: {
     limit: number;
     cursor: InboxCursor | null;
     folder: InboxFolderFilter;
     accountId: string | null;
+    /** Plan 7 Task 1: GET /api/search's free-text filter, applied on top
+     *  of — never instead of — the folder/account/cursor filters above, so
+     *  a search inherits the inbox's exact ordering and pagination. Absent
+     *  or null for an ordinary inbox read. */
+    search?: string | null;
   }): Promise<any[]>;
   getThread(threadId: string): Promise<any[]>;
   /**
@@ -308,17 +330,79 @@ function pushAccountClause(clauses: string[], values: unknown[], accountId: stri
   clauses.push(`m.account_id = $${idx}`);
 }
 
-function buildInboxFilter(
-  cursor: InboxCursor | null,
-  folder: InboxFolderFilter,
-  accountId: string | null,
-): InboxFilter {
+/** The columns GET /api/search looks in. Snippet is one of them, which is
+ *  what makes previews searchable and not merely decorative — and also why
+ *  a row synced before Plan 7 Task 1 (snippet still NULL) can only ever
+ *  match on the other three. */
+const SEARCH_COLUMNS = ['m.subject', 'm.from_name', 'm.from_email', 'm.snippet'] as const;
+
+/**
+ * Escapes the three characters LIKE/ILIKE treat as syntax, so a user
+ * searching for `100%` gets messages containing "100%" rather than every
+ * message in the mailbox, and `a_b` does not also match `axb`.
+ *
+ * Backslash is escaped FIRST — reversing the order would double-escape the
+ * backslashes this function itself just introduced.
+ *
+ * No `ESCAPE` clause accompanies this in the SQL, deliberately: backslash
+ * is LIKE's default escape character regardless of any GUC, and writing
+ * `escape '\'` would put a backslash inside a SQL STRING LITERAL, whose
+ * meaning genuinely does depend on `standard_conforming_strings` (the same
+ * hazard pushFolderClause documents for '\Flagged'). The pattern itself
+ * travels as a bound parameter and is never parsed as a literal at all.
+ */
+export function escapeLikePattern(raw: string): string {
+  return raw.replace(/[\\%_]/g, (char) => `\\${char}`);
+}
+
+/**
+ * Appends the free-text search clause (Plan 7 Task 1): a case-insensitive
+ * substring match across SEARCH_COLUMNS.
+ *
+ * ILIKE rather than a tsvector column, a GIN index or an extension — at
+ * 461 rows on a personal mailbox a sequential scan is microseconds, and a
+ * migration for full-text search nobody asked for would cost more than it
+ * buys. Revisit if this mailbox ever grows two orders of magnitude.
+ *
+ * ONE bound parameter referenced four times, not four copies: the pattern
+ * is identical for every column, and a single placeholder makes it
+ * impossible for the escaping to be applied to three of them and forgotten
+ * on the fourth.
+ *
+ * A NULL column yields NULL from ILIKE, which the surrounding OR treats as
+ * "no match" — the correct answer for a message with no subject, and the
+ * reason no coalesce is needed here.
+ */
+function pushSearchClause(clauses: string[], values: unknown[], search: string | null): void {
+  if (search === null) return;
+  const idx = values.push(`%${escapeLikePattern(search)}%`);
+  clauses.push(`(${SEARCH_COLUMNS.map((column) => `${column} ilike $${idx}`).join(' or ')})`);
+}
+
+/**
+ * Builds the WHERE clause and bound values shared by GET /api/inbox and
+ * GET /api/search. Exported for tests/db-filter.test.ts, which asserts the
+ * generated SQL and parameters directly — the only way to prove
+ * parameterization and wildcard escaping without a live Postgres, since
+ * every db.test.ts case is skipped when TEST_DATABASE_URL is unset.
+ *
+ * Every clause derives its placeholder number from `values.push()`'s
+ * return, so the four are composable in any combination without any of
+ * them knowing what the others pushed.
+ */
+export function buildInboxFilter(options: {
+  readonly cursor: InboxCursor | null;
+  readonly folder: InboxFolderFilter;
+  readonly accountId: string | null;
+  readonly search?: string | null;
+}): InboxFilter {
   const clauses: string[] = [];
   const values: unknown[] = [];
 
-  pushCursorClause(clauses, values, cursor);
-  pushFolderClause(clauses, values, folder);
-  pushAccountClause(clauses, values, accountId);
+  pushCursorClause(clauses, values, options.cursor);
+  pushFolderClause(clauses, values, options.folder);
+  pushAccountClause(clauses, values, options.accountId);
+  pushSearchClause(clauses, values, options.search ?? null);
 
   const where = clauses.length > 0 ? `where ${clauses.join(' and ')}` : '';
   return { where, values };
@@ -354,7 +438,16 @@ export function openDb(databaseUrl: string): Db {
          values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,left($12, ${SNIPPET_MAX_LENGTH}),$13,$14,$15,$16)
          on conflict (account_id, folder, uid) do update set
            subject=excluded.subject, flags=excluded.flags, labels=excluded.labels,
-           snippet=excluded.snippet, has_attach=excluded.has_attach`,
+           -- coalesce, NOT excluded.snippet: the sync loop re-polls the
+           -- newest 50 UIDs every cycle, and only asks for a preview for a
+           -- message that has none stored yet (see findUidsWithSnippet), so
+           -- every one of those re-polls arrives here carrying snippet=NULL.
+           -- A plain excluded.snippet would wipe a perfectly good preview on
+           -- the very next cycle and leave the column empty forever. This
+           -- also makes a FAILED preview fetch harmless: it writes NULL,
+           -- which now means "no new preview", not "erase the old one".
+           snippet=coalesce(excluded.snippet, messages.snippet),
+           has_attach=excluded.has_attach`,
         [m.accountId, m.uid, m.folder, m.messageId, m.threadId, m.subject, m.fromName,
          m.fromEmail, m.toEmails, m.ccEmails, m.date, m.snippet, m.flags, m.labels,
          m.hasAttach, m.sizeBytes],
@@ -376,8 +469,22 @@ export function openDb(databaseUrl: string): Db {
       );
     },
 
-    async getUnifiedInbox({ limit, cursor, folder, accountId }) {
-      const filter = buildInboxFilter(cursor, folder, accountId);
+    async findUidsWithSnippet(accountId, folder, uids) {
+      if (uids.length === 0) return new Set();
+      const result = await pool.query(
+        `select uid from messages
+         where account_id = $1 and folder = $2 and uid = any($3::bigint[]) and snippet is not null`,
+        [accountId, folder, uids],
+      );
+      // pg hands bigint columns back as strings to avoid silent precision
+      // loss; UIDs are uint32 by RFC 3501, so Number() is lossless here and
+      // keeps the returned set comparable to the numeric uids the caller
+      // holds.
+      return new Set(result.rows.map((row) => Number(row.uid)));
+    },
+
+    async getUnifiedInbox({ limit, cursor, folder, accountId, search }) {
+      const filter = buildInboxFilter({ cursor, folder, accountId, search });
       const limitPlaceholder = `$${filter.values.length + 1}`;
       const result = await pool.query(
         `${MESSAGE_SELECT} ${filter.where} ${INBOX_ORDER} limit ${limitPlaceholder}`,

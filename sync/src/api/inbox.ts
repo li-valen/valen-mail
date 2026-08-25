@@ -57,7 +57,7 @@ function parseBeforeDate(raw: string | null): Date | null {
  * the same way as an unfiltered one — see resolveFolderFilter below for
  * the filter half.
  */
-function parseInboxCursor(url: URL): InboxCursor | null {
+export function parseInboxCursor(url: URL): InboxCursor | null {
   const date = parseBeforeDate(url.searchParams.get('before'));
   const accountId = url.searchParams.get('beforeAccount');
   const uidRaw = url.searchParams.get('beforeUid');
@@ -68,7 +68,7 @@ function parseInboxCursor(url: URL): InboxCursor | null {
   return null;
 }
 
-interface NextCursor {
+export interface NextCursor {
   readonly before: string | null;
   readonly beforeAccount: string;
   readonly beforeUid: string;
@@ -93,7 +93,7 @@ interface NextCursor {
  * already satisfied that filter, so the emitted cursor addresses a
  * position that is only ever reached again from inside the same filter.
  */
-function nextCursorFrom(rows: readonly Record<string, unknown>[], limit: number): NextCursor | null {
+export function nextCursorFrom(rows: readonly Record<string, unknown>[], limit: number): NextCursor | null {
   if (rows.length < limit) return null;
   const last = rows[rows.length - 1];
   if (!last || last.account_id === undefined || last.uid === undefined) return null;

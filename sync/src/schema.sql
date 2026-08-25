@@ -30,15 +30,16 @@ create table if not exists messages (
   to_emails    text[],
   cc_emails    text[],
   date         timestamptz,
-  -- NOT YET POPULATED. This column is always NULL in the shipped service.
-  -- normalizeMessage() derives the snippet from `raw.bodyText`, and the
-  -- only producer of RawImapMessage is fetchHeaders(), which deliberately
-  -- never fetches a body (see HEADER_FETCH_OPTIONS in src/imap/fetch.ts) —
-  -- so bodyText is always undefined and makeSnippet() always returns null.
-  -- The column and its bounded write path are retained for a future task
-  -- that fetches a small BODY[TEXT] prefix per message; until then, do not
-  -- read comments elsewhere describing the snippet as load-bearing for the
-  -- storage budget as a description of current behaviour.
+  -- POPULATED as of Plan 7 Task 1. The sync fetch itself is still strictly
+  -- header-only (see HEADER_FETCH_OPTIONS in src/imap/fetch.ts, which stays
+  -- frozen); the preview comes from a SEPARATE, separately-budgeted partial
+  -- PEEK fetch of the message's first text part — `BODY.PEEK[n]<0.512>`, so
+  -- a 4 MB mail costs 512 bytes and reading a preview never sets \Seen.
+  --
+  -- BACKFILL IS OUT OF SCOPE: rows synced before that task keep a NULL
+  -- snippet forever, since the sync loop only re-polls the newest 50 UIDs.
+  -- Every reader — the inbox list, the search route's ILIKE, the client's
+  -- row rendering — must treat NULL as ordinary, not exceptional.
   --
   -- When it IS populated it will be bounded at the write path, not by a
   -- constraint here: upsertMessage wraps this parameter in left($n, 500)

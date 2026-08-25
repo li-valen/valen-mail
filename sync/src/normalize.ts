@@ -3,14 +3,12 @@ import type { MessageInput } from './db';
 /** Long enough to judge a message from the list, short enough that 500k
  *  rows stay near 1 GB. Storing full bodies would be roughly 10x this.
  *
- *  NOT YET EXERCISED IN PRODUCTION. makeSnippet() reads `raw.bodyText`, and
- *  the only producer of RawImapMessage is fetchHeaders(), which correctly
- *  never fetches a body — so `bodyText` is always undefined, makeSnippet()
- *  always returns null, and the `snippet` column is always NULL. This limit
- *  therefore bounds nothing today; it is the contract a future
- *  fetch-a-body-prefix task must honour. Treat the storage arithmetic above
- *  as the design intent for that task, not as a description of what the
- *  service currently stores. */
+ *  LIVE as of Plan 7 Task 1. The sync path still fetches headers only —
+ *  `raw.bodyText` remains undefined for every message fetchHeaders()
+ *  produces — but ConnectionPool now follows that with a separate,
+ *  separately-budgeted partial PEEK fetch of the first text part and
+ *  applies the result through applySnippet() below, which routes through
+ *  the same makeSnippet() and therefore the same cap. */
 export const SNIPPET_CHARS = 280;
 
 interface Address { readonly name?: string; readonly address?: string }
@@ -53,12 +51,43 @@ function addresses(list: readonly Address[] | undefined): string[] {
   return (list ?? []).map((a) => a.address).filter((a): a is string => Boolean(a));
 }
 
-/** Always returns null in the shipped service: no caller supplies
- *  `bodyText`. See SNIPPET_CHARS above. */
-function makeSnippet(bodyText: string | undefined): string | null {
+/**
+ * The one place a snippet's shape is decided: whitespace collapsed to
+ * single spaces (a preview is one line in a list row, not a rendered
+ * body) and capped at SNIPPET_CHARS.
+ *
+ * Returns null — not '' — for input that collapses to nothing, which is
+ * what a preview of an entirely-quoted reply or an all-stylesheet HTML
+ * fragment does. The client has to be able to tell "no preview" from
+ * "empty preview": one means render no second line, the other would
+ * reserve a blank one.
+ *
+ * Callers reaching this via applySnippet() have ALREADY had quoted text
+ * and signatures stripped by preview.ts, which needs the line structure
+ * this function destroys — hence the split.
+ */
+function makeSnippet(bodyText: string | undefined | null): string | null {
   if (!bodyText) return null;
   const collapsed = bodyText.replace(/\s+/g, ' ').trim();
-  return collapsed.slice(0, SNIPPET_CHARS);
+  return collapsed.length > 0 ? collapsed.slice(0, SNIPPET_CHARS) : null;
+}
+
+/**
+ * Overlays a preview onto an already-normalized message, exactly the way
+ * applyAttachmentFlag() overlays the BODYSTRUCTURE walk's result.
+ *
+ * A separate step for the same reason that one is: normalizeMessage() runs
+ * inside fetchHeaders(), which is header-only by design and has no body
+ * bytes to work from. The preview arrives later, from the separate
+ * partial PEEK fetch, so the only code that holds both is the caller.
+ *
+ * `null` (the fetch failed, the message has no text part, or the preview
+ * stripped down to nothing) yields a null snippet rather than throwing or
+ * inventing one — see upsertMessage's ON CONFLICT for why writing that
+ * null cannot erase a snippet a previous cycle already stored.
+ */
+export function applySnippet(message: MessageInput, bodyText: string | null): MessageInput {
+  return { ...message, snippet: makeSnippet(bodyText) };
 }
 
 export function normalizeMessage(

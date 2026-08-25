@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeMessage, SNIPPET_CHARS } from '../src/normalize';
+import { applySnippet, normalizeMessage, SNIPPET_CHARS } from '../src/normalize';
 
 const RAW = {
   uid: 42,
@@ -68,5 +68,51 @@ describe('normalizeMessage', () => {
     const m = normalizeMessage(both, 'p', 'INBOX');
     expect(m.threadId).toBeNull();
     expect(m.messageId).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applySnippet (Plan 7 Task 1)
+// ---------------------------------------------------------------------------
+
+describe('applySnippet', () => {
+  // The message as fetchHeaders produces it: header-only, so always
+  // snippet-less. The preview arrives later, from the separate partial
+  // PEEK fetch, which is why this overlay exists at all.
+  const headerOnly = normalizeMessage({ ...RAW, bodyText: undefined }, 'primary', 'INBOX');
+
+  it('overlays the preview onto an otherwise unchanged message', () => {
+    const result = applySnippet(headerOnly, 'Numbers are attached.');
+    expect(result.snippet).toBe('Numbers are attached.');
+    expect(result.uid).toBe(headerOnly.uid);
+    expect(result.subject).toBe(headerOnly.subject);
+    expect(result.flags).toEqual(headerOnly.flags);
+  });
+
+  it('does not mutate the message it was given', () => {
+    applySnippet(headerOnly, 'Numbers are attached.');
+    expect(headerOnly.snippet).toBeNull();
+  });
+
+  it('applies the same SNIPPET_CHARS cap normalizeMessage does', () => {
+    // One cap, one code path: the preview route must not be able to store
+    // more than the inbox route ever could.
+    expect(applySnippet(headerOnly, 'x'.repeat(SNIPPET_CHARS + 200)).snippet)
+      .toHaveLength(SNIPPET_CHARS);
+  });
+
+  it('collapses the line structure preview.ts deliberately leaves behind', () => {
+    // preview.ts keeps line breaks because its quoting and signature rules
+    // need them; a list row is one line, so they are collapsed here.
+    expect(applySnippet(headerOnly, 'first line\n\n  second line').snippet)
+      .toBe('first line second line');
+  });
+
+  it('stores null, not an empty string, for a preview that stripped to nothing', () => {
+    // The client has to distinguish "no preview" (render no second line)
+    // from "empty preview" (would reserve a blank one).
+    expect(applySnippet(headerOnly, '').snippet).toBeNull();
+    expect(applySnippet(headerOnly, '   \n  ').snippet).toBeNull();
+    expect(applySnippet(headerOnly, null).snippet).toBeNull();
   });
 });

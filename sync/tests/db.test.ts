@@ -433,6 +433,188 @@ maybe('db', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // Plan 7 Task 1: previews and search, against a real Postgres
+  // ---------------------------------------------------------------------------
+  //
+  // The generated SQL — parameterization, wildcard escaping, placeholder
+  // numbering — is asserted without a database in tests/db-filter.test.ts,
+  // which is what covers those properties on a checkout with no
+  // TEST_DATABASE_URL. What only Postgres can answer is whether the clauses
+  // actually select the rows they claim to, and that is this describe's job.
+
+  describe('snippet preservation across a re-poll (Plan 7 Task 1)', () => {
+    const base = {
+      accountId: 'test-a', folder: 'INBOX', messageId: '<snip@x>', threadId: 'snip',
+      subject: 'preview subject', fromName: 'A', fromEmail: 'a@x.com',
+      toEmails: [], ccEmails: [], date: new Date('2026-08-15T00:00:00Z'),
+      flags: [], labels: [], hasAttach: false, sizeBytes: 1,
+    };
+
+    it('a later upsert carrying snippet=null keeps the snippet already stored', async () => {
+      // The sync loop re-polls the newest 50 UIDs every cycle and only asks
+      // for a preview for a message that has none — so every one of those
+      // re-polls arrives carrying snippet=NULL. A plain excluded.snippet
+      // would wipe the preview on the very next cycle, forever.
+      await db.upsertMessage({ ...base, uid: 7000, snippet: 'the stored preview' });
+      await db.upsertMessage({ ...base, uid: 7000, snippet: null });
+
+      const rows = await db.query(
+        'select snippet from messages where account_id=$1 and folder=$2 and uid=$3',
+        ['test-a', 'INBOX', 7000],
+      );
+      expect(rows[0].snippet).toBe('the stored preview');
+    });
+
+    it('a later upsert carrying a NEW snippet still replaces the old one', async () => {
+      await db.upsertMessage({ ...base, uid: 7001, snippet: 'first' });
+      await db.upsertMessage({ ...base, uid: 7001, snippet: 'second' });
+
+      const rows = await db.query(
+        'select snippet from messages where account_id=$1 and folder=$2 and uid=$3',
+        ['test-a', 'INBOX', 7001],
+      );
+      expect(rows[0].snippet).toBe('second');
+    });
+
+    it('findUidsWithSnippet returns only the UIDs that already have one', async () => {
+      await db.upsertMessage({ ...base, uid: 7002, snippet: 'has one' });
+      await db.upsertMessage({ ...base, uid: 7003, snippet: null });
+
+      const found = await db.findUidsWithSnippet('test-a', 'INBOX', [7002, 7003]);
+      expect([...found]).toEqual([7002]);
+    });
+
+    it('findUidsWithSnippet is scoped to the account and folder it was asked about', async () => {
+      await db.upsertMessage({ ...base, uid: 7004, snippet: 'inbox copy' });
+      const found = await db.findUidsWithSnippet('test-b', 'INBOX', [7004]);
+      expect(found.size).toBe(0);
+    });
+
+    it('findUidsWithSnippet asks nothing of the database for an empty UID list', async () => {
+      const found = await db.findUidsWithSnippet('test-a', 'INBOX', []);
+      expect(found.size).toBe(0);
+    });
+  });
+
+  describe('search (Plan 7 Task 1)', () => {
+    const SEARCH_DATE = new Date('2026-08-16T00:00:00Z');
+
+    beforeAll(async () => {
+      const rows = [
+        { uid: 8000, folder: 'INBOX', subject: 'Quarterly numbers', fromName: 'Sarah Chen', fromEmail: 'sarah@example.com', snippet: 'the figures are attached' },
+        { uid: 8001, folder: 'INBOX', subject: 'Lunch?', fromName: 'Ravi Patel', fromEmail: 'ravi@example.org', snippet: 'thursday works for me' },
+        { uid: 8002, folder: '[Gmail]/Sent Mail', subject: 'Re: Quarterly numbers', fromName: null, fromEmail: 'me@example.com', snippet: null },
+        // The wildcard fixtures: literal % and _ in real content.
+        { uid: 8003, folder: 'INBOX', subject: 'Growth hit 100% this year', fromName: null, fromEmail: 'growth@example.com', snippet: null },
+        { uid: 8004, folder: 'INBOX', subject: 'file a_b renamed', fromName: null, fromEmail: 'ops@example.com', snippet: null },
+        { uid: 8005, folder: 'INBOX', subject: 'file axb renamed', fromName: null, fromEmail: 'ops@example.com', snippet: null },
+        // The decoy that makes the "100%" case non-vacuous: it contains
+        // "100" but no percent sign, so an UNESCAPED `%100%%` matches it
+        // and an escaped `%100\\%%` does not.
+        { uid: 8006, folder: 'INBOX', subject: 'Invoice 1000 attached', fromName: null, fromEmail: 'billing@example.com', snippet: null },
+      ];
+      for (const row of rows) {
+        await db.upsertMessage({
+          accountId: 'test-a', uid: row.uid, folder: row.folder,
+          messageId: `<s${row.uid}@x>`, threadId: `search-${row.uid}`, subject: row.subject,
+          fromName: row.fromName, fromEmail: row.fromEmail, toEmails: [], ccEmails: [],
+          date: SEARCH_DATE, snippet: row.snippet, flags: [], labels: [],
+          hasAttach: false, sizeBytes: 1,
+        });
+      }
+      // A second account, to prove the account filter composes with search.
+      await db.upsertMessage({
+        accountId: 'test-b', uid: 8000, folder: 'INBOX',
+        messageId: '<sb8000@x>', threadId: 'search-b', subject: 'Quarterly numbers (b)',
+        fromName: null, fromEmail: 'b@example.com', toEmails: [], ccEmails: [],
+        date: SEARCH_DATE, snippet: null, flags: [], labels: [], hasAttach: false, sizeBytes: 1,
+      });
+    });
+
+    const search = (query: string, extra: Record<string, unknown> = {}) =>
+      db.getUnifiedInbox({
+        limit: 50, cursor: null, folder: ALL_FOLDERS, accountId: null, search: query, ...extra,
+      });
+
+    it('matches on subject', async () => {
+      const subjects = (await search('quarterly')).map((m) => m.subject);
+      expect(subjects).toContain('Quarterly numbers');
+      expect(subjects).not.toContain('Lunch?');
+    });
+
+    it('matches on from_name', async () => {
+      expect((await search('ravi patel')).map((m) => m.uid.toString())).toContain('8001');
+    });
+
+    it('matches on from_email', async () => {
+      expect((await search('example.org')).map((m) => m.uid.toString())).toContain('8001');
+    });
+
+    it('matches on snippet, which is what makes previews searchable', async () => {
+      const rows = await search('figures are attached');
+      expect(rows.map((m) => m.uid.toString())).toEqual(['8000']);
+    });
+
+    it('is case-insensitive in both directions', async () => {
+      expect((await search('QUARTERLY')).length).toBeGreaterThan(0);
+      expect((await search('sarah chen')).length).toBeGreaterThan(0);
+    });
+
+    it('treats a literal % as text: searching "100%" does not match everything', async () => {
+      // Unescaped, the pattern would be `%100%%`, whose trailing wildcard
+      // matches every row containing "100" — including the "Invoice 1000"
+      // decoy seeded above, which is what keeps this assertion from
+      // passing for the wrong reason.
+      const rows = await search('100%');
+      expect(rows.map((m) => m.uid.toString())).toEqual(['8003']);
+
+      // And the decoy really is reachable, so the assertion above is a
+      // narrowing rather than an empty set.
+      expect((await search('100')).map((m) => m.uid.toString()).sort()).toEqual(['8003', '8006']);
+    });
+
+    it('a bare % matches nothing, because no message contains a literal percent sign except one', async () => {
+      const rows = await search('%');
+      expect(rows.map((m) => m.uid.toString())).toEqual(['8003']);
+    });
+
+    it('treats a literal _ as text: "a_b" does not also match "axb"', async () => {
+      const rows = await search('a_b');
+      expect(rows.map((m) => m.uid.toString())).toEqual(['8004']);
+    });
+
+    it('composes with a folder filter', async () => {
+      const rows = await search('quarterly', {
+        folder: { kind: 'pairs', pairs: [{ accountId: 'test-a', folder: '[Gmail]/Sent Mail' }] },
+      });
+      expect(rows.map((m) => m.uid.toString())).toEqual(['8002']);
+    });
+
+    it('composes with an account filter', async () => {
+      const rows = await search('quarterly', { accountId: 'test-b' });
+      expect(rows.map((m) => m.subject)).toEqual(['Quarterly numbers (b)']);
+    });
+
+    it('composes with folder AND account together', async () => {
+      const rows = await search('quarterly', {
+        accountId: 'test-a',
+        folder: { kind: 'literal', folder: 'INBOX' },
+      });
+      expect(rows.map((m) => m.uid.toString())).toEqual(['8000']);
+    });
+
+    it('returns an empty array, not an error, for a query nothing matches', async () => {
+      expect(await search('zzzz-no-such-text')).toEqual([]);
+    });
+
+    it('is not fooled by SQL metacharacters in the query', async () => {
+      await expect(search("'; drop table messages; --")).resolves.toEqual([]);
+      const survived = await db.query('select count(*)::int as n from messages', []);
+      expect(survived[0].n).toBeGreaterThan(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // F2: exactly one primary account (spec 7B.1)
   // ---------------------------------------------------------------------------
 

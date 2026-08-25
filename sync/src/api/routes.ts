@@ -6,6 +6,7 @@ import { fetchBudgetedPart, parsePositiveInt, resolveConnection } from './fetch-
 import { fetchOpens } from './opens.ts';
 import { parseLimit } from './limits.ts';
 import { handleInbox } from './inbox.ts';
+import { handleSearch } from './search.ts';
 import {
   buildClearedSessionCookie,
   buildSessionCookie,
@@ -517,6 +518,15 @@ export function createRouter(
 
     if (path === '/api/inbox') {
       return handleInbox(db, pool, accounts, url);
+    }
+
+    // Plan 7 Task 1's free-text search. A sibling of /api/inbox, not a
+    // variant of it: same auth gate, same cursor shape, same folder and
+    // account filters, one extra `q`. Everything it does lives in
+    // ./search.ts — see that module for why the two share code rather
+    // than resembling each other.
+    if (path === '/api/search') {
+      return handleSearch(db, pool, accounts, url);
     }
 
     if (path === '/api/opens') {

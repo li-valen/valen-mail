@@ -4,6 +4,8 @@ import type { Db, MessageInput } from '../db';
 import type { AttachmentMeta } from '../attachments';
 import { ImapConnection } from './connection.ts';
 import { fetchHeaders, ESTIMATED_BYTES_PER_HEADER_FETCH } from './fetch.ts';
+import { collectPreviews } from './previews.ts';
+import { applySnippet } from '../normalize.ts';
 import {
   discoverFolders,
   folderSyncOrder,
@@ -579,6 +581,10 @@ export class ConnectionPool {
       // the real enforcement: each folder reserves and records separately,
       // so a busy account hits reserve()'s refusal exactly as it did with
       // one folder, just up to four times per cycle instead of once.
+      //
+      // PREVIEWS (Plan 7 Task 1) add a SECOND, smaller reserve/record per
+      // folder — see ESTIMATED_BYTES_PER_PREVIEW_FETCH in ./fetch.ts for
+      // that arithmetic and why it is one-time rather than recurring.
       const newByFolder = new Map<FolderKind, readonly MessageInput[]>();
 
       for (const target of folderSyncOrder(folders)) {
@@ -701,14 +707,26 @@ export class ConnectionPool {
     }
 
     const result = await fetchHeaders(connection, folder, { limit: HEADER_FETCH_LIMIT });
+
+    // Recorded BEFORE previews and before the upserts, both of which used
+    // to come first — ./previews.ts's collectPreviews reserves against
+    // this same budget and would otherwise be measured against a snapshot
+    // pretending this fetch never happened. Also strictly more
+    // conservative: these bytes crossed the wire whether or not the
+    // writes below succeed.
+    await this.budget.record(accountId, result.bytesDownloaded);
+
+    const previews = await collectPreviews({
+      db: this.db, budget: this.budget, accountId, connection, folder, result,
+    });
+
     for (const message of result.messages) {
-      await this.db.upsertMessage(message);
+      await this.db.upsertMessage(applySnippet(message, previews.get(message.uid) ?? null));
       // AFTER its message row, never before — see persistAttachments()
       // for the foreign key that requires this order and for what dropping
       // result.attachments entirely used to cost.
       await this.persistAttachments(accountId, folder, message.uid, result.attachments.get(message.uid));
     }
-    await this.budget.record(accountId, result.bytesDownloaded);
 
     return this.marks.track(accountId, folder, result.messages, result.uidValidity);
   }

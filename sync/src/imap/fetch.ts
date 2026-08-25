@@ -2,7 +2,9 @@ import type { FetchQueryObject } from 'imapflow';
 import type { ImapConnection } from './connection';
 import type { MessageInput } from '../db';
 import type { AttachmentMeta } from '../attachments';
+import type { TextPart } from '../preview';
 import { extractAttachments } from '../attachments.ts';
+import { firstTextPart, previewTextFrom } from '../preview.ts';
 import { normalizeMessage } from '../normalize.ts';
 
 export interface FetchRange {
@@ -23,6 +25,18 @@ export interface FetchRange {
 export interface FetchResult {
   readonly messages: readonly MessageInput[];
   readonly attachments: ReadonlyMap<number, readonly AttachmentMeta[]>;
+  /**
+   * Per UID, the part a preview should be fetched from — the first
+   * text/plain leaf, or the first text/* one for HTML-only mail. Absent
+   * for a message with no text part at all.
+   *
+   * Derived from the BODYSTRUCTURE this fetch ALREADY pulled (see
+   * HEADER_FETCH_OPTIONS below), not from anything new on the wire: no
+   * extra bytes, no extra round trip, and — the point — no widening of
+   * the header fetch. fetchPreviews() consumes it; nothing here fetches a
+   * preview.
+   */
+  readonly textParts: ReadonlyMap<number, TextPart>;
   readonly bytesDownloaded: number;
   /**
    * The mailbox's UIDVALIDITY at the moment of this fetch, or `null` when
@@ -86,6 +100,7 @@ export const ESTIMATED_BYTES_PER_HEADER_FETCH = 2048;
 const EMPTY_RESULT: FetchResult = {
   messages: [],
   attachments: new Map(),
+  textParts: new Map(),
   bytesDownloaded: 0,
   uidValidity: null,
 };
@@ -181,6 +196,7 @@ export async function fetchHeaders(
 
     const messages: MessageInput[] = [];
     const attachments = new Map<number, readonly AttachmentMeta[]>();
+    const textParts = new Map<number, TextPart>();
     let bytesDownloaded = 0;
 
     for await (const message of client.fetch(
@@ -189,6 +205,7 @@ export async function fetchHeaders(
       { uid: true },
     )) {
       const parts = extractAttachments(message.bodyStructure);
+      const textPart = firstTextPart(message.bodyStructure);
       const normalized = normalizeMessage(
         {
           uid: message.uid,
@@ -204,15 +221,199 @@ export async function fetchHeaders(
 
       messages.push(applyAttachmentFlag(normalized, parts));
       if (parts.length > 0) attachments.set(message.uid, parts);
+      if (textPart !== null) textParts.set(message.uid, textPart);
 
       bytesDownloaded += ESTIMATED_BYTES_PER_HEADER_FETCH;
     }
 
-    return { messages, attachments, bytesDownloaded, uidValidity: mailboxUidValidity };
+    return { messages, attachments, textParts, bytesDownloaded, uidValidity: mailboxUidValidity };
   } finally {
     // Released unconditionally: Task 7 keeps these connections alive for
     // the process lifetime, so a lock leaked here on a thrown error would
     // wedge every later operation on this connection's mailbox.
+    lock.release();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Message previews (Plan 7 Task 1)
+// ---------------------------------------------------------------------------
+
+/**
+ * How much of a text part one preview fetch pulls.
+ *
+ * This is a PARTIAL fetch (`<0.512>`), which is the whole reason previews
+ * are affordable at all: the cost is 512 bytes whether the message is 2 KB
+ * or 4 MB, so a mailbox full of newsletters with megabyte-sized HTML
+ * bodies costs exactly the same as one full of one-liners. Sized against
+ * SNIPPET_CHARS (280) with room to spare — quoted-printable and base64
+ * both inflate, and the leading lines are often stripped as quotes or a
+ * signature, so 512 raw bytes is roughly what it takes to reliably yield
+ * 280 readable characters.
+ */
+export const PREVIEW_PART_BYTES = 512;
+
+/**
+ * Conservative fixed per-message charge for the byte budget, in the same
+ * spirit — and for the same reason — as ESTIMATED_BYTES_PER_HEADER_FETCH
+ * above: imapflow exposes no wire-byte counter, so this is an ESTIMATE,
+ * and it is deliberately rounded UP rather than made exact.
+ *
+ * THE ARITHMETIC, per message:
+ *   512  bytes  payload ceiling (PREVIEW_PART_BYTES, enforced by the
+ *               server through the `<0.512>` partial — not by us after
+ *               the fact)
+ *  + ~48 bytes  untagged response framing:
+ *               `* 1234 FETCH (UID 56789 BODY[1]<0> {512}\r\n` ... `)\r\n`
+ *  + ~10 bytes  this UID's share of the request's sequence set
+ *  = ~570 bytes  -> charged as 1024, ~1.8x headroom.
+ *
+ * WHAT THIS DOES TO THE DAILY BUDGET, worst case: a folder cycle fetches
+ * at most HEADER_FETCH_LIMIT (50) messages, so previews add at most
+ * 50 x 1024 = 50 KB on top of that folder's existing 100 KB header charge
+ * — 150 KB per folder-fetch, 600 KB per account per four-folder cycle
+ * (was 400 KB). At the floor cadence of 480 cycles/day that is ~281 MB/day
+ * against DAILY_BYTE_LIMIT's 2 GiB, still under 15%.
+ *
+ * That worst case is also a one-time one: ConnectionPool only asks for a
+ * preview for a message that has no snippet stored yet, so after the first
+ * cycle over a given 50 UIDs the ongoing charge is zero, and the steady
+ * state is the same ~187 MB/day it was before previews existed.
+ *
+ * Exported alongside the constant above so the pool charges the same
+ * number this module reports, rather than duplicating the literal.
+ */
+export const ESTIMATED_BYTES_PER_PREVIEW_FETCH = 1024;
+
+/**
+ * The fetch options for one preview, as sent to imapflow.
+ *
+ * A FUNCTION rather than a frozen object because the part number is
+ * resolved per message from BODYSTRUCTURE (see firstTextPart) — but it is
+ * pinned by an exact-shape assertion in tests/fetch-unit.test.ts exactly
+ * the way HEADER_FETCH_OPTIONS is, and by a second test that compiles it
+ * through imapflow's own command builder and asserts the literal wire
+ * command. Two properties are load-bearing and neither is negotiable:
+ *
+ *  - PEEK. imapflow renders every `bodyParts` entry as `BODY.PEEK[...]`,
+ *    never a bare `BODY[...]`. That is what keeps fetching a preview from
+ *    setting `\Seen` and silently marking the owner's unread mail as read
+ *    — a bug that would be immediately visible and impossible to undo.
+ *    Any rewrite of this that reaches for `query.source`, `client.download()`
+ *    or a raw FETCH must prove the same property before it ships.
+ *  - The `<0.512>` partial. Without it the same call downloads the ENTIRE
+ *    part, and the estimate above stops being an estimate of anything.
+ */
+export function previewFetchOptions(partId: string): FetchQueryObject {
+  return {
+    uid: true,
+    bodyParts: [{ key: partId, start: 0, maxLength: PREVIEW_PART_BYTES }],
+  };
+}
+
+/** One message a preview is wanted for, and the part to take it from. */
+export interface PreviewTarget {
+  readonly uid: number;
+  readonly part: TextPart;
+}
+
+export interface PreviewFetchResult {
+  /** Preview text by UID. A message whose fetch failed, whose part came
+   *  back empty, or whose first 512 bytes were entirely quoted text or
+   *  stylesheet is simply absent — never present with an empty string. */
+  readonly previews: ReadonlyMap<number, string>;
+  readonly bytesDownloaded: number;
+}
+
+const EMPTY_PREVIEW_RESULT: PreviewFetchResult = { previews: new Map(), bytesDownloaded: 0 };
+
+/**
+ * Groups targets by part number so the whole batch costs one IMAP round
+ * trip per DISTINCT part number rather than one per message. Real mail
+ * clusters hard into two or three shapes ('1' for singlepart, '1.1' for
+ * multipart/alternative), so 50 messages is typically two fetches.
+ */
+function groupByPartId(targets: readonly PreviewTarget[]): Map<string, PreviewTarget[]> {
+  const groups = new Map<string, PreviewTarget[]>();
+  for (const target of targets) {
+    const existing = groups.get(target.part.partId);
+    if (existing) existing.push(target);
+    else groups.set(target.part.partId, [target]);
+  }
+  return groups;
+}
+
+/**
+ * Fetches a bounded, PEEK'd preview for each given message.
+ *
+ * This is a SEPARATE, separately-budgeted step from fetchHeaders() on
+ * purpose. HEADER_FETCH_OPTIONS is frozen by an exact-shape test because
+ * ESTIMATED_BYTES_PER_HEADER_FETCH is only a valid estimate for a
+ * header-only fetch; adding a body-bearing key there would silently make
+ * the budget lie. Previews instead carry their own options
+ * (previewFetchOptions), their own per-message estimate
+ * (ESTIMATED_BYTES_PER_PREVIEW_FETCH), and their own reservation at the
+ * call site — so the budget sees these bytes rather than absorbing them
+ * into a number that was never sized for them.
+ *
+ * FAILURE IS NEVER FATAL TO A MESSAGE. A part group whose fetch throws is
+ * logged — with the account, folder, part number and message COUNT, never
+ * any body content — and simply contributes no previews; the caller still
+ * upserts every one of those messages with a null snippet. One bad part
+ * group does not cost the others their previews either, which is why the
+ * catch is inside the loop.
+ *
+ * Bytes are charged for every message ATTEMPTED, including a group that
+ * threw: bytes may well have crossed the wire before the failure, and
+ * under-charging the budget is the one direction that risks a 24-hour
+ * IMAP lockout.
+ */
+export async function fetchPreviews(
+  connection: ImapConnection,
+  folder: string,
+  targets: readonly PreviewTarget[],
+): Promise<PreviewFetchResult> {
+  if (targets.length === 0) return EMPTY_PREVIEW_RESULT;
+
+  const client = connection.rawClient();
+  const lock = await client.getMailboxLock(folder);
+
+  try {
+    const previews = new Map<number, string>();
+    let bytesDownloaded = 0;
+
+    for (const [partId, group] of groupByPartId(targets)) {
+      bytesDownloaded += group.length * ESTIMATED_BYTES_PER_PREVIEW_FETCH;
+      const partByUid = new Map(group.map((target) => [target.uid, target.part]));
+
+      try {
+        for await (const message of client.fetch(
+          group.map((target) => target.uid).join(','),
+          previewFetchOptions(partId),
+          { uid: true },
+        )) {
+          // imapflow strips the `<0>` partial suffix from the response key
+          // before building this map, so the part number we asked for is
+          // the key we read back.
+          const raw = message.bodyParts?.get(partId);
+          const part = partByUid.get(message.uid);
+          if (!raw || !part) continue;
+
+          const text = previewTextFrom(raw, part);
+          if (text.length > 0) previews.set(message.uid, text);
+        }
+      } catch (error) {
+        console.error(
+          `account "${connection.accountId}" folder "${folder}": preview fetch failed for part ` +
+            `"${partId}" (${group.length} message(s)); those messages sync without a preview`,
+          error,
+        );
+      }
+    }
+
+    return { previews, bytesDownloaded };
+  } finally {
+    // See fetchHeaders() above — same leaked-lock hazard, same fix.
     lock.release();
   }
 }

@@ -1,10 +1,16 @@
-import { describe, it, expect } from 'vitest';
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import { describe, it, expect, vi } from 'vitest';
 import {
+  ESTIMATED_BYTES_PER_PREVIEW_FETCH,
   HEADER_FETCH_OPTIONS,
   MAX_BODY_PART_BYTES,
+  PREVIEW_PART_BYTES,
   BodyPartTooLargeError,
   applyAttachmentFlag,
   fetchBodyPart,
+  fetchPreviews,
+  previewFetchOptions,
   resolveUidSpan,
 } from '../src/imap/fetch';
 import type { ImapConnection } from '../src/imap/connection';
@@ -224,5 +230,253 @@ describe('fetchBodyPart size cap', () => {
 
     const fake = makeFakeConnection([Buffer.from('small')]);
     await expect(fetchBodyPart(fake.connection, 'INBOX', 1, '2')).resolves.toBeInstanceOf(Buffer);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Message previews (Plan 7 Task 1)
+// ---------------------------------------------------------------------------
+
+describe('previewFetchOptions', () => {
+  it('requests exactly a bounded partial of one body part — nothing more, nothing less', () => {
+    // The same exact-shape assertion HEADER_FETCH_OPTIONS gets above, and
+    // for the same reason: a regression that drops `maxLength` turns a
+    // 512-byte preview into a full-part download, and
+    // ESTIMATED_BYTES_PER_PREVIEW_FETCH stops being an estimate of
+    // anything. toEqual catches an added key, a removed key and a changed
+    // value in one assertion.
+    expect(previewFetchOptions('1.1')).toEqual({
+      uid: true,
+      bodyParts: [{ key: '1.1', start: 0, maxLength: 512 }],
+    });
+  });
+
+  it('never requests a field that would pull the whole message', () => {
+    for (const key of ['source', 'envelope', 'bodyStructure', 'flags'] as const) {
+      expect(previewFetchOptions('1')).not.toHaveProperty(key);
+    }
+  });
+
+  it('bounds the fetch at PREVIEW_PART_BYTES, which is what makes a 4 MB mail cost 512 bytes', () => {
+    expect(PREVIEW_PART_BYTES).toBe(512);
+    const options = previewFetchOptions('1') as { bodyParts: Array<{ maxLength: number }> };
+    expect(options.bodyParts[0]!.maxLength).toBe(PREVIEW_PART_BYTES);
+  });
+});
+
+/**
+ * THE PEEK GUARD.
+ *
+ * PEEK is not a field in imapflow's query object — it is a property of the
+ * IMAP command imapflow COMPILES that object into. So asserting the object
+ * alone cannot prove it; the only honest proof is to run our options
+ * through imapflow's own command builder and read the wire command.
+ *
+ * That is what this does. It deep-imports two internal modules (resolved
+ * from imapflow's own main entry, so the package's location is never
+ * assumed) rather than dialing Gmail. If a future rewrite reaches for
+ * `query.source`, `client.download()`, a raw FETCH, or anything else that
+ * emits a bare `BODY[...]`, this test fails immediately — which matters
+ * because the symptom in production would be silent: every previewed
+ * message quietly marked `\Seen`, the owner's unread mail marked read,
+ * with no error anywhere.
+ */
+describe('the preview fetch as IMAP actually sees it', () => {
+  async function compilePreviewCommand(partId: string, range: string): Promise<string> {
+    const require = createRequire(import.meta.url);
+    const imapflowLib = path.dirname(require.resolve('imapflow'));
+    const fetchCommand = require(path.join(imapflowLib, 'commands', 'fetch.js'));
+    const { compiler } = require(path.join(imapflowLib, 'handler', 'imap-handler.js'));
+
+    let captured: { command: string; attributes: unknown } | null = null;
+    const connection = {
+      states: { SELECTED: 'selected' },
+      state: 'selected',
+      mailbox: { path: 'INBOX', uidNext: 100, uidValidity: 1n },
+      capabilities: new Set<string>(),
+      enabled: new Set<string>(),
+      disableBinary: false,
+      async exec(command: string, attributes: unknown) {
+        captured = { command, attributes };
+        return { next: () => {} };
+      },
+    };
+
+    await fetchCommand(connection, range, previewFetchOptions(partId), { uid: true });
+    const compiled = await compiler({
+      tag: 'A1',
+      command: captured!.command,
+      attributes: captured!.attributes,
+    });
+    return compiled.toString();
+  }
+
+  it('compiles to BODY.PEEK, never a bare BODY — fetching a preview must not set \\Seen', async () => {
+    const command = await compilePreviewCommand('1', '7,9');
+    expect(command).toBe('A1 UID FETCH 7,9 (UID BODY.PEEK[1]<0.512>)');
+    // Belt and braces: the exact-string assertion above already fails on a
+    // bare BODY[, but this states the property the string is standing in
+    // for, so a future reader changing the string knows what must survive.
+    expect(command).toContain('BODY.PEEK[');
+    expect(command).not.toMatch(/[^.]BODY\[/);
+  });
+
+  it('carries the <0.512> partial, so the cost does not scale with message size', async () => {
+    expect(await compilePreviewCommand('1.1', '42')).toContain('BODY.PEEK[1.1]<0.512>');
+  });
+});
+
+/**
+ * fetchPreviews' own behaviour, against a fake imapflow client. Grouping,
+ * byte accounting and failure containment are all things the pool depends
+ * on and none of them need a live mailbox.
+ */
+interface FakePreviewCall {
+  readonly range: unknown;
+  readonly query: Record<string, unknown>;
+}
+
+function makeFakePreviewConnection(options: {
+  bodies?: Readonly<Record<number, Buffer>>;
+  fetchError?: Error;
+  lockError?: Error;
+}) {
+  const calls: FakePreviewCall[] = [];
+  let locksReleased = 0;
+
+  const connection = {
+    accountId: 'primary',
+    rawClient: () => ({
+      getMailboxLock: async () => {
+        if (options.lockError) throw options.lockError;
+        return { release: () => { locksReleased += 1; } };
+      },
+      fetch: function* (range: unknown, query: Record<string, unknown>) {
+        calls.push({ range, query });
+        if (options.fetchError) throw options.fetchError;
+        const bodyParts = query.bodyParts as ReadonlyArray<{ key: string }>;
+        const partId = bodyParts[0]!.key;
+        for (const uid of String(range).split(',').map(Number)) {
+          const body = options.bodies?.[uid];
+          if (body === undefined) continue;
+          yield { uid, bodyParts: new Map([[partId, body]]) };
+        }
+      },
+    }),
+  } as unknown as ImapConnection;
+
+  return { connection, calls, locksReleased: () => locksReleased };
+}
+
+const PLAIN_PART = { partId: '1', mimeType: 'text/plain', encoding: null } as const;
+
+describe('fetchPreviews', () => {
+  it('returns the stripped preview text for each message', async () => {
+    const fake = makeFakePreviewConnection({
+      bodies: { 7: Buffer.from('Quarterly numbers attached.\n-- \nSarah') },
+    });
+    const result = await fetchPreviews(fake.connection, 'INBOX', [{ uid: 7, part: PLAIN_PART }]);
+    expect(result.previews.get(7)).toBe('Quarterly numbers attached.');
+  });
+
+  it('stores nothing at all — not an empty string — for a fragment that strips to nothing', async () => {
+    // The client has to be able to tell "no preview" from "empty preview":
+    // one renders no second line, the other would reserve a blank one.
+    const fake = makeFakePreviewConnection({ bodies: { 7: Buffer.from('> all quoted\n') } });
+    const result = await fetchPreviews(fake.connection, 'INBOX', [{ uid: 7, part: PLAIN_PART }]);
+    expect(result.previews.has(7)).toBe(false);
+  });
+
+  it('issues ONE fetch per distinct part number, not one per message', async () => {
+    const fake = makeFakePreviewConnection({
+      bodies: { 1: Buffer.from('a'), 2: Buffer.from('b'), 3: Buffer.from('c') },
+    });
+    await fetchPreviews(fake.connection, 'INBOX', [
+      { uid: 1, part: PLAIN_PART },
+      { uid: 2, part: { partId: '1.1', mimeType: 'text/plain', encoding: null } },
+      { uid: 3, part: PLAIN_PART },
+    ]);
+    expect(fake.calls).toHaveLength(2);
+    expect(fake.calls.map((call) => call.range).sort()).toEqual(['1,3', '2']);
+  });
+
+  it('charges ESTIMATED_BYTES_PER_PREVIEW_FETCH for every message it asks about', async () => {
+    // The number the pool records against the daily budget. Zeroing this
+    // accounting makes previews free on paper while still costing real
+    // Gmail bandwidth — which is exactly how an account earns a 24-hour
+    // IMAP suspension.
+    const fake = makeFakePreviewConnection({ bodies: { 1: Buffer.from('a'), 2: Buffer.from('b') } });
+    const result = await fetchPreviews(fake.connection, 'INBOX', [
+      { uid: 1, part: PLAIN_PART },
+      { uid: 2, part: PLAIN_PART },
+    ]);
+    expect(result.bytesDownloaded).toBe(2 * ESTIMATED_BYTES_PER_PREVIEW_FETCH);
+    expect(ESTIMATED_BYTES_PER_PREVIEW_FETCH).toBeGreaterThan(PREVIEW_PART_BYTES);
+  });
+
+  it('still charges for a part group whose fetch threw', async () => {
+    // A throw does not prove nothing crossed the wire, and under-charging
+    // is the one direction that risks a lockout.
+    const fake = makeFakePreviewConnection({ fetchError: new Error('connection reset') });
+    const result = await fetchPreviews(fake.connection, 'INBOX', [{ uid: 1, part: PLAIN_PART }]);
+    expect(result.bytesDownloaded).toBe(ESTIMATED_BYTES_PER_PREVIEW_FETCH);
+    expect(result.previews.size).toBe(0);
+  });
+
+  it('does not throw when a part group fails, and keeps the OTHER groups\' previews', async () => {
+    // One malformed part must not cost 49 other messages their previews.
+    const failing = new Error('NO [CANNOT] part unavailable');
+    const calls: string[] = [];
+    const connection = {
+      accountId: 'primary',
+      rawClient: () => ({
+        getMailboxLock: async () => ({ release: () => {} }),
+        fetch: function* (range: unknown, query: Record<string, unknown>) {
+          const partId = (query.bodyParts as ReadonlyArray<{ key: string }>)[0]!.key;
+          calls.push(partId);
+          if (partId === '9') throw failing;
+          yield { uid: Number(range), bodyParts: new Map([[partId, Buffer.from('kept')]]) };
+        },
+      }),
+    } as unknown as ImapConnection;
+
+    const result = await fetchPreviews(connection, 'INBOX', [
+      { uid: 1, part: { partId: '9', mimeType: 'text/plain', encoding: null } },
+      { uid: 2, part: PLAIN_PART },
+    ]);
+
+    expect(calls).toEqual(['9', '1']);
+    expect(result.previews.get(2)).toBe('kept');
+    expect(result.previews.has(1)).toBe(false);
+  });
+
+  it('does no work and opens no mailbox when there is nothing to preview', async () => {
+    // The steady state: every one of the newest 50 UIDs already has a
+    // snippet, so a cycle must cost zero extra round trips and zero bytes.
+    const fake = makeFakePreviewConnection({});
+    const result = await fetchPreviews(fake.connection, 'INBOX', []);
+    expect(fake.calls).toHaveLength(0);
+    expect(fake.locksReleased()).toBe(0);
+    expect(result.bytesDownloaded).toBe(0);
+  });
+
+  it('releases the mailbox lock even when every part group fails', async () => {
+    const fake = makeFakePreviewConnection({ fetchError: new Error('boom') });
+    await fetchPreviews(fake.connection, 'INBOX', [{ uid: 1, part: PLAIN_PART }]);
+    expect(fake.locksReleased()).toBe(1);
+  });
+
+  it('logs the failure without ever putting body content in the log line', async () => {
+    const logged: unknown[][] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args) => { logged.push(args); });
+    const fake = makeFakePreviewConnection({ fetchError: new Error('connection reset') });
+    await fetchPreviews(fake.connection, 'INBOX', [{ uid: 1, part: PLAIN_PART }]);
+    spy.mockRestore();
+
+    expect(logged).toHaveLength(1);
+    const message = String(logged[0]![0]);
+    expect(message).toContain('primary');
+    expect(message).toContain('INBOX');
+    expect(message).toContain('1 message(s)');
   });
 });
