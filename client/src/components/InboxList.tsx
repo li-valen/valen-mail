@@ -71,6 +71,15 @@ export interface InboxListProps {
    *  Must be referentially stable (the caller wraps it in `useCallback`),
    *  because it is an effect dependency. */
   readonly onAccountsChange?: (accounts: readonly AccountSummary[]) => void;
+  /** Reports the currently loaded message rows up to App.tsx (task V3),
+   *  the SAME shape and SAME "current filter's pages" scope as
+   *  `onAccountsChange` above — App.tsx folds what it receives into
+   *  `messageIndex.ts`'s registry, which is what lets a Recent-opens
+   *  click (Ask 2) resolve a message this list loaded for an unrelated
+   *  reason, in an earlier folder, possibly after this component has
+   *  since unmounted. Optional and referentially-stable for the same
+   *  reason `onAccountsChange` is: it is an effect dependency. */
+  readonly onMessagesChange?: (messages: readonly InboxMessage[]) => void;
   /** Opens one row in the reader. Required, not optional: as of Plan 6
    *  a row IS a control, and a list rendered with nowhere for it to go
    *  is exactly the defect that task exists to fix. Handed straight to
@@ -103,7 +112,12 @@ export interface InboxListProps {
  * `rounded-lg border … divide-y divide-neutral-100` row list of
  * `apps/web/src/pages/contacts/index.tsx`, wrapped in the `Card` atom.
  */
-export default function InboxList({ filter, onAccountsChange, onOpenMessage }: InboxListProps) {
+export default function InboxList({
+  filter,
+  onAccountsChange,
+  onMessagesChange,
+  onOpenMessage,
+}: InboxListProps) {
   const { folder, account } = filter;
   const [messages, setMessages] = useState<readonly InboxMessage[]>([]);
   const [cursor, setCursor] = useState<InboxCursor | null>(null);
@@ -174,6 +188,10 @@ export default function InboxList({ filter, onAccountsChange, onOpenMessage }: I
   useEffect(() => {
     onAccountsChange?.(accounts);
   }, [accounts, onAccountsChange]);
+
+  useEffect(() => {
+    onMessagesChange?.(messages);
+  }, [messages, onMessagesChange]);
 
   const loadMore = useCallback(() => {
     if (isLoadingMore || cursor === null) return;

@@ -1,4 +1,4 @@
-import type { OpenEvent, OpensResponse } from '../api';
+import type { InboxMessage, OpenEvent, OpensResponse } from '../api';
 import { boundedToken, isDisplayable, readStateFor } from './ReadState';
 
 /**
@@ -213,6 +213,63 @@ export function formatOpenRowSentence(event: OpenEvent, now: number): string {
   return `${event.recipientEmail} opened${subjectFragment} · ${relativeTime}`;
 }
 
+/** `expandedDetailFor`'s subject fallback when `event.subject` is `null` —
+ *  the SAME copy components/MessageRow.tsx already uses for a missing
+ *  inbox subject, so a reader who has seen one has seen the other,
+ *  rather than a second convention for the same fact. */
+const NO_SUBJECT_LABEL = '(no subject)';
+
+/**
+ * The four fields task V3's hover/keyboard-focus expansion (OpensFeed.tsx
+ * `OpenEntry`) renders once a row is no longer collapsed to one truncated
+ * line: the full recipient, the full subject, the absolute time the open
+ * occurred, and the cause explanation that — before this task — lived
+ * ONLY in `<ReadState>`'s `title` hover tooltip (ReadState.tsx), which is
+ * unreachable by touch and unreliable for assistive tech. All four are
+ * plain, pre-formatted strings, safe to render as a bare JSX text child.
+ *
+ * `absoluteTime` is `formatClockTime` — the SAME bare `HH:MM`, no-date,
+ * no-zone format `describeEvent`'s confirmed branch and client/DESIGN.md
+ * §5.3's own copy ("14:06 · 2h 11m after sending") already use for this
+ * exact feed; this task did not invent a second absolute-time format.
+ *
+ * `cause` is `readStateFor(event.classification).title` verbatim — the
+ * exact sentence the mark's `title` attribute already carries (task V1b:
+ * "Apple Mail Privacy Protection downloads every image the moment mail
+ * arrives…", "A fetch that matches no known prefetcher…", etc.),
+ * promoted from hover-only to always-in-the-DOM-once-expanded text.
+ *
+ * **Never `deviceClass`/`os`, structurally, not by discipline.** This
+ * function reads exactly `recipientEmail`, `subject`, `occurredAt` and
+ * `classification` off `event` — nothing here ever evaluates either of
+ * those two other fields, so an event carrying real values for either
+ * (every event this app ever receives does) cannot leak them through
+ * this function's result no matter what a future caller does with it.
+ * tests/opens-rail-static-guards.test.ts's source scan backs
+ * this with a mechanical check across the files that render open events;
+ * this file's own tests (tests/opens-rail.test.ts) prove it directly by
+ * feeding `deviceClass: 'iPhone'` in and asserting the string never
+ * appears anywhere in the output — the non-vacuity that actually matters,
+ * since a function that simply has no `deviceClass` FIELD in its return
+ * type could still be lying if it silently folded the value into e.g.
+ * `cause`.
+ */
+export interface ExpandedOpenDetail {
+  readonly recipientEmail: string;
+  readonly subject: string;
+  readonly absoluteTime: string;
+  readonly cause: string;
+}
+
+export function expandedDetailFor(event: OpenEvent): ExpandedOpenDetail {
+  return {
+    recipientEmail: event.recipientEmail,
+    subject: event.subject !== null ? event.subject : NO_SUBJECT_LABEL,
+    absoluteTime: formatClockTime(event.occurredAt),
+    cause: readStateFor(event.classification).title,
+  };
+}
+
 export interface OpensPartition {
   readonly displayable: readonly OpenEvent[];
   readonly selfCount: number;
@@ -315,4 +372,134 @@ export function advanceOpensPoll(
   }
 
   return { view, liveMessage, shouldRetry: view.kind === 'unavailable' };
+}
+
+/**
+ * Task V3, Ask 2. What clicking an open event resolves to: a message the
+ * reader can open, or an explicit `not-found` — never a silent no-op, per
+ * the task brief ("a dead click is the worst outcome").
+ */
+export type ResolvedOpenTarget =
+  | { readonly kind: 'found'; readonly message: InboxMessage }
+  | { readonly kind: 'not-found' };
+
+/**
+ * Strips the OPTIONAL RFC 5322 angle-bracket delimiters (`<…>`) a
+ * Message-ID may or may not be wrapped in when this function sees it, so
+ * `<test-1@postbox.local>` and `test-1@postbox.local` compare equal when
+ * they name the same message.
+ *
+ * Not a defensive guess: verified against this app's own live data
+ * (every open event on the account tested against, 11 of 11) that the
+ * tracking service's `messageId` is stored WITHOUT the brackets, while
+ * `InboxMessage.message_id` — parsed straight off the synced message's
+ * actual `Message-ID:` header by sync's IMAP client — carries them, per
+ * the header's own RFC 5322 syntax. An exact-string comparison between
+ * the two therefore failed on 100% of real events before this function
+ * normalised both sides here; see the task's own report for the numbers.
+ * The brackets are RFC 5322 DELIMITER syntax, not part of the semantic
+ * identifier, so stripping them before comparing is a normalisation of
+ * two spellings of the same value, not a loosened/fuzzy match.
+ */
+export function bareMessageId(id: string): string {
+  return id.replace(/^</, '').replace(/>$/, '');
+}
+
+/**
+ * Whether a message row's RAW folder path names Sent. `InboxMessage`
+ * only ever carries the raw IMAP folder string a row actually lives in
+ * (api.ts's own header: "a verbatim mirror of Postgres columns"/wire
+ * shape) — never the normalised `FolderId` id (`'sent'`) that only
+ * exists as a REQUEST-side query parameter (`GET /api/inbox?folder=`).
+ * Verified against this app's own live account: the raw value for a
+ * Gmail Sent folder is `[Gmail]/Sent Mail`, which a bare `folder ===
+ * 'sent'` comparison never matches — silently defeating step 2 of
+ * `resolveOpenTarget`'s tie-break for every real Gmail account, not just
+ * an edge case. A case-insensitive substring check is a heuristic, not a
+ * guarantee (a folder someone genuinely named "Consent" would
+ * false-positive), but it is what every provider's actual Sent path
+ * observed so far (`[Gmail]/Sent Mail`) has in common, and getting this
+ * tie-break wrong only means falling through to step 3's "first
+ * candidate" rule — never a wrong ANSWER, just a less-preferred one.
+ */
+export function looksLikeSentFolder(folder: string): boolean {
+  return folder.toLowerCase().includes('sent');
+}
+
+/**
+ * Bridges an open event's `(accountId, messageId)` — `messageId` is the
+ * RFC Message-ID of the mail the tracking pixel rode in — to the
+ * `(accountId, folder, uid)` triple components/MessageView.tsx opens by.
+ * There is no lookup endpoint (the task brief is explicit that one is a
+ * different, backend lane): this searches only `loadedMessages`, the
+ * rows this client has ALREADY fetched for some other reason this
+ * session — see client/src/messageIndex.ts's `foldMessageIndex`, which is
+ * what keeps that list from forgetting a row the moment its folder falls
+ * out of view.
+ *
+ * Total and synchronous — no fetch, no loading state, no spinner that
+ * could hang: given the exact same `loadedMessages`, this always answers
+ * immediately, either `found` or `not-found`. The task brief's "no
+ * spinner that never resolves" is satisfied structurally, not by careful
+ * UI-layer discipline, because there is nothing here that could stay
+ * pending.
+ *
+ * MULTIPLE CANDIDATES — more than one loaded row sharing the SAME
+ * `messageId` — are an expected case this function must resolve
+ * deterministically, not a bug to assume away: the identical RFC
+ * Message-ID legitimately labels more than one loaded row when, say, the
+ * user emailed themselves across two of their OWN synced accounts (the
+ * same physical send lands as account A's Sent copy AND account B's
+ * Inbox copy), or when Gmail's per-label UIDs put the same message under
+ * both `inbox` and `starred`. The rule, applied in order:
+ *
+ *   1. Prefer a candidate whose `account_id` matches `event.accountId`.
+ *      The tracking pixel is embedded in exactly ONE account's own copy
+ *      of the message — the one that sent it — so this is the strongest
+ *      signal available, and it is checked first.
+ *   2. Within that narrowed set (or across ALL candidates, if none
+ *      matched step 1 — a stale/wrong `accountId` must not make an
+ *      otherwise-unambiguous message unreachable), prefer a candidate
+ *      whose `folder` names Sent (see `looksLikeSentFolder` below — this
+ *      client only ever sees a message row's RAW IMAP folder path, e.g.
+ *      `[Gmail]/Sent Mail`, never the normalised `sent` id `?folder=`
+ *      accepts on a REQUEST). A send-tracking pixel's own message
+ *      overwhelmingly lives in Sent, never Inbox, which is exactly why
+ *      Sent is called out in the task brief as "the likely folder for
+ *      tracked sends."
+ *   3. Still tied: the first remaining candidate, in `loadedMessages`
+ *      order. Not expected to fire in practice, but a function that
+ *      returns a value for every input needs a defined answer even for
+ *      the case it does not expect — a documented, deterministic
+ *      tie-break beats silently returning whichever the engine happened
+ *      to iterate first for no stated reason.
+ */
+export function resolveOpenTarget(
+  event: OpenEvent,
+  loadedMessages: readonly InboxMessage[],
+): ResolvedOpenTarget {
+  const targetId = bareMessageId(event.messageId);
+  const candidates = loadedMessages.filter(
+    (message) => message.message_id !== null && bareMessageId(message.message_id) === targetId,
+  );
+  // Destructured, not indexed: tsconfig's `noUncheckedIndexedAccess`
+  // types a bare `candidates[0]` as possibly `undefined` regardless of an
+  // earlier `.length` check (TS does not narrow indexed access from a
+  // separate length comparison) — checking the destructured binding
+  // itself is what actually narrows it back to `InboxMessage`.
+  const [firstCandidate] = candidates;
+  if (firstCandidate === undefined) return { kind: 'not-found' };
+  if (candidates.length === 1) return { kind: 'found', message: firstCandidate };
+
+  const sameAccount = candidates.filter((message) => message.account_id === event.accountId);
+  const pool = sameAccount.length > 0 ? sameAccount : candidates;
+  const sentMatch = pool.find((message) => looksLikeSentFolder(message.folder));
+  if (sentMatch !== undefined) return { kind: 'found', message: sentMatch };
+
+  // `pool` is always non-empty here (it is `sameAccount`, already proven
+  // non-empty, or `candidates`, proven to have at least 2 elements above)
+  // — `?? firstCandidate` is an unreachable-in-practice type-safety floor,
+  // not a real fallback path, and never a call to `pool[0]` unguarded.
+  const [poolFirst] = pool;
+  return { kind: 'found', message: poolFirst ?? firstCandidate };
 }

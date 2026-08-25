@@ -1,8 +1,12 @@
+import type { OpenEvent } from '../api';
 import type { OpensFeedState } from '../useOpensFeed';
 import OpensFeed from './OpensFeed';
 
 export interface OpensRailProps {
   readonly feed: OpensFeedState;
+  /** Forwarded straight to OpensFeed.tsx (task V3) — see that prop's own
+   *  doc comment. */
+  readonly onOpenEvent: (event: OpenEvent) => void;
 }
 
 /**
@@ -38,13 +42,19 @@ export interface OpensRailProps {
  * per surface, and switching Inbox <-> Opens never refetches from
  * scratch or starts a second timer chain.
  */
-export default function OpensRail({ feed }: OpensRailProps) {
+export default function OpensRail({ feed, onOpenEvent }: OpensRailProps) {
   return (
     <aside
       aria-label="Opens"
       className="hidden w-80 shrink-0 border-l border-neutral-200 dark:border-border pl-6 lg:block lg:sticky lg:top-8 lg:max-h-[calc(100dvh-4rem)] lg:overflow-y-auto"
     >
-      <OpensFeed load={feed.load} now={feed.now} liveMessage={feed.liveMessage} compact />
+      <OpensFeed
+        load={feed.load}
+        now={feed.now}
+        liveMessage={feed.liveMessage}
+        compact
+        onOpenEvent={onOpenEvent}
+      />
     </aside>
   );
 }

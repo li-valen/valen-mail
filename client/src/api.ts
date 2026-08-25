@@ -271,9 +271,27 @@ function isInboxMessage(value: unknown): value is InboxMessage {
   );
 }
 
-/** One open event, as returned by GET /api/opens (sync/src/api/opens.ts OpenEvent). */
+/**
+ * One open event, as returned by GET /api/opens (sync/src/api/opens.ts
+ * OpenEvent).
+ *
+ * `accountId`/`messageId` (task V3, Ask 2): link an open back to the
+ * message the tracking pixel rode in. The tracking service projects both
+ * from `tokens`, where they are NOT NULL, so sync/src/api/opens.ts's own
+ * `isValidOpenEvent` already requires them as non-empty strings before an
+ * event reaches this client — `isOpenEvent` below re-checks the same two
+ * fields at the same strictness, for the same reason it already
+ * re-checks `token`/`occurredAt`: a redeployed sync service is a
+ * separate process, and "validated upstream" is an assumption, not a
+ * guarantee, at this boundary. `components/openEvents.ts`'s
+ * `resolveOpenTarget` is what actually consumes them, turning
+ * `(accountId, messageId)` into the `(accountId, folder, uid)` triple
+ * the reader opens by.
+ */
 export interface OpenEvent {
   readonly token: string;
+  readonly accountId: string;
+  readonly messageId: string;
   readonly recipientEmail: string;
   readonly subject: string | null;
   readonly sentAt: number;
@@ -330,16 +348,28 @@ export async function getOpens(
 }
 
 /**
- * The same two structural fields sync/src/api/opens.ts validates on its own
- * side of this hop: `token` is the join key back to a tracked send and
- * `occurredAt` is what the rail sorts and formats by. Checked again here
- * because the sync service is a separate process that can be redeployed
- * independently — "it was validated upstream" is an assumption, not a
- * guarantee, at a network boundary.
+ * The four structural fields sync/src/api/opens.ts validates on its own
+ * side of this hop: `token` is the join key back to a tracked send,
+ * `occurredAt` is what the rail sorts and formats by, and
+ * `accountId`/`messageId` (task V3) are what `resolveOpenTarget`
+ * (components/openEvents.ts) resolves the opened message with — required
+ * as non-empty strings, not merely present, because an empty one is
+ * exactly the "can't resolve the message" case: a client is better off
+ * never rendering that open than rendering a dead-end click. Checked
+ * again here because the sync service is a separate process that can be
+ * redeployed independently — "it was validated upstream" is an
+ * assumption, not a guarantee, at a network boundary.
  */
 function isOpenEvent(value: unknown): value is OpenEvent {
   if (!isRecord(value)) return false;
-  return typeof value.token === 'string' && typeof value.occurredAt === 'number';
+  return (
+    typeof value.token === 'string' &&
+    typeof value.occurredAt === 'number' &&
+    typeof value.accountId === 'string' &&
+    value.accountId.length > 0 &&
+    typeof value.messageId === 'string' &&
+    value.messageId.length > 0
+  );
 }
 
 /**

@@ -210,6 +210,8 @@ describe('api wrapper', () => {
   it('getOpens resolves the opens array and available: true on a healthy response', async () => {
     const open = {
       token: 't1',
+      accountId: 'acct-1',
+      messageId: '<msg-1@postbox.local>',
       recipientEmail: 'kate@example.com',
       subject: null,
       sentAt: 1000,
@@ -256,6 +258,19 @@ describe('api response validation', () => {
     subject: 'hello',
   };
 
+  const VALID_OPEN = {
+    token: 't1',
+    accountId: 'acct-1',
+    messageId: '<msg-1@postbox.local>',
+    recipientEmail: 'kate@example.com',
+    subject: null,
+    sentAt: 1000,
+    occurredAt: 2000,
+    classification: 'open',
+    deviceClass: null,
+    os: null,
+  };
+
   it('drops a malformed inbox row and keeps its valid siblings', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const f = vi.fn().mockResolvedValue(
@@ -295,19 +310,33 @@ describe('api response validation', () => {
 
   it('drops a malformed open event and keeps its valid siblings', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    const open = {
-      token: 't1',
-      recipientEmail: 'kate@example.com',
-      subject: null,
-      sentAt: 1000,
-      occurredAt: 2000,
-      classification: 'open',
-      deviceClass: null,
-      os: null,
-    };
     const f = vi.fn().mockResolvedValue(
-      jsonResponse({ opens: [open, { token: 't2' }, { occurredAt: 5 }], available: true }),
+      jsonResponse({ opens: [VALID_OPEN, { token: 't2' }, { occurredAt: 5 }], available: true }),
     );
-    await expect(getOpens(20, f)).resolves.toEqual({ opens: [open], available: true });
+    await expect(getOpens(20, f)).resolves.toEqual({ opens: [VALID_OPEN], available: true });
+  });
+
+  // Task V3: accountId/messageId link an open back to its message
+  // (resolveOpenTarget, components/openEvents.ts). An empty one is
+  // exactly the "can't resolve the message" case, so it is dropped the
+  // same as a missing token — mirrors sync/src/api/opens.ts's own
+  // `isValidOpenEvent`, re-checked here because the sync service is a
+  // separate, independently-redeployable process.
+  it('drops an open event with an empty accountId, keeping a valid sibling', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const valid = { ...VALID_OPEN, token: 'valid' };
+    const emptyAccountId = { ...VALID_OPEN, token: 'bad', accountId: '' };
+    const f = vi.fn().mockResolvedValue(jsonResponse({ opens: [valid, emptyAccountId], available: true }));
+    await expect(getOpens(20, f)).resolves.toEqual({ opens: [valid], available: true });
+  });
+
+  it('drops an open event with a missing messageId, keeping a valid sibling', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const valid = { ...VALID_OPEN, token: 'valid' };
+    const { messageId: _omitted, ...missingMessageId } = { ...VALID_OPEN, token: 'bad' };
+    const f = vi.fn().mockResolvedValue(
+      jsonResponse({ opens: [valid, missingMessageId], available: true }),
+    );
+    await expect(getOpens(20, f)).resolves.toEqual({ opens: [valid], available: true });
   });
 });

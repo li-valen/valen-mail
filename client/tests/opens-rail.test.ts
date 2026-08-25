@@ -9,8 +9,12 @@ import {
   describeEvent,
   partitionOpens,
   deriveRailView,
+  expandedDetailFor,
+  resolveOpenTarget,
+  bareMessageId,
+  looksLikeSentFolder,
 } from '../src/components/openEvents';
-import type { OpenEvent, OpensResponse } from '../src/api';
+import type { InboxMessage, OpenEvent, OpensResponse } from '../src/api';
 
 /**
  * Pure-logic coverage for OpensView.tsx's supporting module, none of
@@ -28,10 +32,16 @@ import type { OpenEvent, OpensResponse } from '../src/api';
  * companion raw-source assertions that prove OpensFeed.tsx/ReadState.tsx
  * actually stopped rendering those fields, which no pure-function test
  * here can prove on its own.
+ *
+ * `expandedDetailFor` and `resolveOpenTarget` (bottom of this file) are
+ * task V3 additions — Ask 1's hover/focus expansion content and Ask 2's
+ * click-to-open resolution, respectively.
  */
 
 function buildEvent(overrides: Partial<OpenEvent> & { readonly token: string }): OpenEvent {
   return {
+    accountId: 'acct-1',
+    messageId: '<msg-1@postbox.local>',
     recipientEmail: 'someone@example.com',
     subject: 'Test subject',
     sentAt: 1_700_000_000_000,
@@ -39,6 +49,31 @@ function buildEvent(overrides: Partial<OpenEvent> & { readonly token: string }):
     classification: 'open',
     deviceClass: 'unknown',
     os: null,
+    ...overrides,
+  };
+}
+
+/** Same fixture shape tests/inbox.test.ts's own `buildMessage` uses —
+ *  every `InboxMessage` field, `message_id`/`account_id`/`folder`/`uid`
+ *  overridden per test, everything else a harmless default. */
+function buildMessage(overrides: Partial<InboxMessage> & { readonly uid: string }): InboxMessage {
+  return {
+    account_id: 'acct-1',
+    message_id: null,
+    thread_id: null,
+    folder: 'sent',
+    subject: 'Test subject',
+    from_name: 'Test Sender',
+    from_email: 'sender@example.com',
+    to_emails: [],
+    cc_emails: [],
+    date: null,
+    snippet: null,
+    flags: [],
+    labels: [],
+    has_attach: false,
+    size_bytes: null,
+    attachments: [],
     ...overrides,
   };
 }
@@ -299,5 +334,229 @@ describe('selfCountLine — the self-count line renders for selfCount>0, nothing
     expect(selfCountLine(1)).toBe('1 view from you');
     expect(selfCountLine(2)).toBe('2 views from you');
     expect(selfCountLine(1)).toBe(formatSelfCountLine(1));
+  });
+});
+
+// Task V3, Ask 1 — the fields OpensFeed.tsx's hover/keyboard-focus
+// expansion renders once a row is no longer collapsed to one line.
+describe('expandedDetailFor — what the hover/focus expansion shows', () => {
+  it('carries the full recipient and subject through untouched', () => {
+    const event = buildEvent({ token: 'a', recipientEmail: 'kate@example.com', subject: 'Re: invoice' });
+    const detail = expandedDetailFor(event);
+    expect(detail.recipientEmail).toBe('kate@example.com');
+    expect(detail.subject).toBe('Re: invoice');
+  });
+
+  it('falls back to "(no subject)" — the same copy MessageRow.tsx uses for a missing inbox subject — never a blank or the literal "null"', () => {
+    const event = buildEvent({ token: 'b', subject: null });
+    const subject = expandedDetailFor(event).subject;
+    expect(subject).toBe('(no subject)');
+    expect(subject).not.toBe('');
+    expect(subject).not.toContain('null');
+  });
+
+  it('renders the absolute time with formatClockTime — the SAME HH:MM this feed already uses elsewhere, not a second format', () => {
+    const event = buildEvent({ token: 'c', occurredAt: Date.UTC(2024, 0, 1, 14, 6, 0) });
+    const detail = expandedDetailFor(event);
+    expect(detail.absoluteTime).toBe('14:06');
+    expect(detail.absoluteTime).toBe(formatClockTime(event.occurredAt));
+  });
+
+  it('carries the SAME cause explanation readStateFor(...).title gives that classification, distinct per cause', () => {
+    const open = expandedDetailFor(buildEvent({ token: 'd', classification: 'open' }));
+    const mpp = expandedDetailFor(buildEvent({ token: 'e', classification: 'mpp' }));
+    expect(open.cause.toLowerCase()).toContain('only signal postbox treats');
+    expect(mpp.cause.toLowerCase()).toContain('apple mail privacy protection');
+    expect(open.cause).not.toBe(mpp.cause);
+  });
+
+  // The non-vacuity the task brief specifically calls for: an event that
+  // GENUINELY carries deviceClass/os must still never leak either value
+  // through this function's result — proving the field is actually
+  // absent from the output, not merely that the return TYPE happens not
+  // to name it (which a bug that folded the value into another field,
+  // e.g. `cause`, could still defeat).
+  it('never leaks deviceClass or os, even when the input event genuinely carries them', () => {
+    const event = buildEvent({ token: 'f', deviceClass: 'iPhone', os: 'iOS 17' });
+    const detail = expandedDetailFor(event);
+    const serialized = JSON.stringify(detail);
+    expect(serialized).not.toContain('iPhone');
+    expect(serialized).not.toContain('iOS 17');
+    expect(Object.keys(detail)).not.toContain('deviceClass');
+    expect(Object.keys(detail)).not.toContain('os');
+  });
+});
+
+// Verified against this app's own live data (see the task report): every
+// real open event's `messageId` arrives WITHOUT the RFC 5322 angle
+// brackets a synced message's own `message_id` carries. An exact-string
+// match failed on every one of 11 real events before `bareMessageId`
+// existed — this is the fix, not a hypothetical edge case.
+describe('bareMessageId', () => {
+  it('strips a leading and trailing angle bracket', () => {
+    expect(bareMessageId('<test-1@postbox.local>')).toBe('test-1@postbox.local');
+  });
+
+  it('is a no-op on an already-bare id', () => {
+    expect(bareMessageId('test-1@postbox.local')).toBe('test-1@postbox.local');
+  });
+
+  it('makes a bracketed and an unbracketed spelling of the same id compare equal', () => {
+    expect(bareMessageId('<test-1@postbox.local>')).toBe(bareMessageId('test-1@postbox.local'));
+  });
+});
+
+// Verified against this app's own live data: a real Gmail account's Sent
+// folder row carries the raw path `[Gmail]/Sent Mail`, never the
+// normalised `sent` id — a bare `folder === 'sent'` check silently never
+// matched a single real Sent row.
+describe('looksLikeSentFolder', () => {
+  it('recognises a real Gmail Sent path', () => {
+    expect(looksLikeSentFolder('[Gmail]/Sent Mail')).toBe(true);
+  });
+
+  it('recognises the bare normalised id too', () => {
+    expect(looksLikeSentFolder('sent')).toBe(true);
+  });
+
+  it('is case-insensitive', () => {
+    expect(looksLikeSentFolder('SENT')).toBe(true);
+  });
+
+  it('is false for Inbox, Starred and other real folder paths', () => {
+    expect(looksLikeSentFolder('INBOX')).toBe(false);
+    expect(looksLikeSentFolder('[Gmail]/Starred')).toBe(false);
+    expect(looksLikeSentFolder('[Gmail]/Spam')).toBe(false);
+  });
+});
+
+// Task V3, Ask 2 — bridging an open event's (accountId, messageId) to a
+// message the reader can open, using only rows the client has already
+// loaded (no lookup endpoint).
+describe('resolveOpenTarget — bridging messageId to a loaded row', () => {
+  // The exact shape observed live: the tracking service's messageId has
+  // no brackets; the synced message's own message_id does. Without
+  // bareMessageId normalising both, this — the ordinary, everyday case —
+  // would itself report not-found.
+  it('resolves when the event\'s messageId is bracket-free but the loaded row\'s message_id carries RFC 5322 brackets', () => {
+    const event = buildEvent({
+      token: 'z',
+      accountId: 'primary',
+      messageId: 'test-1787543058009@postbox.local',
+    });
+    const message = buildMessage({
+      uid: '1',
+      account_id: 'primary',
+      message_id: '<test-1787543058009@postbox.local>',
+      folder: '[Gmail]/Sent Mail',
+    });
+    expect(resolveOpenTarget(event, [message])).toEqual({ kind: 'found', message });
+  });
+
+  it('resolves to the one loaded message sharing the event\'s messageId', () => {
+    const event = buildEvent({ token: 'a', accountId: 'acct-1', messageId: '<x@postbox.local>' });
+    const message = buildMessage({ uid: '1', account_id: 'acct-1', message_id: '<x@postbox.local>' });
+    expect(resolveOpenTarget(event, [message])).toEqual({ kind: 'found', message });
+  });
+
+  it('reports not-found when no loaded message shares the messageId', () => {
+    const event = buildEvent({ token: 'b', messageId: '<missing@postbox.local>' });
+    const message = buildMessage({ uid: '1', message_id: '<other@postbox.local>' });
+    expect(resolveOpenTarget(event, [message])).toEqual({ kind: 'not-found' });
+  });
+
+  it('reports not-found against an empty loaded-messages list, never throwing', () => {
+    const event = buildEvent({ token: 'c', messageId: '<x@postbox.local>' });
+    expect(resolveOpenTarget(event, [])).toEqual({ kind: 'not-found' });
+  });
+
+  // MULTIPLE CANDIDATES: two loaded rows legitimately sharing one
+  // messageId — the same physical send synced into two of the user's own
+  // accounts, or Gmail's per-label UIDs. The rule, tested one step at a
+  // time: (1) prefer the event's own account, (2) among same-account
+  // candidates prefer the Sent folder, (3) still tied, take the first
+  // candidate in `loadedMessages` order.
+  it('MULTIPLE CANDIDATES, step 1: prefers the candidate from the event\'s own account', () => {
+    const event = buildEvent({ token: 'd', accountId: 'acct-1', messageId: '<shared@postbox.local>' });
+    const wrongAccount = buildMessage({
+      uid: '1',
+      account_id: 'acct-2',
+      message_id: '<shared@postbox.local>',
+      folder: 'inbox',
+    });
+    const rightAccount = buildMessage({
+      uid: '2',
+      account_id: 'acct-1',
+      message_id: '<shared@postbox.local>',
+      folder: 'inbox',
+    });
+    expect(resolveOpenTarget(event, [wrongAccount, rightAccount])).toEqual({
+      kind: 'found',
+      message: rightAccount,
+    });
+  });
+
+  it('MULTIPLE CANDIDATES, step 2: same account on both — prefers the Sent-folder copy over Inbox', () => {
+    const event = buildEvent({ token: 'e', accountId: 'acct-1', messageId: '<shared@postbox.local>' });
+    const inboxCopy = buildMessage({
+      uid: '1',
+      account_id: 'acct-1',
+      message_id: '<shared@postbox.local>',
+      folder: 'inbox',
+    });
+    const sentCopy = buildMessage({
+      uid: '2',
+      account_id: 'acct-1',
+      message_id: '<shared@postbox.local>',
+      folder: 'sent',
+    });
+    expect(resolveOpenTarget(event, [inboxCopy, sentCopy])).toEqual({ kind: 'found', message: sentCopy });
+  });
+
+  it('MULTIPLE CANDIDATES, step 3: still tied — takes the first candidate in loadedMessages order, deterministically', () => {
+    const event = buildEvent({ token: 'f', accountId: 'acct-1', messageId: '<shared@postbox.local>' });
+    const first = buildMessage({
+      uid: '1',
+      account_id: 'acct-1',
+      message_id: '<shared@postbox.local>',
+      folder: 'inbox',
+    });
+    const second = buildMessage({
+      uid: '2',
+      account_id: 'acct-1',
+      message_id: '<shared@postbox.local>',
+      folder: 'starred',
+    });
+    expect(resolveOpenTarget(event, [first, second])).toEqual({ kind: 'found', message: first });
+    // Same two candidates, reversed order — the rule follows
+    // `loadedMessages`'s own order rather than a hidden stable sort;
+    // this is what "deterministic given the input" means here, not
+    // "constant regardless of it".
+    expect(resolveOpenTarget(event, [second, first])).toEqual({ kind: 'found', message: second });
+  });
+
+  it('a stale accountId does not make an otherwise-unambiguous message unreachable — falls back to every candidate, not to not-found', () => {
+    const event = buildEvent({ token: 'g', accountId: 'acct-nonexistent', messageId: '<shared@postbox.local>' });
+    const inboxCopy = buildMessage({
+      uid: '1',
+      account_id: 'acct-1',
+      message_id: '<shared@postbox.local>',
+      folder: 'inbox',
+    });
+    const sentCopy = buildMessage({
+      uid: '2',
+      account_id: 'acct-1',
+      message_id: '<shared@postbox.local>',
+      folder: 'sent',
+    });
+    expect(resolveOpenTarget(event, [inboxCopy, sentCopy])).toEqual({ kind: 'found', message: sentCopy });
+  });
+
+  it('never mutates loadedMessages', () => {
+    const event = buildEvent({ token: 'h', messageId: '<x@postbox.local>' });
+    const messages = [buildMessage({ uid: '1', message_id: '<x@postbox.local>' })];
+    const copy = [...messages];
+    resolveOpenTarget(event, messages);
+    expect(messages).toEqual(copy);
   });
 });

@@ -82,8 +82,13 @@ function accountChip(accountId: string): string {
 /** `ring-inset` rather than `ring-offset-2`: these rows sit inside a
  *  `Card`, which is `overflow-hidden`, so an outset ring would be clipped
  *  along the row's full-bleed left and right edges — visible focus that
- *  is only half visible is the failure this avoids. */
-const ROW_FOCUS =
+ *  is only half visible is the failure this avoids.
+ *
+ *  Exported (task V3) so OpensFeed.tsx's `OpenEntry` — a button-per-row
+ *  inside the SAME kind of `overflow-hidden` `Card`/rail — gets the
+ *  identical inset-ring treatment rather than a second, drifting copy of
+ *  this string. */
+export const ROW_FOCUS =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset';
 
 export default function MessageRow({ message, now, onOpen }: MessageRowProps) {

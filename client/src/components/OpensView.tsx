@@ -1,3 +1,4 @@
+import type { OpenEvent } from '../api';
 import type { OpensFeedState } from '../useOpensFeed';
 import OpensFeed from './OpensFeed';
 
@@ -32,8 +33,13 @@ import OpensFeed from './OpensFeed';
  */
 export interface OpensViewProps {
   readonly feed: OpensFeedState;
+  /** Forwarded straight to OpensFeed.tsx (task V3) — see that prop's own
+   *  doc comment. */
+  readonly onOpenEvent: (event: OpenEvent) => void;
 }
 
-export default function OpensView({ feed }: OpensViewProps) {
-  return <OpensFeed load={feed.load} now={feed.now} liveMessage={feed.liveMessage} />;
+export default function OpensView({ feed, onOpenEvent }: OpensViewProps) {
+  return (
+    <OpensFeed load={feed.load} now={feed.now} liveMessage={feed.liveMessage} onOpenEvent={onOpenEvent} />
+  );
 }

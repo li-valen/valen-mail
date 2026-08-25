@@ -1,4 +1,4 @@
-import { CloudOff, Radio } from 'lucide-react';
+import { CloudOff, Radio, User } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { OpenEvent } from '../api';
 import type { OpensLoadState } from '../useOpensFeed';
@@ -6,8 +6,9 @@ import { Card, CardHeader } from '../ui/Card';
 import { Badge } from '../ui/Badge';
 import { EmptyState } from '../ui/EmptyState';
 import { Skeleton } from '../ui/Skeleton';
+import { ROW_FOCUS } from './MessageRow';
 import { ReadState } from './ReadState';
-import { formatOpenRowSentence, selfCountLine } from './openEvents';
+import { expandedDetailFor, formatOpenRowSentence, selfCountLine } from './openEvents';
 
 /**
  * The Recent Opens feed body, and the place the honesty requirement
@@ -62,6 +63,26 @@ import { formatOpenRowSentence, selfCountLine } from './openEvents';
  * `title` tooltip, the row's own text being byte-identical in form between
  * a confirmed and an unconfirmable event by construction. See OpenEntry's
  * own doc comment below for the full reasoning.
+ *
+ * TWO MORE INTERACTIONS, task V3, both on the SAME row and both the
+ * user's own words: "When you hover over the opened ... it should expand
+ * and show you the full thing. When you click on the recent open it
+ * should open the email that was opened and there should be some icon
+ * that tells you like oh this was opened by this person this device at
+ * this time." (Device is measured, not guessed, to be unavailable —
+ * Gmail's proxy strips it before the pixel request reaches this app —
+ * and stays off the ban list below, not added to the render tree.) Each
+ * row is now a real `<button>` (mirrors MessageRow.tsx's own row-as-
+ * button precedent from Plan 6, down to reusing its exact `ROW_FOCUS`
+ * ring): hover OR keyboard focus on it reveals a full-detail block below
+ * the still-truncated summary line, and activating it (click, or
+ * Enter/Space once focused) calls `onOpenEvent`, which App.tsx uses to
+ * resolve the event to a message and open it — or, honestly, tell the
+ * user it could not (`resolveOpenTarget`, openEvents.ts; the not-found
+ * banner lives in App.tsx, the one place that already owns both the
+ * loaded-message registry and the reader's `selected` state). See
+ * OpenEntry's own doc comment below for the expansion mechanism and why
+ * it was chosen over a popover.
  */
 
 const SKELETON_ENTRY_COUNT = 4;
@@ -74,15 +95,24 @@ export interface OpensFeedProps {
    *  the full Opens page (OpensView.tsx). See the file doc comment above
    *  for exactly what this does, and does not, change. */
   readonly compact?: boolean;
+  /** Activates one row (task V3, Ask 2) — click, or Enter/Space once
+   *  focused. Required, not optional: as of this task a row IS a
+   *  control, mirroring InboxList.tsx's `onOpenMessage` contract exactly
+   *  ("a row with no destination is the defect ... exists to fix, and an
+   *  optional handler would let a caller reintroduce it silently").
+   *  Resolving the event to a message — or deciding it can't be — is the
+   *  caller's job (App.tsx); this component only ever reports which
+   *  event was activated. */
+  readonly onOpenEvent: (event: OpenEvent) => void;
 }
 
-export default function OpensFeed({ load, now, liveMessage, compact = false }: OpensFeedProps) {
+export default function OpensFeed({ load, now, liveMessage, compact = false, onOpenEvent }: OpensFeedProps) {
   return (
     <>
       <p className="sr-only" role="status" aria-live="polite">
         {liveMessage}
       </p>
-      <OpensFeedBody load={load} now={now} compact={compact} />
+      <OpensFeedBody load={load} now={now} compact={compact} onOpenEvent={onOpenEvent} />
     </>
   );
 }
@@ -105,9 +135,10 @@ interface OpensFeedBodyProps {
   readonly load: OpensLoadState;
   readonly now: number;
   readonly compact: boolean;
+  readonly onOpenEvent: (event: OpenEvent) => void;
 }
 
-function OpensFeedBody({ load, now, compact }: OpensFeedBodyProps) {
+function OpensFeedBody({ load, now, compact, onOpenEvent }: OpensFeedBodyProps) {
   if (load.status === 'loading') {
     return (
       <Panel compact={compact} busy>
@@ -192,6 +223,7 @@ function OpensFeedBody({ load, now, compact }: OpensFeedBodyProps) {
               key={`${event.token}:${event.occurredAt}:${event.classification}`}
               event={event}
               now={now}
+              onOpen={onOpenEvent}
             />
           ))}
         </ol>
@@ -215,6 +247,7 @@ function SelfCount({ count }: { readonly count: number }) {
 interface OpenEntryProps {
   readonly event: OpenEvent;
   readonly now: number;
+  readonly onOpen: (event: OpenEvent) => void;
 }
 
 /**
@@ -264,16 +297,118 @@ interface OpenEntryProps {
  * plain string built by template-literal concatenation, never markup, and
  * it is interpolated here as ONE JSX text child (`{...}`), which React
  * escapes by default; this file never touches `dangerouslySetInnerHTML`.
+ *
+ * TASK V3 makes this row do two more things, without touching a byte of
+ * the summary line or the honesty model above — both additions live
+ * ENTIRELY below/around it.
+ *
+ * **Ask 1 — hover/focus reveals the full thing.** MECHANISM CHOICE:
+ * in-place expansion (a block that grows below the summary line), not a
+ * positioned popover. The rail this renders inside (OpensRail.tsx) is a
+ * fixed `w-80` (320px) column with its OWN `overflow-y-auto` scroll
+ * container (`lg:max-h-[calc(100dvh-4rem)]`); a popover wide enough to
+ * hold a full recipient address and subject would either need to escape
+ * that scroller (a portal, `position: fixed`, manual viewport-collision
+ * math, a close-on-scroll/outside-click handler) or clip against it —
+ * real complexity bought for a narrow-column layout that an in-place
+ * expansion never has to solve, since it only ever grows the row's OWN
+ * height inside a `<ol>`/`<li>` list the scroller already knows how to
+ * hold. It also composes for free with "keyboard focus does the same
+ * thing", ask 1's second half: the trigger IS the row's own `<button>`,
+ * so `:hover` and `:focus-visible` on that ONE element are both that
+ * button's own pseudo-classes — no second focusable element, no
+ * `aria-expanded`/`aria-controls` bookkeeping, nothing that can fall out
+ * of sync with what is visually showing.
+ *
+ * IMPLEMENTATION: `group` on the button plus a `grid-rows-[0fr] ->
+ * group-hover:grid-rows-[1fr] group-focus-visible:grid-rows-[1fr]` grid
+ * on the detail wrapper — the standard CSS-only technique for animating
+ * to an unknown content height without JS measurement (`0fr`/`1fr` are
+ * grid track sizes, not lengths, so the browser can tween between them;
+ * the `overflow-hidden` child inside is what actually clips while the
+ * track is smaller than its content). `prefers-reduced-motion` is
+ * satisfied by styles.css's EXISTING global floor (`*, ::before, ::after
+ * { transition-duration: 0.01ms !important }`) — the same mechanism
+ * every other transition in this app (the sidebar drawer, the theme
+ * switch thumb, this row's own `hover:bg-neutral-50` fade) already relies
+ * on, so this adds no per-component override; the state still changes
+ * instantly for a viewer who asked for reduced motion, it just does not
+ * animate getting there. Collapsed content stays in the DOM (never
+ * `display:none`/`aria-hidden`) rather than being removed, so it is
+ * already part of the button's accessible name for assistive tech
+ * regardless of the CSS track size — a strict improvement over today's
+ * `title`-only tooltip, which screen readers do not reliably expose at
+ * all.
+ *
+ * What the expansion shows — full recipient, full subject, the absolute
+ * time, and the cause explanation that used to live only in `title` —
+ * is `expandedDetailFor(event)` (openEvents.ts), verbatim; this component
+ * never re-derives or re-formats any of those four fields itself.
+ *
+ * **Ask 3 — who/when/cause, with an icon.** The SAME `expandedDetailFor`
+ * result, laid out with a single `User` icon (lucide-react) marking the
+ * recipient line — "this was opened by this person" — followed by the
+ * subject, then a mono time+cause line. Device is the one fact the user
+ * asked for that this deliberately omits: `deviceClass`/`os` are
+ * measured, not assumed, to be unusable (Gmail's proxy strips them
+ * before the pixel request reaches this app — every event ever recorded
+ * carries `deviceClass: 'unknown'`, `os: null`), and a permanently-blank
+ * "Device: unknown" row would be worse than no row at all, per the task
+ * brief. `expandedDetailFor` cannot leak either field even by accident —
+ * it never reads either one off `event` in the first place — and
+ * `User` does not match tests/opens-rail-static-guards.test.ts's
+ * checkmark-icon ban (it is a person glyph, not a check-adjacent one).
+ *
+ * **Ask 2 — click opens the message.** The row is now a real `<button>`
+ * (mirrors MessageRow.tsx's row-as-button precedent, including its exact
+ * `ROW_FOCUS` inset ring — these rows sit inside the SAME kind of
+ * `overflow-hidden` `Card`/rail an outset ring would clip against).
+ * `onOpen(event)` fires on click or Enter/Space; resolving that event to
+ * an actual message — or deciding it can't be, and saying so — is
+ * App.tsx's job (`resolveOpenTarget`, openEvents.ts), not this
+ * component's: OpenEntry only ever reports WHICH event was activated.
  */
-function OpenEntry({ event, now }: OpenEntryProps) {
+function OpenEntry({ event, now, onOpen }: OpenEntryProps) {
+  const detail = expandedDetailFor(event);
   return (
-    <li className="transition-colors hover:bg-neutral-50 dark:hover:bg-accent">
-      <div className="flex items-center gap-3 px-4 py-2">
-        <ReadState classification={event.classification} />
-        <span className="min-w-0 flex-1 truncate text-sm text-neutral-900 dark:text-foreground">
-          {formatOpenRowSentence(event, now)}
+    <li>
+      <button
+        type="button"
+        onClick={() => onOpen(event)}
+        className={`group flex w-full items-start gap-3 px-4 py-2 text-left transition-colors hover:bg-neutral-50 dark:hover:bg-accent ${ROW_FOCUS}`}
+      >
+        <span className="pt-0.5">
+          <ReadState classification={event.classification} />
         </span>
-      </div>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm text-neutral-900 dark:text-foreground">
+            {formatOpenRowSentence(event, now)}
+          </span>
+          {/* Collapsed to zero height by default; grows on hover OR
+              keyboard focus of the button above (see this function's own
+              doc comment for the grid-rows mechanism and why it was
+              chosen over a popover). Never removed from the DOM, so it
+              is already part of the button's accessible name for
+              assistive tech even while visually collapsed. */}
+          <span className="grid grid-rows-[0fr] transition-[grid-template-rows] duration-150 ease-out group-hover:grid-rows-[1fr] group-focus-visible:grid-rows-[1fr]">
+            <span className="overflow-hidden">
+              <span className="flex items-start gap-1.5 pb-0.5 pt-1.5 text-xs text-neutral-500 dark:text-muted-foreground">
+                <User
+                  className="mt-0.5 h-3 w-3 shrink-0 text-neutral-400 dark:text-muted-foreground"
+                  aria-hidden="true"
+                />
+                <span className="min-w-0 space-y-0.5 break-words">
+                  <span className="block text-neutral-900 dark:text-foreground">{detail.recipientEmail}</span>
+                  <span className="block">{detail.subject}</span>
+                  <span className="block font-mono">
+                    {detail.absoluteTime} · {detail.cause}
+                  </span>
+                </span>
+              </span>
+            </span>
+          </span>
+        </span>
+      </button>
     </li>
   );
 }

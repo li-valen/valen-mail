@@ -6,13 +6,15 @@ import type { AccountSummary } from './accountRoster';
 import { foldAccountRoster } from './accountRoster';
 import { DEFAULT_FILTER } from './inboxFilters';
 import type { FolderId } from './inboxFilters';
-import type { InboxMessage } from './api';
+import type { InboxMessage, OpenEvent } from './api';
+import { foldMessageIndex } from './messageIndex';
 import Compose, { DISCARD_DRAFT_PROMPT } from './components/Compose';
 import type { ResultSummary } from './components/composeResults';
 import InboxList from './components/InboxList';
 import MessageView from './components/MessageView';
 import SentNotice from './components/SentNotice';
 import { messageKey } from './components/messageBody';
+import { resolveOpenTarget } from './components/openEvents';
 import OpensRail from './components/OpensRail';
 import OpensView from './components/OpensView';
 import PushToggle from './components/PushToggle';
@@ -67,6 +69,18 @@ import { useSessionGate } from './useSessionGate';
  * the reader, for the same reason `changeView` does: coming back to a list
  * and finding a message from a folder you left still open reads as the app
  * having ignored the click.
+ *
+ * Also owns the RECENT-OPENS CLICK-TO-OPEN registry (task V3, Ask 2):
+ * `messageIndex`, folded from every InboxList report regardless of which
+ * folder/account produced it (`messageIndex.ts`'s `foldMessageIndex`),
+ * and `handleOpenEvent`, which resolves a clicked open event against it
+ * (`resolveOpenTarget`, components/openEvents.ts) and either opens the
+ * result through the SAME `openMessage` an inbox row uses, or shows
+ * `OpenNotFoundNotice` when it can't. This lives here for the same
+ * reason message selection does: OpensFeed.tsx (rendered from either
+ * OpensRail.tsx or OpensView.tsx) does not itself hold the loaded-message
+ * registry OR the reader's `selected` state, so it cannot resolve or act
+ * on a click by itself — it only ever reports which event was activated.
  */
 
 const SKELETON_ROW_COUNT = 6;
@@ -95,6 +109,45 @@ function SessionError({ message, onRetry, onDismiss }: SessionErrorProps) {
         <Button variant="outline" size="sm" onClick={onRetry}>
           Try again
         </Button>
+        <Button variant="ghost" size="sm" onClick={onDismiss}>
+          Dismiss
+        </Button>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+/**
+ * Task V3, Ask 2's honest failure state, verbatim per the task brief's own
+ * suggested phrasing ("That message isn't in the synced window", extended
+ * here into a full, actionable sentence). Fires from `handleOpenEvent`
+ * below when `resolveOpenTarget` (components/openEvents.ts) answers
+ * `not-found` — most often because the message an open event points at
+ * lives in a folder (almost always Sent) `messageIndex` has not seen this
+ * session yet. A dead click — nothing visibly happening — is the outcome
+ * the task brief explicitly rules out, so this says so instead.
+ */
+const OPEN_NOT_FOUND_MESSAGE =
+  "That message isn't in the synced window — open Sent to load it, then try again.";
+
+interface OpenNotFoundNoticeProps {
+  readonly onDismiss: () => void;
+}
+
+/**
+ * Same dismissible-banner shape as SessionError above and SentNotice.tsx
+ * — `role="status"`, not Alert's own default `role="alert"`, because this
+ * is not an application error interrupting the user, just an honest "not
+ * yet": announced politely, not assertively. Rendered ABOVE the per-view
+ * content (see the render below), so it is visible regardless of whether
+ * the click that triggered it came from the rail (beside the Inbox) or
+ * the full Opens page.
+ */
+function OpenNotFoundNotice({ onDismiss }: OpenNotFoundNoticeProps) {
+  return (
+    <Alert role="status" className="mb-6">
+      <AlertDescription className="flex flex-wrap items-center gap-3">
+        <span className="flex-1 min-w-[12rem]">{OPEN_NOT_FOUND_MESSAGE}</span>
         <Button variant="ghost" size="sm" onClick={onDismiss}>
           Dismiss
         </Button>
@@ -140,6 +193,15 @@ export default function App() {
   // empty one — see inboxFilters.ts's trap 2.
   const [account, setAccount] = useState<string | null>(DEFAULT_FILTER.account);
   const [accounts, setAccounts] = useState<readonly AccountSummary[]>([]);
+  // The registry `resolveOpenTarget` (components/openEvents.ts) searches
+  // when a Recent-opens row is clicked (task V3, Ask 2) — folded from
+  // whatever InboxList has actually loaded this session, the SAME
+  // "grows only" shape `accounts` above gets from `foldAccountRoster`,
+  // for the identical reason (messageIndex.ts's own header has the full
+  // case). Deliberately NOT scoped to the currently selected folder: a
+  // tracked send's own message lives in Sent, not whichever folder is on
+  // screen when its "recent open" row gets clicked.
+  const [messageIndex, setMessageIndex] = useState<readonly InboxMessage[]>([]);
   // Component-local, not persisted — keyed on the message text rather than
   // a plain boolean, so a retry that fails with a DIFFERENT message still
   // shows; only a repeat of the exact message the user already dismissed
@@ -161,6 +223,12 @@ export default function App() {
   // Compose.tsx because the composer closes on success — a confirmation
   // rendered inside it would appear and vanish in the same frame.
   const [sentNotice, setSentNotice] = useState<ResultSummary | null>(null);
+  // The Ask-2 honest-failure banner (OpenNotFoundNotice above): true for
+  // exactly the span between a Recent-opens click that `resolveOpenTarget`
+  // could not resolve and the user dismissing it, or a LATER click that
+  // resolves successfully (`handleOpenEvent` clears it either way before
+  // acting) — never left showing after a click that actually worked.
+  const [isOpenNotFoundVisible, setIsOpenNotFoundVisible] = useState(false);
   // The sidebar's Compose button, so closing the composer returns focus
   // to what opened it (AppShell's `composeRef` documents what happens at
   // widths where that button is not focusable).
@@ -186,6 +254,14 @@ export default function App() {
     setAccounts((known) => foldAccountRoster(known, next));
   }, []);
 
+  // Same fold shape as handleAccountsChange above, for `messageIndex`
+  // instead of the account roster — see that state's own comment and
+  // messageIndex.ts's header for why this grows across folders/accounts
+  // rather than replacing on every report.
+  const handleMessagesChange = useCallback((next: readonly InboxMessage[]) => {
+    setMessageIndex((known) => foldMessageIndex(known, next));
+  }, []);
+
   // One object for InboxList, rebuilt only when a selection actually
   // changes — the list destructures it back to primitives for its fetch
   // effect, so this is about readability at the call site rather than
@@ -208,6 +284,30 @@ export default function App() {
   );
 
   const closeMessage = useCallback(() => setSelected(null), []);
+
+  /**
+   * Task V3, Ask 2: activating a Recent-opens row. Resolution is pure and
+   * synchronous (`resolveOpenTarget`, components/openEvents.ts) — there is
+   * no fetch in this path and therefore no loading state that could hang,
+   * only `found` (open it, exactly like clicking an inbox row) or
+   * `not-found` (say so — see OpenNotFoundNotice above for why a dead
+   * click is not an acceptable third option). Clears any STALE
+   * not-found banner from an earlier click first, either way, so a
+   * successful click after a failed one never leaves the old banner
+   * showing over the reader it just opened.
+   */
+  const handleOpenEvent = useCallback(
+    (event: OpenEvent) => {
+      setIsOpenNotFoundVisible(false);
+      const target = resolveOpenTarget(event, messageIndex);
+      if (target.kind === 'found') {
+        openMessage(target.message);
+        return;
+      }
+      setIsOpenNotFoundVisible(true);
+    },
+    [messageIndex, openMessage],
+  );
 
   /**
    * Leaves the reader and forgets where the list was. Shared by all three
@@ -395,6 +495,10 @@ export default function App() {
         <SentNotice summary={sentNotice} onDismiss={() => setSentNotice(null)} />
       )}
 
+      {isAuthorized && isOpenNotFoundVisible && (
+        <OpenNotFoundNotice onDismiss={() => setIsOpenNotFoundVisible(false)} />
+      )}
+
       {isAuthorized &&
         (view === 'compose' ? (
           // Replaces the list rather than overlaying it, for the same
@@ -431,10 +535,11 @@ export default function App() {
                 <InboxList
                   filter={filter}
                   onAccountsChange={handleAccountsChange}
+                  onMessagesChange={handleMessagesChange}
                   onOpenMessage={openMessage}
                 />
               </div>
-              <OpensRail feed={feed} />
+              <OpensRail feed={feed} onOpenEvent={handleOpenEvent} />
             </div>
 
             {selected !== null && (
@@ -452,7 +557,7 @@ export default function App() {
             )}
           </>
         ) : (
-          <OpensView feed={feed} />
+          <OpensView feed={feed} onOpenEvent={handleOpenEvent} />
         ))}
     </AppShell>
   );

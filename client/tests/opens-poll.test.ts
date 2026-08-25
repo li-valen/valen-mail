@@ -21,6 +21,8 @@ import type { OpenEvent, OpensResponse } from '../src/api';
 
 function buildEvent(overrides: Partial<OpenEvent> & { readonly token: string }): OpenEvent {
   return {
+    accountId: 'acct-1',
+    messageId: '<msg-1@postbox.local>',
     recipientEmail: 'someone@example.com',
     subject: 'Test subject',
     sentAt: 1_700_000_000_000,
