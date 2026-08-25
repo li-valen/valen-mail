@@ -6,12 +6,31 @@ import type { TrackingConfig } from '../config';
 import { fetchBodyPart, BodyPartTooLargeError, MAX_BODY_PART_BYTES } from '../imap/fetch.ts';
 import { fetchOpens } from './opens.ts';
 import { MAX_LIMIT, DEFAULT_LIMIT } from './limits.ts';
+import {
+  buildClearedSessionCookie,
+  buildSessionCookie,
+  mintSessionValue,
+  requestHasValidSession,
+} from './session.ts';
 
-function json(body: unknown, status = 200): Response {
+function json(
+  body: unknown,
+  status = 200,
+  extraHeaders: Readonly<Record<string, string>> = {},
+): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...extraHeaders },
   });
+}
+
+/** Session responses must never be cached: one carries a `Set-Cookie` that
+ *  establishes a credential, another one that revokes it, and a shared or
+ *  browser cache replaying either is a correctness bug. */
+const NO_STORE: Readonly<Record<string, string>> = { 'cache-control': 'no-store' };
+
+function noContent(headers: Readonly<Record<string, string>> = {}): Response {
+  return new Response(null, { status: 204, headers });
 }
 
 /**
@@ -192,6 +211,78 @@ function contentDispositionFor(filename: string): string {
     (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
   );
   return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`;
+}
+
+/**
+ * POST /api/session — trades the API token for a session cookie.
+ *
+ * This is the one route reachable without an existing credential, because
+ * it is how a browser obtains one; it authenticates from its own body
+ * instead. Nothing about the submitted value is ever logged or echoed —
+ * not a prefix, not a length, not a fragment in a JSON parse error. The
+ * only thing recorded is that a rejection happened, which an operator
+ * needs and an attacker learns nothing from.
+ *
+ * `tokenMatches` (not `===`) for the same reason the bearer path uses it:
+ * this endpoint is an unauthenticated oracle on the public internet, and a
+ * short-circuiting comparison leaks the token's prefix through timing.
+ */
+async function handleCreateSession(request: Request, apiToken: string): Promise<Response> {
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    // The parse error itself is discarded rather than attached: V8 embeds
+    // surrounding source in "Unexpected token" messages, and on this route
+    // the surrounding source is the credential.
+    console.error('api: rejected POST /api/session — request body was not valid JSON');
+    return json({ error: 'invalid request body' }, 400, NO_STORE);
+  }
+
+  const submitted =
+    typeof body === 'object' && body !== null ? (body as Record<string, unknown>).token : undefined;
+
+  if (typeof submitted !== 'string' || submitted.length === 0) {
+    console.error('api: rejected POST /api/session — body carried no non-empty string "token"');
+    return json({ error: 'invalid request body' }, 400, NO_STORE);
+  }
+
+  if (!tokenMatches(submitted, apiToken)) {
+    console.error('api: rejected POST /api/session — submitted token did not match API_TOKEN');
+    return json({ error: 'unauthorized' }, 401, NO_STORE);
+  }
+
+  return noContent({
+    ...NO_STORE,
+    'set-cookie': buildSessionCookie(mintSessionValue(apiToken, Date.now())),
+  });
+}
+
+/**
+ * DELETE /api/session — revokes the browser's copy.
+ *
+ * Runs after the auth gate, so it works for whichever credential got the
+ * caller in: a bearer-authenticated `curl` clearing a stale cookie and a
+ * cookie-authenticated browser signing itself out take the same path. The
+ * cookie is stateless, so "revoke" means "tell the browser to drop it";
+ * a copy captured off the wire stays valid until its signed expiry, which
+ * is the trade a store-free session makes and the reason the lifetime is
+ * bounded at all. Rotating API_TOKEN is the hard revocation.
+ */
+function handleDeleteSession(): Response {
+  return noContent({ ...NO_STORE, 'set-cookie': buildClearedSessionCookie() });
+}
+
+/**
+ * Either accepted credential (Task 3.5). The bearer path is checked first
+ * and is byte-for-byte the behaviour every existing test, deploy script
+ * and `curl` invocation already depends on; the cookie is an additional
+ * way in for the browser, never a replacement.
+ */
+function isAuthorized(request: Request, apiToken: string): boolean {
+  const bearer = extractBearerToken(request);
+  if (bearer !== null && tokenMatches(bearer, apiToken)) return true;
+  return requestHasValidSession(request, apiToken, Date.now());
 }
 
 async function handleHealth(pool: ConnectionPool): Promise<Response> {
@@ -436,10 +527,24 @@ async function handleAttachment(
 
 /**
  * Builds the request handler for the unified-inbox JSON API. Every route
- * except GET /api/health requires a valid bearer token (Amendment 1: three
- * arguments — auth cannot be optional on a service fronting four mailboxes
- * containing 60,000+ messages on the public internet). /api/health is
- * gated on GET the same as every other route is gated on its own method —
+ * except GET /api/health and POST /api/session requires a credential
+ * (Amendment 1: three arguments — auth cannot be optional on a service
+ * fronting four mailboxes containing 60,000+ messages on the public
+ * internet).
+ *
+ * Task 3.5 makes that credential a choice of two, never a replacement:
+ * `Authorization: Bearer <API_TOKEN>` exactly as before, or the HMAC-signed
+ * session cookie in ./session.ts, which is how a browser authenticates
+ * without a token embedded in a shipped JS bundle. POST /api/session mints
+ * one, DELETE /api/session clears it, and GET /api/session is the
+ * zero-cost "am I signed in?" probe that falls out of the gate itself.
+ *
+ * Route order below is load-bearing and Task 8 depends on it: the two
+ * pre-auth routes, then the gate, then the authenticated write, then every
+ * GET. Task 8 adds a static-file fallback AFTER all of them.
+ *
+ * /api/health is gated on GET the same as every other route is gated on
+ * its own method —
  * a non-GET request to it falls through to the ordinary auth-then-404
  * path below rather than being special-cased forever. Auth is checked
  * before any other route is matched, so an unauthenticated caller gets the
@@ -469,13 +574,32 @@ export function createRouter(
       return handleHealth(pool);
     }
 
-    const token = extractBearerToken(request);
-    if (!token || !tokenMatches(token, apiToken)) {
+    // The only /api route served before the auth gate other than health:
+    // it IS the gate's entrance for a browser, and it authenticates from
+    // its own body. Everything else below requires a credential already.
+    if (path === '/api/session' && request.method === 'POST') {
+      return handleCreateSession(request, apiToken);
+    }
+
+    if (!isAuthorized(request, apiToken)) {
       return json({ error: 'unauthorized' }, 401);
+    }
+
+    // Ahead of the GET-only check below because signing out is the one
+    // authenticated write this service accepts.
+    if (path === '/api/session' && request.method === 'DELETE') {
+      return handleDeleteSession();
     }
 
     if (request.method !== 'GET') {
       return json({ error: 'not found' }, 404);
+    }
+
+    // Reaching here already proves a usable credential, so the handler is
+    // the empty success itself: this is how the client asks "am I still
+    // signed in?" without fetching a page of real mail to find out.
+    if (path === '/api/session') {
+      return noContent(NO_STORE);
     }
 
     if (path === '/api/inbox') {

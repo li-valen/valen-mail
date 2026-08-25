@@ -1,0 +1,159 @@
+/**
+ * The sign-in surface (client/src/LoginView.tsx).
+ *
+ * Every value is a token from theme.css; DESIGN.md is authoritative and
+ * nothing here invents a colour, a size or a radius. Two global rules from
+ * theme.css do the heavy lifting and are deliberately NOT repeated here:
+ * the two-layer `:focus-visible` ring (DESIGN.md §6), which the input and
+ * the button inherit, and the reduced-motion duration floor.
+ *
+ * No card, no shadow, no accent bar: DESIGN.md §8 kills the rounded card
+ * outright, and there are no horizontal rules anywhere in this product
+ * (§4.2). Separation is spacing.
+ */
+
+.login {
+  min-height: 100dvh; /* dvh, not vh — iOS PWA chrome */
+  background: var(--bg-page);
+  color: var(--fg-primary);
+  display: grid;
+  place-items: center;
+  padding: var(--s-6);
+  padding-block-end: calc(var(--s-6) + env(safe-area-inset-bottom, 0px));
+}
+
+.login__form {
+  width: 100%;
+  max-width: var(--measure);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+/* The single large moment (DESIGN.md §3.2, --t-2xl). */
+.login__headline {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--t-2xl);
+  font-weight: 600;
+  line-height: 1.08;
+  letter-spacing: -0.028em;
+  text-wrap: balance;
+}
+
+.login__sub {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--t-md);
+  line-height: 1.6;
+  letter-spacing: -0.008em;
+  color: var(--fg-secondary);
+}
+
+.login__label {
+  font-family: var(--font-ui);
+  font-size: var(--t-sm);
+  font-weight: 500;
+  line-height: 1.45;
+  /* The label sits directly on its field; the form's own gap would
+     otherwise space them the same as unrelated blocks. */
+  margin-block-end: calc(var(--s-4) * -1 + var(--s-2));
+}
+
+.login__input {
+  min-height: var(--hit-min); /* iOS touch-target floor */
+  padding: var(--s-2) var(--s-3);
+  font-family: var(--font-mono);
+  /* --t-md (17px), not --t-base (15px): iOS Safari zooms the viewport when
+     a focused input is under 16px, and this shell never zooms back out.
+     The field also holds a literal value, which is what mono is for
+     (DESIGN.md §3.1). */
+  font-size: var(--t-md);
+  color: var(--fg-primary);
+  background: var(--bg-raised);
+  border: 1px solid var(--line-border);
+  border-radius: var(--r-sm);
+  caret-color: var(--caret);
+  transition: border-color var(--dur-fast) var(--ease-out);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.login__input::placeholder {
+  color: var(--fg-placeholder);
+}
+
+/* A visible resting-to-focus change on top of the global ring, so the
+   active field is obvious even mid-ring-animation. */
+.login__input:focus {
+  border-color: var(--focus-outer);
+}
+
+.login__input:disabled {
+  color: var(--fg-secondary);
+  background: var(--bg-hover);
+  cursor: not-allowed;
+}
+
+.login__submit {
+  align-self: flex-start;
+  min-height: var(--hit-min);
+  padding-inline: var(--s-5);
+  font-family: var(--font-ui);
+  font-size: var(--t-base);
+  font-weight: 500;
+  letter-spacing: -0.006em;
+  color: var(--fg-on-accent);
+  background: var(--fg-primary);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  touch-action: manipulation; /* kills the 300ms tap delay */
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.login__submit:hover:not(:disabled) {
+  background: var(--fg-secondary);
+}
+
+/* The tap highlight is removed above, so a real pressed state replaces it
+   rather than leaving the control feeling dead on touch (DESIGN.md §4.3). */
+.login__submit:active:not(:disabled) {
+  background: var(--fg-secondary);
+  border-color: var(--line-border);
+}
+
+.login__submit:disabled {
+  color: var(--fg-secondary);
+  background: var(--bg-active);
+  cursor: not-allowed;
+}
+
+/**
+ * Achromatic on purpose. DESIGN.md §7.4 forbids the red banner, and colour
+ * in Postbox means a read-state and nothing else — an error in the chrome
+ * is not part of that vocabulary, so it is typeset, not coloured.
+ */
+.login__error {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--t-sm);
+  line-height: 1.45;
+  color: var(--fg-primary);
+  background: var(--bg-hover);
+  border-radius: var(--r-sm);
+  padding: var(--s-2) var(--s-3);
+}
+
+/**
+ * The reduced-motion end state, stated explicitly for this view rather
+ * than relying only on theme.css's global 1ms floor: with motion reduced
+ * the border and background changes are instant, and every state above is
+ * still reachable — nothing here is only visible during a transition.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .login__input,
+  .login__submit {
+    transition: none;
+  }
+}

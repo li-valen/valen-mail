@@ -510,6 +510,88 @@ gcloud compute ssh postbox --zone=us-central1-a --quiet \
   --command='curl -s http://127.0.0.1:8080/api/health | jq'
 ```
 
+## 13. Browser sessions — what changed for the operator (Task 3.5)
+
+`/api/*` now accepts **either** credential:
+
+1. `Authorization: Bearer $API_TOKEN` — unchanged. Every `curl` in this
+   file, every script, and every existing test keeps working exactly as
+   written. Nothing below replaces it.
+2. An `HttpOnly` session cookie, which is how the browser client
+   authenticates without a token embedded in its JavaScript bundle.
+
+Three new routes: `POST /api/session` (trade the token for a cookie),
+`GET /api/session` (204 if signed in, 401 if not), and
+`DELETE /api/session` (clear it). `POST` is the only one reachable without
+an existing credential, because it is how a browser obtains one.
+
+**No new environment variable, no new dependency, no new GCP resource.**
+The cookie is a stateless HMAC over its own expiry, keyed off a value
+derived from `API_TOKEN`, so there is no session table to create and
+nothing to back up. Still $0.
+
+### Things that will actually bite you
+
+- **TLS must be live before a browser can sign in.** The cookie is set
+  `Secure`, so a browser silently discards it over plain `http://` on a
+  real hostname. Sign-in then appears to succeed (`204`) and every
+  subsequent request still 401s, with nothing in the log to explain it.
+  Section 10's one remaining step — point the DuckDNS A record at the
+  instance, uncomment the site block, `sudo systemctl reload caddy` — is
+  therefore a prerequisite for the web client, not an optional extra.
+  `localhost` is exempt from the `Secure` rule, so local development works
+  over plain HTTP without a change.
+- **Do not filter headers in the Caddyfile.** A bare
+  `reverse_proxy 127.0.0.1:8080` already forwards the `Cookie` request
+  header and returns `Set-Cookie` untouched, which is all this needs. If
+  anyone later adds `header_up`/`header_down` directives, both of those
+  header names must survive.
+- **Rotating `API_TOKEN` signs every browser out.** That is the intended —
+  and only — bulk revocation: the cookie carries no server-side session id,
+  so there is nothing to delete. Rotate the value in
+  `/opt/postbox/sync/.env` and `sudo systemctl restart postbox-sync`; every
+  outstanding cookie stops verifying on the next request.
+- **Sessions last 30 days.** After that the client shows its sign-in view
+  again and the token has to be pasted once more.
+- **`SameSite=Strict`** means a link to the app from another site lands
+  logged-out on the first navigation. That is deliberate; nothing
+  legitimately links into this app from elsewhere.
+- **Request bodies are capped at 8 KB** and answered `413` above it. Only
+  `POST /api/session` reads a body at all.
+
+### Verifying it, once the service is started and TLS is live
+
+```bash
+# 1. Bearer path unchanged — expect 200
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer $API_TOKEN" 'https://<duckdns-host>/api/inbox?limit=1'
+
+# 2. No credential — expect 401
+curl -s -o /dev/null -w '%{http_code}\n' 'https://<duckdns-host>/api/inbox?limit=1'
+
+# 3. Sign in, keeping the cookie in a jar — expect 204 and a Set-Cookie
+curl -s -D - -o /dev/null -c /tmp/postbox-cookies.txt \
+  -H 'content-type: application/json' \
+  -d "{\"token\":\"$API_TOKEN\"}" \
+  https://<duckdns-host>/api/session | grep -i set-cookie
+
+# 4. The cookie alone authorises the inbox — expect 200
+curl -s -o /dev/null -w '%{http_code}\n' -b /tmp/postbox-cookies.txt \
+  'https://<duckdns-host>/api/inbox?limit=1'
+
+# 5. Sign out, then confirm the jar no longer works — expect 204 then 401
+curl -s -o /dev/null -w '%{http_code}\n' -X DELETE -b /tmp/postbox-cookies.txt \
+  -c /tmp/postbox-cookies.txt https://<duckdns-host>/api/session
+curl -s -o /dev/null -w '%{http_code}\n' -b /tmp/postbox-cookies.txt \
+  'https://<duckdns-host>/api/inbox?limit=1'
+
+rm -f /tmp/postbox-cookies.txt
+```
+
+Step 3 writes `$API_TOKEN` into the shell's history if it is typed
+literally — read it from the `.env` on the VM into a variable instead, and
+delete the cookie jar afterwards as shown.
+
 ## Summary of what's running right now
 
 | Component     | State                                             |
@@ -522,3 +604,4 @@ gcloud compute ssh postbox --zone=us-central1-a --quiet \
 | systemd unit   | installed, valid, **enabled**, **inactive**         |
 | Caddy          | installed, running, staged (no TLS site yet)        |
 | postbox-sync   | **NOT started** — left to the controller (A5)       |
+| Browser auth   | bearer **or** session cookie; needs TLS live (§13)  |

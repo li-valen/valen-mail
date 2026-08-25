@@ -83,11 +83,83 @@ function toWebHeaders(nodeHeaders: IncomingMessage['headers']): Headers {
   return headers;
 }
 
-function toWebRequest(nodeRequest: IncomingMessage): Request {
-  return new Request(`http://localhost${nodeRequest.url ?? '/'}`, {
-    method: nodeRequest.method ?? 'GET',
-    headers: toWebHeaders(nodeRequest.headers),
-  });
+/**
+ * Hard ceiling on a request body this service will buffer.
+ *
+ * POST /api/session (Task 3.5) is the only route that reads one, and its
+ * body is a single JSON object holding a token — hundreds of bytes. 8 KB
+ * leaves generous room for that while making it impossible for an
+ * unauthenticated caller to spend this 955 MB box's memory by opening a
+ * connection and streaming forever: the read stops the moment the cap is
+ * crossed, not after the whole body has landed, and the request is
+ * answered 413 without ever reaching the router.
+ */
+export const MAX_REQUEST_BODY_BYTES = 8 * 1024;
+
+/** GET and HEAD are the only methods this service serves that must not
+ *  carry a body — and constructing a Web `Request` with a body on either
+ *  throws, so they are branched on rather than filtered later. */
+function methodMayHaveBody(method: string): boolean {
+  const upper = method.toUpperCase();
+  return upper !== 'GET' && upper !== 'HEAD';
+}
+
+/**
+ * Buffers the request body, or returns null once it crosses the cap.
+ *
+ * Reading stops at the cap rather than after the body has landed, so an
+ * oversized upload never gets to occupy memory in the first place.
+ *
+ * The socket is deliberately NOT destroyed here, even though returning
+ * early already abandons the stream. Measured both ways: an explicit
+ * `nodeRequest.destroy()` tears the connection down before the caller's
+ * 413 can be flushed and the client sees a bare connection reset with no
+ * status to act on; without it, Node flushes the 413 first. A client still
+ * mid-upload of something enormous may see the reset anyway — that is
+ * still a refusal, just a blunter one, and it is the right side of the
+ * trade against buffering the body to be polite about it.
+ *
+ * Never logs or returns any part of the body: on the one route that has
+ * one, the body is a credential.
+ */
+async function readRequestBody(nodeRequest: IncomingMessage): Promise<Buffer | null> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+
+  for await (const chunk of nodeRequest) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
+    total += buffer.length;
+    if (total > MAX_REQUEST_BODY_BYTES) return null;
+    chunks.push(buffer);
+  }
+
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Adapts Node's IncomingMessage to a Web Request, body included. Returns
+ * null when the body exceeded MAX_REQUEST_BODY_BYTES.
+ *
+ * The body forwarding is the load-bearing part and is why this is
+ * exported: before Task 3.5 nothing in this service read a request body,
+ * so the adapter forwarded only method/URL/headers. A route calling
+ * `request.json()` would then pass every test that builds a `Request` by
+ * hand and fail against the real HTTP server with an empty body — the
+ * exact "green tests, broken service" shape this project has already
+ * shipped once and now gates against.
+ */
+export async function toWebRequest(nodeRequest: IncomingMessage): Promise<Request | null> {
+  const method = nodeRequest.method ?? 'GET';
+  const url = `http://localhost${nodeRequest.url ?? '/'}`;
+  const headers = toWebHeaders(nodeRequest.headers);
+
+  if (!methodMayHaveBody(method)) {
+    return new Request(url, { method, headers });
+  }
+
+  const body = await readRequestBody(nodeRequest);
+  if (body === null) return null;
+  return new Request(url, { method, headers, body: body.length > 0 ? body : null });
 }
 
 /**
@@ -112,7 +184,16 @@ export async function writeWebResponse(
   response: Response,
   nodeResponse: ServerResponse,
 ): Promise<void> {
-  nodeResponse.writeHead(response.status, Object.fromEntries(response.headers));
+  // `Object.fromEntries` collapses repeated headers into one comma-joined
+  // value, which is correct for every header this service sends except
+  // Set-Cookie — where a comma-joined pair is a single malformed cookie
+  // rather than two good ones. `getSetCookie()` is the one API that keeps
+  // them separate, so the session cookie is re-applied as an array.
+  const headers: Record<string, string | string[]> = Object.fromEntries(response.headers);
+  const setCookies = response.headers.getSetCookie();
+  if (setCookies.length > 0) headers['set-cookie'] = setCookies;
+
+  nodeResponse.writeHead(response.status, headers);
   if (!response.body) {
     nodeResponse.end();
     return;
@@ -132,7 +213,24 @@ async function handleRequest(
   nodeResponse: ServerResponse,
 ): Promise<void> {
   try {
-    const response = await router(toWebRequest(nodeRequest));
+    const request = await toWebRequest(nodeRequest);
+    if (request === null) {
+      // The method and URL are safe to log; the body never is.
+      console.error(
+        `api: refusing ${nodeRequest.method} ${nodeRequest.url} — request body exceeds ` +
+          `${MAX_REQUEST_BODY_BYTES} bytes`,
+      );
+      nodeResponse.writeHead(413, {
+        'content-type': 'application/json',
+        // The request stream was abandoned unread, so this connection
+        // cannot be safely reused for a following request on it.
+        connection: 'close',
+      });
+      nodeResponse.end(JSON.stringify({ error: 'request body too large' }));
+      return;
+    }
+
+    const response = await router(request);
     await writeWebResponse(response, nodeResponse);
   } catch (error) {
     console.error(`api: unhandled error serving ${nodeRequest.method} ${nodeRequest.url}`, error);

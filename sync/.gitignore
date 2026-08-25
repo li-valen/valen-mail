@@ -10,3 +10,8 @@ dist/
 # ignored.
 accounts*.json*
 !accounts.example.json
+
+# The client's build output (client/vite.config.ts `build.outDir`). It is a
+# generated artifact deployed by scp, never committed — Task 8 builds it
+# fresh and uploads it.
+public/

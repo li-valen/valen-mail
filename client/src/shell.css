@@ -76,3 +76,45 @@
     display: none;
   }
 }
+
+/**
+ * The shell-level failure notice (App.tsx SessionError): a sync/session
+ * failure renders in place at the top of the inbox with one retry control
+ * (DESIGN.md §7.4). Achromatic — §7.4 forbids the red banner, and colour
+ * in Postbox means a read-state and nothing else.
+ */
+.shell__error {
+  margin: 0;
+  margin-block-start: var(--s-6);
+  padding: var(--s-3) var(--s-4);
+  font-family: var(--font-ui);
+  font-size: var(--t-base);
+  line-height: 1.4;
+  letter-spacing: -0.006em;
+  color: var(--fg-primary);
+  background: var(--bg-hover);
+  border-radius: var(--r-sm);
+}
+
+/* A text-weight control, not a button-shaped one: the retry sits inside a
+   sentence, so it reads as part of the sentence. The global focus ring in
+   theme.css still applies. */
+.shell__retry {
+  min-height: var(--hit-min);
+  padding: 0;
+  font: inherit;
+  font-weight: 500;
+  color: var(--fg-primary);
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.shell__retry:active {
+  color: var(--fg-secondary);
+}
