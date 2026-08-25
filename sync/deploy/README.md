@@ -799,3 +799,236 @@ curl -s -o /dev/null -w '%{http_code} %{content_type}\n' \
 | Browser auth   | bearer **or** `__Host-` session cookie; needs TLS live (§13) |
 | Web Push       | routes + table shipped; **VAPID keys NOT yet on the VM** (§14) |
 | `web-push` dep | **not yet installed on the VM** — rerun §7's npm install (§14) |
+
+## 15. Full-stack deploy — Plan 3 (Task 8)
+
+**Everything above this section is a retrospective log: it documents
+commands that were actually run against the VM, with their real output.**
+This section is different in kind — it is a **procedure written for the
+controller to execute**, not a record of something already done. The task
+that wrote it explicitly does not deploy, does not run `gcloud`, and does
+not touch the VM; nothing below carries a "Verified:" block for that
+reason, and none of it should be read as already having happened.
+
+### Why this replaces the brief's original Step 3
+
+Task 8's brief said, in full: build the client, `gcloud compute scp
+--recurse sync/public postbox:/tmp/public`, move it into place, restart.
+That step is **defective** for this deploy, for one reason: **it only ever
+ships `sync/public`.** The VM is still running Plan 2-era `sync/src` —
+every change since then has never left this Mac:
+
+- Task 3.5's session-cookie auth (`src/api/session.ts`, the hybrid
+  `isAuthorized` gate in `src/api/routes.ts`)
+- Task 2's `/api/opens` tracking proxy
+- Task 6's Web Push routes and the `web-push` runtime dependency — **not
+  installed on the VM at all**, per the summary table above
+- Task 7's push dispatch on new mail and on opens
+- This task's static file serving (`src/api/static.ts`) and the
+  `createRouter` wiring that calls it
+
+Copying only `sync/public` onto that stale `src/` and restarting would
+serve a brand-new client shell against a backend that cannot authenticate
+a browser session, has no push routes, and has never even loaded
+`web-push`. The procedure below ships the whole tree.
+
+### Step 1 — build the client locally
+
+```bash
+cd client && npm run build   # writes sync/public
+cd ..
+```
+
+Confirm it actually produced output before going further:
+
+```bash
+ls sync/public/index.html sync/public/sw.js sync/public/manifest.webmanifest
+```
+
+### Step 2 — ship source + manifests + built client to the VM
+
+Same staging pattern §7 already established (`scp` to `/tmp`, then a
+`sudo` move into place) — extended to cover everything Task 8 needs and
+nothing it must not. **Excluded, deliberately:** `.env` (§8's "never copy
+this" rule, restated below), `accounts.json` (a live credential file — the
+VM's own, from §8, must not be overwritten by the Mac's), `node_modules`
+(reinstalled on the VM in Step 3, not shipped — different OS/arch than a
+Mac dev machine), and `tests/` (never runs on the VM).
+
+```bash
+export PATH=/opt/homebrew/share/google-cloud-sdk/bin:"$PATH"
+
+cd sync
+tar czf /tmp/postbox-sync-deploy.tar.gz \
+  src package.json package-lock.json public
+cd ..
+
+gcloud compute scp /tmp/postbox-sync-deploy.tar.gz \
+  postbox:/tmp/postbox-sync-deploy.tar.gz \
+  --zone=us-central1-a --quiet
+
+gcloud compute ssh postbox --zone=us-central1-a --quiet --command='
+  set -e
+  sudo -u postbox mkdir -p /tmp/postbox-sync-staging
+  sudo -u postbox tar xzf /tmp/postbox-sync-deploy.tar.gz -C /tmp/postbox-sync-staging
+  rm -f /tmp/postbox-sync-deploy.tar.gz
+  sudo -u postbox find /tmp/postbox-sync-staging -name "._*" -delete
+
+  # accounts.json and .env already live under /opt/postbox/sync and are
+  # NOT part of the tarball at all (see the exclusion list above) — so a
+  # plain directory swap here cannot touch either one. src/, public/ and
+  # the two package manifests are replaced; everything else already under
+  # /opt/postbox/sync (.env, accounts.json, node_modules) is left alone.
+  sudo -u postbox rm -rf /opt/postbox/sync/src /opt/postbox/sync/public
+  sudo -u postbox cp -r /tmp/postbox-sync-staging/src /opt/postbox/sync/src
+  sudo -u postbox cp -r /tmp/postbox-sync-staging/public /opt/postbox/sync/public
+  sudo -u postbox cp /tmp/postbox-sync-staging/package.json /opt/postbox/sync/package.json
+  sudo -u postbox cp /tmp/postbox-sync-staging/package-lock.json /opt/postbox/sync/package-lock.json
+  rm -rf /tmp/postbox-sync-staging
+'
+
+rm -f /tmp/postbox-sync-deploy.tar.gz   # and on the Mac
+```
+
+### Step 3 — install dependencies on the VM
+
+`npm ci` (not `npm install`) because this deploy ships a `package-lock.json`
+specifically pinned by this repo — `ci` refuses to write to it and installs
+exactly what the lockfile says, which is the right guarantee for a
+production box. This is also the step that finally installs `web-push`
+(§14's "not yet installed on the VM" line in the summary table above):
+
+```bash
+gcloud compute ssh postbox --zone=us-central1-a --quiet --command='
+  sudo -u postbox bash -c "cd /opt/postbox/sync && HOME=/opt/postbox \
+    npm ci --omit=dev --no-audit --no-fund"
+'
+```
+
+### Step 4 — apply schema.sql idempotently
+
+`schema.sql` is written to be safe to re-run (`create table if not
+exists`, etc.), so this is not a migration tool — just applying the
+current schema against whatever database `DATABASE_URL` in the VM's own
+`.env` already names. **Do not hardcode a database name here or assume it
+matches this file's own history (§5 created `postbox_sync`, but this
+procedure must not assume that still matches the live `.env` — read it
+fresh from the VM, every time:**
+
+```bash
+gcloud compute ssh postbox --zone=us-central1-a --quiet --command='
+  set -e
+  DB_NAME=$(sudo grep -oP "(?<=^DATABASE_URL=).*" /opt/postbox/sync/.env \
+    | sed -E "s#.*/([^/?]+)\??.*#\1#")
+  echo "applying schema.sql to database: $DB_NAME"
+  sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" \
+    -f /opt/postbox/sync/src/schema.sql
+'
+```
+
+(`src/schema.sql` is already on the VM as of Step 2 — no separate copy
+needed.)
+
+### Step 5 — the one thing to never do: copy `.env`
+
+**Never `scp` `.env` in either direction, full stop.** §8 and §14 both
+already say this and it bears repeating a third time because Task 8 is
+exactly the kind of "just get it all deployed" step where it's tempting to
+shortcut: overwriting the VM's `.env` with the Mac's would rotate
+`API_TOKEN` out from under every signed-in browser and point `DATABASE_URL`
+at a database that doesn't exist on the VM; overwriting the Mac's `.env`
+with the VM's would do the same in reverse to local development.
+
+**Before running Step 6, confirm the VM's `.env` already carries every key
+this deploy needs** — beyond the original four from §8
+(`DATABASE_URL`, `PORT`, `ACCOUNTS_FILE`, `API_TOKEN`), that's the five
+added across §13/§14's history: `TRACKING_BASE_URL`, `TRACKING_READ_TOKEN`,
+`VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` (names only — this
+procedure never handles the values). Check which are present without ever
+printing one:
+
+```bash
+gcloud compute ssh postbox --zone=us-central1-a --quiet --command='
+  sudo grep -oE "^[A-Z_]+=" /opt/postbox/sync/.env | sort
+'
+```
+
+If any of the five are missing, append them the same deliberate,
+value-never-touches-the-Mac's-terminal way §14 did for the VAPID pair —
+never by copying a whole `.env` over. `STATIC_ROOT` is deliberately absent
+from this list: it is optional, and its default (resolved inside
+`src/api/static.ts` from the module's own location, not the process's
+working directory) already lands on `/opt/postbox/sync/public`, which is
+exactly where Step 2 puts the built client. No new environment variable is
+needed for this task.
+
+### Step 6 — restart and verify
+
+```bash
+gcloud compute ssh postbox --zone=us-central1-a --quiet --command='
+  sudo systemctl restart postbox-sync
+  sleep 2
+  sudo systemctl is-active postbox-sync
+'
+```
+
+Then the full verification battery, from wherever the hostname resolves
+(the Mac, once TLS is live per §10's remaining step — see that section if
+`https://postbox-valen.duckdns.org` isn't answering yet):
+
+```bash
+HOST=postbox-valen.duckdns.org
+
+# 1. App shell — expect 200, text/html
+curl -s -o /dev/null -w '%{http_code} %{content_type}\n' "https://$HOST/"
+
+# 2. Service worker — expect 200 and Cache-Control: no-cache (Task 8,
+#    point 3 — a cached sw.js is nearly impossible to evict afterwards)
+curl -s -D - -o /dev/null "https://$HOST/sw.js" | grep -i cache-control
+
+# 3. A hashed asset — expect Cache-Control: public, max-age=31536000,
+#    immutable. Replace with a real filename from `ls sync/public/assets/`.
+curl -s -D - -o /dev/null "https://$HOST/assets/<real-hashed-filename>.js" \
+  | grep -i cache-control
+
+# 4. API health — expect 200, ok:true, one entry per account
+curl -s "https://$HOST/api/health" | jq
+
+# 5. API without credentials — expect 401, not 200-with-index.html
+#    (the load-bearing check from this task's brief: static serving must
+#    never shadow /api/*)
+curl -s -o /dev/null -w '%{http_code}\n' "https://$HOST/api/inbox"
+
+# 6. Unknown API path — expect 404 (JSON), not the SPA fallback
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer $API_TOKEN" "https://$HOST/api/nope"
+
+# 7. Traversal attempt — expect 404 or the SPA fallback (200 with the app
+#    shell's own index.html), NEVER any file from outside sync/public
+curl -s -o /dev/null -w '%{http_code}\n' "https://$HOST/%2e%2e/%2e%2e/etc/passwd"
+
+# 8. Sign-in with a wrong token — expect 401
+curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+  -H 'content-type: application/json' -d '{"token":"wrong"}' \
+  "https://$HOST/api/session"
+```
+
+Read `$API_TOKEN` out of the VM's own `.env` into a shell variable for
+check 6 rather than typing it literally — the same reasoning §13 already
+gives for not leaving it in shell history.
+
+**If check 5 ever returns 200:** stop immediately. That means static
+serving is shadowing the API, which is the single most important property
+this task's router-ordering change protects — see
+`sync/src/api/routes.ts`'s `createRouter` dispatcher and
+`sync/tests/static-routing.test.ts`'s "does not shadow /api/*" suite for
+what should have caught this before it ever reached the VM.
+
+### After this deploy
+
+Update this file's summary table (§ "Summary of what's running right
+now") with the new state: `postbox-sync` **started**, Web Push keys and
+`web-push` dependency both live, and the client served from the same
+origin. That table is the single place this document's own reader is
+expected to check first — leaving it stale defeats the purpose of keeping
+this as a living deploy log.

@@ -483,8 +483,24 @@ describe('push route registration does not disturb the existing router', () => {
     expect(response.status).toBe(404);
   });
 
-  it('adds no catch-all: a non-/api path is still 404 (Task 8 owns static serving)', async () => {
-    const response = await routerWith(VAPID)(new Request('http://x/index.html', { headers: AUTH }));
+  it('adds no catch-all of its own: a non-/api path with no built client at its static root is still 404', async () => {
+    // Task 8 gave non-/api paths real behaviour (static files, SPA
+    // fallback) — this router just has nothing built at the static root it
+    // was given, so the assertion is still "push registration alone adds
+    // no route here", not "Task 8 never shipped". A nonexistent root is
+    // passed explicitly rather than relying on the default (which resolves
+    // to the real sync/public and would make this test's outcome depend on
+    // whatever happens to be built there at run time).
+    const router = createRouter(
+      makeFakeDb(),
+      FAKE_POOL,
+      TOKEN,
+      null,
+      undefined,
+      VAPID,
+      '/nonexistent-static-root-for-push-test',
+    );
+    const response = await router(new Request('http://x/index.html', { headers: AUTH }));
     expect(response.status).toBe(404);
   });
 

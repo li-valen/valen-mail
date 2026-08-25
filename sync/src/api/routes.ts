@@ -17,6 +17,7 @@ import type { RateLimiter } from './rate-limit';
 import { json, noContent, NO_STORE, PRIVATE_NO_STORE } from './http.ts';
 import { handlePushKey, handlePushSubscribe, handlePushUnsubscribe } from './push.ts';
 import type { VapidConfig } from '../push/vapid';
+import { createStaticHandler, defaultStaticRoot } from './static.ts';
 
 /**
  * Constant-time comparison. A plain `===` short-circuits on the first
@@ -552,9 +553,11 @@ async function handleAttachment(
  * one, DELETE /api/session clears it, and GET /api/session is the
  * zero-cost "am I signed in?" probe that falls out of the gate itself.
  *
- * Route order below is load-bearing and Task 8 depends on it: the two
- * pre-auth routes, then the gate, then the authenticated write, then every
- * GET. Task 8 adds a static-file fallback AFTER all of them.
+ * Route order below is load-bearing: the two pre-auth routes, then the
+ * gate, then the authenticated write, then every GET. This is now the body
+ * of `handleApiRoute`, reachable only for `/api/*` — Task 8's dispatcher
+ * (at the bottom of this function) sends everything else to ./static.ts
+ * instead, which requires no credential at all.
  *
  * /api/health is gated on GET the same as every other route is gated on
  * its own method —
@@ -579,16 +582,28 @@ export function createRouter(
   trackingConfig: TrackingConfig | null = null,
   fetchImpl?: typeof fetch,
   vapidConfig: VapidConfig | null = null,
+  // Task 8: where the built client lives. Defaults to sync/public resolved
+  // from ./static.ts's own module location (never the process cwd — see
+  // that module's doc comment). Tests pass a fixture directory instead.
+  staticRoot: string = defaultStaticRoot(),
 ): (request: Request) => Promise<Response> {
   // One counter per router, created here rather than taken as a parameter:
   // production builds exactly one router, and giving each call its own
   // instance keeps tests from sharing a window and becoming order-dependent.
   const sessionLimiter = createFixedWindowLimiter();
 
-  return async (request: Request): Promise<Response> => {
-    const url = new URL(request.url);
-    const path = url.pathname;
+  // Built once per router, same reasoning as sessionLimiter above: the
+  // one-time "does STATIC_ROOT even exist" warning (./static.ts) must fire
+  // once at startup, not on every request.
+  const serveStaticRequest = createStaticHandler(staticRoot);
 
+  /**
+   * Everything that was, before Task 8, this function's entire body —
+   * unchanged in content, only moved. `path` is guaranteed by the
+   * dispatcher below to be `/api` or to start with `/api/`; nothing here
+   * needed to change to keep that guarantee true.
+   */
+  async function handleApiRoute(request: Request, url: URL, path: string): Promise<Response> {
     if (path === '/api/health' && request.method === 'GET') {
       return handleHealth(pool);
     }
@@ -675,5 +690,33 @@ export function createRouter(
     }
 
     return json({ error: 'not found' }, 404);
+  }
+
+  /**
+   * The dispatcher, and the whole of what Task 8 adds at this level.
+   * `/api` and every `/api/*` path go to handleApiRoute above — byte for
+   * byte the same routing, same auth gate, same final 404 as before this
+   * task. Anything else is a static asset or a client-side route and goes
+   * to ./static.ts, which requires no credential.
+   *
+   * The order here is load-bearing (pre-flight FINDING 2): if this
+   * `isApiPath` check were removed, or the two branches swapped, an
+   * unauthenticated `GET /api/inbox` would reach the static handler first
+   * and come back 200-with-index.html (nothing about "/api/inbox" looks
+   * like a non-HTML asset, so it would hit the SPA fallback) instead of
+   * 401. tests/static-routing.test.ts's "does not shadow /api/*" cases
+   * fail immediately under that mutation — see task-8-report.md for the
+   * exact reasoning.
+   */
+  return async (request: Request): Promise<Response> => {
+    const url = new URL(request.url);
+    const path = url.pathname;
+    const isApiPath = path === '/api' || path.startsWith('/api/');
+
+    if (isApiPath) {
+      return handleApiRoute(request, url, path);
+    }
+
+    return serveStaticRequest(request.method, path);
   };
 }
