@@ -153,3 +153,72 @@ export function emptyStateFor(
     description: `${base.description}${accountScope(account)}`,
   };
 }
+
+/**
+ * The other emptiness: a SEARCH that returned nothing.
+ *
+ * Lives beside `emptyStateFor` rather than in its own file because it is
+ * the same problem with the same shape, and the two must not drift in
+ * voice: a zero-result search has the same two indistinguishable causes a
+ * zero-row folder does, and `everSynced` is the same session-scoped proxy
+ * for telling them apart.
+ *
+ *  - The folder has produced mail and none of it matched. That is a fact
+ *    about the QUERY, and the only case where "No matches for grant" is a
+ *    true sentence.
+ *  - The folder has never produced a row this session, so there was
+ *    nothing to match against. That is a fact about POSTBOX. Saying "no
+ *    matches" here sends the user away believing their mail does not
+ *    contain a word it certainly does — the most expensive wrong answer
+ *    a search box can give, because it ends the search.
+ *
+ * THE THIRD OBLIGATION, particular to this feature. The server searches
+ * `subject`, `from_name`, `from_email` and `snippet` — but snippets exist
+ * only on mail synced since Plan 7 Task 1, and every row already in the
+ * database has `snippet: null` permanently (backfill was out of scope).
+ * A phrase from the BODY of older mail therefore cannot match, however
+ * certainly it is there. The settled copy is exactly where a user would
+ * otherwise conclude "it isn't in my mail", so that is where the limit is
+ * stated.
+ */
+
+export interface SearchEmptyStateOptions {
+  readonly folder: FolderId;
+  /** Same meaning as `EmptyStateOptions.everSynced`: this folder has
+   *  produced at least one message in this session. */
+  readonly everSynced: boolean;
+}
+
+/**
+ * Title and description for a search that came back with zero rows.
+ *
+ * `query` is echoed verbatim into both fields. It is user-controlled text
+ * and it leaves here as a PLAIN STRING, so the only thing the caller can
+ * do with it is interpolate it as a JSX text child, which React escapes.
+ * Nothing here builds markup and nothing downstream is given the chance
+ * to (tests/search-empty-state.test.ts holds that).
+ */
+export function searchEmptyStateFor(
+  query: string,
+  { folder, everSynced }: SearchEmptyStateOptions,
+): EmptyStateCopy {
+  const label = FOLDER_LABELS[folder];
+
+  if (!everSynced) {
+    return {
+      title: `Nothing in ${label} to search yet`,
+      description:
+        `${label} has not produced a message in Postbox this session, so there is nothing ` +
+        `for "${query}" to match against yet — this is not the same as finding nothing. ` +
+        `Clear the search once ${label} has filled in, and try again.`,
+    };
+  }
+
+  return {
+    title: `No matches for "${query}" in ${label}`,
+    description:
+      `Postbox searched senders, subjects and previews in ${label}. Previews exist only on ` +
+      'recently synced mail, so a phrase from an older message\u2019s body will not match. ' +
+      'Clear the search to go back to the full list.',
+  };
+}

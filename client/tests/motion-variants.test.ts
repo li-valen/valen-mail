@@ -256,3 +256,26 @@ describe('scanNewEntries: only genuinely-new rows may animate', () => {
     expect([...seen]).toEqual(['a']);
   });
 });
+
+/**
+ * TRANSFORMS COMPOSE; the tokens must therefore be read as a TOTAL.
+ *
+ * `<Settle groupCount>` renders a `motion.div` whose direct
+ * `<SettleGroup>` children are also `motion.div`s, and a `translateY` on
+ * both puts the child at the SUM of the two — 12px of travel from a
+ * system that says 6. Caught in the motion review of Plan 7 Task 2 and
+ * fixed by giving the orchestrating parent no transform at all, which is
+ * what these two assertions hold in place.
+ */
+describe('a staggered group entrance travels LIFT_PX in total, not twice it', () => {
+  it('the orchestrating parent contributes no transform of its own', () => {
+    const parent = settleGroupVariantsFor(false, 3);
+    expect(parent.hidden.transform).toBeUndefined();
+    expect(parent.visible.transform).toBeUndefined();
+  });
+
+  it('the group itself carries the whole lift', () => {
+    expect(groupItemVariantsFor(false).hidden.transform).toBe(`translateY(${LIFT_PX}px)`);
+    expect(groupItemVariantsFor(false).visible.transform).toBe('translateY(0px)');
+  });
+});

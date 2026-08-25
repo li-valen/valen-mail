@@ -177,7 +177,7 @@ describe('the surfaces Plan 7 named are actually wired up', () => {
   const WIRED: ReadonlyArray<{ readonly file: string; readonly needle: RegExp; readonly what: string }> = [
     { file: 'src/AppShell.tsx', needle: /layoutId=/, what: 'sidebar selection pill (shared element)' },
     { file: 'src/AppShell.tsx', needle: /ease-drawer/, what: 'mobile drawer + scrim curve' },
-    { file: 'src/App.tsx', needle: /<Settle key={view}/, what: 'view transition' },
+    { file: 'src/App.tsx', needle: /<Settle key={`sent-/, what: 'post-send confirmation entrance' },
     { file: 'src/components/InboxList.tsx', needle: /groupCount=/, what: 'inbox day-group cascade' },
     { file: 'src/components/OpensFeed.tsx', needle: /isNew \?/, what: 'only-new rail rows animate' },
     { file: 'src/components/MessageView.tsx', needle: /<Panel/, what: 'reader open' },
@@ -190,6 +190,26 @@ describe('the surfaces Plan 7 named are actually wired up', () => {
     const entry = Object.entries(sources).find(([path]) => path.endsWith(file));
     expect(entry, `${file} not found in the glob`).toBeDefined();
     expect(stripComments(entry![1])).toMatch(needle);
+  });
+
+  /**
+   * The counterpart to every row above: one entrance this file used to
+   * REQUIRE, and now forbids.
+   *
+   * `<Settle key={view}>` wrapped the whole content column, InboxList's
+   * loading branch included. That made arriving at a folder from Opens or
+   * from the composer fade the SKELETON in over 180ms, while clicking
+   * between folders — which does not change `view` — showed it on the
+   * next frame: one gesture, two feelings, and the slower one directly
+   * contradicts the skeleton rule asserted immediately below. Every
+   * branch animates its own arrival instead (the `<Panel>` and
+   * `groupCount=` rows above are those entrances), so nothing was lost by
+   * removing it.
+   */
+  it('the view swap does NOT re-wrap the content column in a keyed entrance', () => {
+    const entry = Object.entries(sources).find(([path]) => path.endsWith('src/App.tsx'));
+    expect(entry).toBeDefined();
+    expect(stripComments(entry![1])).not.toMatch(/<Settle key={view}/);
   });
 
   it('the inbox skeleton is deliberately NOT animated', () => {

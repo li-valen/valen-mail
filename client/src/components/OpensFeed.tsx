@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { motion, useReducedMotion } from 'motion/react';
 import type { OpenEvent } from '../api';
-import { Settle, railRowVariantsFor, scanNewEntries } from '../motion';
+import { DURATION_MS, Settle, railRowVariantsFor, scanNewEntries } from '../motion';
 import type { MotionVariants } from '../motion';
 import type { OpensLoadState } from '../useOpensFeed';
 import { Card, CardHeader } from '../ui/Card';
@@ -12,7 +12,12 @@ import { EmptyState } from '../ui/EmptyState';
 import { Skeleton } from '../ui/Skeleton';
 import { ROW_FOCUS } from './MessageRow';
 import { ReadState } from './ReadState';
-import { expandedDetailFor, formatOpenRowSentence, selfCountLine } from './openEvents';
+import {
+  expandedDetailFor,
+  formatOpenRowLead,
+  formatRelativeTime,
+  selfCountLine,
+} from './openEvents';
 
 /**
  * The Recent Opens feed body, and the place the honesty requirement
@@ -475,8 +480,24 @@ function OpenEntry({ event, now, onOpen, variants, isNew }: OpenEntryProps) {
           <ReadState classification={event.classification} />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm text-neutral-900 dark:text-foreground">
-            {formatOpenRowSentence(event, now)}
+          {/* THE TIME GETS ITS OWN COLUMN, and that is the whole of this
+              change. As one truncating sentence the row read
+              `li.valen.008@gmail.com opened "…` in a 320px rail: the
+              recipient (nearly always the same address, and therefore the
+              least informative part) consumed the width, and both the
+              subject and the time — the two things the row exists to say
+              — were the ones cut. Pinning the time right and truncating
+              only the lead means the "when" is never the casualty.
+              ./openEvents.ts's `formatOpenRowSentence` still composes the
+              same two halves, so there is one definition of this row's
+              text, not two. */}
+          <span className="flex items-baseline gap-2">
+            <span className="min-w-0 flex-1 truncate text-sm text-neutral-900 dark:text-foreground">
+              {formatOpenRowLead(event)}
+            </span>
+            <span className="shrink-0 font-mono text-xs tabular-nums text-neutral-500 dark:text-muted-foreground">
+              {formatRelativeTime(event.occurredAt, now)}
+            </span>
           </span>
           {/* Collapsed to zero height by default; grows on hover OR
               keyboard focus of the button above (see this function's own
@@ -484,9 +505,32 @@ function OpenEntry({ event, now, onOpen, variants, isNew }: OpenEntryProps) {
               chosen over a popover). Never removed from the DOM, so it
               is already part of the button's accessible name for
               assistive tech even while visually collapsed. */}
-          <span className="grid grid-rows-[0fr] transition-[grid-template-rows] duration-150 ease-out group-hover:grid-rows-[1fr] group-focus-visible:grid-rows-[1fr]">
+          {/* PLAN 7 TASK 3 — the OPENING is a layout change, the ANIMATION
+              is not.
+
+              This used to be `transition-[grid-template-rows]`, which
+              animates a layout property: the browser re-runs layout for
+              the subtree on every frame of the reveal, and it did so with
+              an `ease-out` that belongs to no curve in
+              src/motion/tokens.ts. On a feed that can hold fifty rows
+              that is the one property Plan 7's Global Constraints
+              single out.
+
+              The grid row still snaps from `0fr` to `1fr` — one reflow,
+              on the frame the pointer lands, which is exactly when a
+              reflow is free — and the MOTION is carried entirely by the
+              inner block's opacity and translate. Cheaper, and crisper to
+              look at than a height tween: the space is simply there, and
+              the text arrives into it. `DURATION_MS.hover` and
+              `ease-out-strong` are the system's own, and
+              `motion-reduce:transition-none` removes the transition
+              rather than shortening it. */}
+          <span className="grid grid-rows-[0fr] group-hover:grid-rows-[1fr] group-focus-visible:grid-rows-[1fr]">
             <span className="overflow-hidden">
-              <span className="flex items-start gap-1.5 pb-0.5 pt-1.5 text-xs text-neutral-500 dark:text-muted-foreground">
+              <span
+                className="flex -translate-y-1 items-start gap-1.5 pb-0.5 pt-1.5 text-xs text-neutral-500 opacity-0 transition-[opacity,transform] ease-out-strong motion-reduce:transition-none group-hover:translate-y-0 group-hover:opacity-100 group-focus-visible:translate-y-0 group-focus-visible:opacity-100 dark:text-muted-foreground"
+                style={{ transitionDuration: `${DURATION_MS.hover}ms` }}
+              >
                 <User
                   className="mt-0.5 h-3 w-3 shrink-0 text-neutral-400 dark:text-muted-foreground"
                   aria-hidden="true"

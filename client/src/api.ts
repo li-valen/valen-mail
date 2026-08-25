@@ -22,6 +22,7 @@
 
 import { buildInboxParams } from './inboxFilters';
 import type { FolderId } from './inboxFilters';
+import { buildSearchParams } from './searchQuery';
 
 const REQUEST_INIT: RequestInit = { credentials: 'same-origin' };
 
@@ -241,6 +242,53 @@ export async function getInbox(
   const messages = isRecord(body) && Array.isArray(body.messages) ? body.messages : [];
   return {
     messages: keepValid(messages, isInboxMessage, 'inbox message(s)'),
+    nextCursor: isRecord(body) ? parseNextCursor(body.nextCursor) : null,
+  };
+}
+
+/**
+ * One free-text search over the unified inbox.
+ *
+ * `q` is the raw box contents; `getSearch` clamps it on the way out (see
+ * ./searchQuery.ts's `buildSearchParams`). The other three fields are the
+ * SAME filter+cursor bundle `InboxRequest` carries, for the same
+ * structural reason: /api/search reuses /api/inbox's keyset cursor
+ * verbatim, so a paged search that forwards the cursor without its filter
+ * pages into a different result set with an ordinary 200.
+ */
+export interface SearchRequest {
+  readonly q: string;
+  readonly limit: number;
+  /** Sent ALWAYS, default included — unlike `InboxRequest.folder`. An
+   *  absent `folder` means "every folder" to this route. */
+  readonly folder?: FolderId;
+  readonly account?: string | null;
+  readonly cursor?: InboxCursor | null;
+}
+
+/**
+ * Searches the unified inbox, newest first.
+ *
+ * Returns an `InboxPage` — the SAME envelope and the SAME row shape as
+ * `getInbox`, because sync/src/api/search.ts is deliberately /api/inbox
+ * with one more WHERE clause on it (same `getUnifiedInbox`, same
+ * `nextCursorFrom`). That is what lets components/InboxList.tsx render
+ * and page search results with the code it already has rather than a
+ * parallel list.
+ *
+ * Throws ApiError on any non-2xx, like every other function here. A 400
+ * is reachable only through a bug: an empty or over-long `q` is what the
+ * server refuses, and `buildSearchParams` cannot emit an over-long one
+ * while `InboxList` never calls this with an empty one.
+ */
+export async function getSearch(
+  request: SearchRequest,
+  fetchImpl: typeof fetch = fetch,
+): Promise<InboxPage> {
+  const body = await getJson(`/api/search?${buildSearchParams(request)}`, fetchImpl);
+  const messages = isRecord(body) && Array.isArray(body.messages) ? body.messages : [];
+  return {
+    messages: keepValid(messages, isInboxMessage, 'search result(s)'),
     nextCursor: isRecord(body) ? parseNextCursor(body.nextCursor) : null,
   };
 }

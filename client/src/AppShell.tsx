@@ -4,6 +4,7 @@ import { Activity, Mailbox, Menu, SquarePen, X } from 'lucide-react';
 import { motion, useReducedMotion } from 'motion/react';
 
 import AccountList from './components/AccountList';
+import SearchBar from './components/SearchBar';
 import { DURATION_MS, navPillTransitionFor } from './motion';
 import type { AccountSummary } from './accountRoster';
 import { FOLDER_ICONS } from './folderIcons';
@@ -29,9 +30,24 @@ import { cn } from './ui/cn';
  *  - **Buttons, not `<Link>`s.** Plunk navigates with Next.js routing.
  *    Postbox has no router dependency, so nav items are `<button>`s
  *    carrying `aria-current="page"` for the active one.
- *  - **No project switcher, no `⌘K`, no user dropdown.** Postbox is a
- *    single-user, single-project client; none of those three has anything
- *    to switch between.
+ *  - **No project switcher and no user dropdown.** Postbox is a
+ *    single-user, single-project client; neither has anything to switch
+ *    between. (Plunk's `⌘K` command palette is a third thing this file
+ *    used to list here as a non-feature. Plan 7 Task 3 gave the same
+ *    chord a narrower job — focus the search field — so the shortcut is
+ *    back, and only the palette behind it is not. See
+ *    components/SearchBar.tsx.)
+ *  - **ONE top bar, at every width.** Plunk's `h-16` topbar is
+ *    `lg:hidden` — a mobile-only strip holding a hamburger — and above
+ *    `lg:` its content column simply began at the page edge, leaving the
+ *    sidebar's own `h-16` brand header with nothing to line up against.
+ *    Plan 7 Task 3 needed a home for the search field at every width, and
+ *    a top bar that exists at every width is that home AND the fix for
+ *    the missing band: the two headers now form one continuous 64px rule
+ *    across the app. Its inner content carries the SAME
+ *    `max-w-5xl … px-4 sm:px-6 lg:px-8` gutters as the content column
+ *    below it, so the search field's left edge sits on the same vertical
+ *    line as the first row of mail.
  *  - **`h-dvh`, not `h-screen`.** `100vh` is wrong on mobile Safari while
  *    the address bar is showing, which is the one browser this app is
  *    installed as a PWA on.
@@ -170,22 +186,15 @@ function NavPill({ scope }: { readonly scope: SidebarScope }) {
 const SECTION_TITLE_CLASS =
   'px-3 mb-2 text-xs font-semibold text-neutral-500 uppercase tracking-wider dark:text-muted-foreground';
 
-function Wordmark({ size }: { readonly size: 'sm' | 'md' }) {
+/** One size, as of Plan 7 Task 3: the `sm` variant existed only for the
+ *  mobile top bar's breadcrumb, and the search field took that space. */
+function Wordmark() {
   return (
     <div className="flex items-center gap-2">
-      <div
-        className={cn(
-          'rounded-md bg-neutral-900 text-white dark:bg-primary dark:text-primary-foreground flex items-center justify-center',
-          size === 'md' ? 'h-7 w-7' : 'h-6 w-6',
-        )}
-      >
-        <Mailbox className={size === 'md' ? 'h-4 w-4' : 'h-3.5 w-3.5'} aria-hidden="true" />
+      <div className="flex h-7 w-7 items-center justify-center rounded-md bg-neutral-900 text-white dark:bg-primary dark:text-primary-foreground">
+        <Mailbox className="h-4 w-4" aria-hidden="true" />
       </div>
-      <span
-        className={cn('font-bold text-neutral-900 dark:text-foreground', size === 'md' ? 'text-xl' : 'text-lg')}
-      >
-        Postbox
-      </span>
+      <span className="text-xl font-bold text-neutral-900 dark:text-foreground">Postbox</span>
     </div>
   );
 }
@@ -199,6 +208,23 @@ interface FolderNavProps {
   /** False while the Opens view is showing: no folder is the current page
    *  then, and marking one anyway would make `aria-current` a lie. */
   readonly isActive: boolean;
+  /**
+   * Whether the travelling pill lives on this list at all, as opposed to
+   * on the Opens item.
+   *
+   * SEPARATE FROM `isActive`, and the difference is exactly the composer.
+   * `aria-current="page"` must come off every folder while the composer
+   * is open — none of them IS the current page then. The PILL is a
+   * different claim: it marks where the nav selection will be when the
+   * composer closes, and Compose is explicitly "not a place in the
+   * mailbox" (see this file's `ViewId` note). Unmounting the pill for the
+   * duration would destroy the shared element, so the next one would pop
+   * into existence with no travel at all — the one path where "a single
+   * thing moves" stopped being true. It stays put instead, under the
+   * filled Compose button that is already the loudest thing in the
+   * sidebar while it is open.
+   */
+  readonly hasPill: boolean;
   readonly onSelect: (folder: FolderId) => void;
   readonly scope: SidebarScope;
 }
@@ -206,7 +232,7 @@ interface FolderNavProps {
 /** A real list of real buttons — `<ul>` of `<li><button>` — so assistive
  *  tech announces "5 items" and the arrow-key/Tab behaviour is the
  *  platform's, not a re-implementation of it. */
-function FolderNav({ folder, isActive, onSelect, scope }: FolderNavProps) {
+function FolderNav({ folder, isActive, hasPill, onSelect, scope }: FolderNavProps) {
   return (
     <ul className="space-y-1">
       {FOLDER_IDS.map((id) => {
@@ -220,7 +246,7 @@ function FolderNav({ folder, isActive, onSelect, scope }: FolderNavProps) {
               aria-current={isCurrent ? 'page' : undefined}
               className={navItemClass(isCurrent)}
             >
-              {isCurrent && <NavPill scope={scope} />}
+              {hasPill && id === folder && <NavPill scope={scope} />}
               <Icon className="h-5 w-5 shrink-0" aria-hidden="true" />
               {FOLDER_LABELS[id]}
             </button>
@@ -242,6 +268,11 @@ export interface AppShellProps {
   readonly account: string | null;
   readonly onAccountChange: (account: string | null) => void;
   readonly accounts: readonly AccountSummary[];
+  /** The raw search-box contents. Owned by App.tsx alongside folder and
+   *  account, for the identical reason: the top bar renders it and the
+   *  list fetches from it, so neither of those two can own it. */
+  readonly searchValue: string;
+  readonly onSearchChange: (value: string) => void;
   /** Rendered in the sidebar's bottom block, where Plunk puts Settings and
    *  the account menu. Postbox puts the theme control and the
    *  notifications control there (App.tsx). */
@@ -287,6 +318,8 @@ export default function AppShell({
   account,
   onAccountChange,
   accounts,
+  searchValue,
+  onSearchChange,
   sidebarFooter,
   isBusy = false,
   contentRef,
@@ -315,6 +348,16 @@ export default function AppShell({
 
   const isInbox = view === 'inbox';
   const heading = isInbox ? headingFor(folder, account) : VIEW_TITLES[view];
+  // Where the travelling pill lives — see FolderNavProps.hasPill. Opens
+  // is the only view that moves it off the folder list; Compose leaves it
+  // wherever it was.
+  const isPillOnOpens = view === 'opens';
+  // What a search WOULD be scoped to, which is not the same string as the
+  // page heading: `heading` says "Opens" or "New message" while those
+  // views are up, but the search field still searches the selected
+  // mailbox, and a placeholder that named the current VIEW would be a
+  // claim about scope that is simply untrue.
+  const searchScope = headingFor(folder, account);
 
   /**
    * A function rather than a single JSX value because the sidebar is
@@ -329,7 +372,7 @@ export default function AppShell({
   const renderSidebar = (scope: SidebarScope, composeButtonRef?: Ref<HTMLButtonElement>): ReactNode => (
     <>
       <div className="h-16 flex items-center justify-between px-6 border-b border-neutral-200 dark:border-border shrink-0">
-        <Wordmark size="md" />
+        <Wordmark />
         <button
           type="button"
           onClick={() => setMobileMenuOpen(false)}
@@ -364,7 +407,13 @@ export default function AppShell({
           short — the groups are already announced by their own headings
           and list semantics. */}
       <nav className="flex-1 px-3 py-4 overflow-y-auto" aria-label="Mailboxes">
-        <FolderNav folder={folder} isActive={isInbox} onSelect={selectFolder} scope={scope} />
+        <FolderNav
+          folder={folder}
+          isActive={isInbox}
+          hasPill={!isPillOnOpens}
+          onSelect={selectFolder}
+          scope={scope}
+        />
 
         <div className="mt-6">
           <p className={SECTION_TITLE_CLASS}>Activity</p>
@@ -376,7 +425,7 @@ export default function AppShell({
                 aria-current={view === 'opens' ? 'page' : undefined}
                 className={navItemClass(view === 'opens')}
               >
-                {view === 'opens' && <NavPill scope={scope} />}
+                {isPillOnOpens && <NavPill scope={scope} />}
                 <Activity className="h-5 w-5 shrink-0" aria-hidden="true" />
                 {VIEW_TITLES.opens}
               </button>
@@ -455,40 +504,66 @@ export default function AppShell({
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="lg:hidden h-16 bg-card border-b border-neutral-200 dark:border-border flex items-center px-4 shrink-0">
-          <button
-            type="button"
-            onClick={() => setMobileMenuOpen(true)}
-            className="p-2 rounded-lg hover:bg-neutral-100 dark:hover:bg-accent transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-          >
-            <Menu className="h-6 w-6 text-neutral-900 dark:text-foreground" aria-hidden="true" />
-            <span className="sr-only">Open menu</span>
-          </button>
-          {/* Below `lg:` the sidebar is a CLOSED DRAWER, so the active
-              folder and account are invisible — the one place a filtered
-              view could look identical to an unfiltered empty one. This
-              is the visible answer to "which folder am I in?" at phone
-              width. `aria-hidden` because the `<h1>` below already
-              announces the very same string. */}
-          <div className="ml-4 flex min-w-0 items-center gap-2" aria-hidden="true">
-            <Wordmark size="sm" />
-            <span className="text-neutral-300 dark:text-muted-foreground shrink-0">/</span>
-            <span className="truncate text-sm font-semibold text-neutral-900 dark:text-foreground">
+        {/* PLAN 7 TASK 3 — ONE top bar, at every width. See this file's
+            header for why it replaced Plunk's `lg:hidden` strip. Its
+            inner wrapper repeats the content column's own
+            `max-w-5xl … px-4 sm:px-6 lg:px-8` gutters, which is what puts
+            the search field's left edge on the same vertical line as the
+            first row of mail below it. */}
+        <header className="h-16 shrink-0 border-b border-neutral-200 bg-card dark:border-border">
+          <div className="mx-auto flex h-full max-w-5xl items-center gap-3 px-4 sm:px-6 lg:px-8">
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen(true)}
+              className="shrink-0 p-2 rounded-lg lg:hidden hover:bg-neutral-100 dark:hover:bg-accent transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            >
+              <Menu className="h-6 w-6 text-neutral-900 dark:text-foreground" aria-hidden="true" />
+              <span className="sr-only">Open menu</span>
+            </button>
+
+            <SearchBar value={searchValue} onChange={onSearchChange} scopeLabel={searchScope} />
+
+            {/* The selection, restated where there is room for it — the
+                right end of the bar above `lg:`, where the eye lands after
+                the search field and where Plunk put its user menu.
+                `aria-hidden` because the `<h1>` in the content column
+                already announces this exact string; this is the sighted
+                reader's copy of it, not a second announcement. Below
+                `lg:` there is no room beside the field, and the `<h1>`
+                becomes visible instead. */}
+            <p
+              aria-hidden="true"
+              className="hidden shrink-0 truncate text-sm font-medium text-neutral-500 dark:text-muted-foreground lg:block"
+            >
               {heading}
-            </span>
+            </p>
           </div>
-        </div>
+        </header>
 
         <main ref={contentRef} className="flex-1 overflow-y-auto" aria-busy={isBusy}>
-          <div className="max-w-5xl mx-auto px-4 py-4 sm:px-6 sm:py-6 lg:px-8 lg:py-8">
-            {/* Visually hidden, not absent: the list's day rules are
-                `<h2>`s and the opens feed's section heading is an `<h2>`,
-                so without this a screen reader's outline would start at
-                level 2. Plunk's shell has no visible page title in the
-                content column either. It names the SELECTION, not just
-                the view, so changing folder or account changes what this
-                announces. */}
-            <h1 className="sr-only">{heading}</h1>
+          {/* `lg:py-6`, down from `lg:py-8`: there is a 64px bar above
+              this now, and 32px of column padding under it put the first
+              day rule almost a hundred pixels from the top of the
+              viewport. The rail's sticky offset in components/OpensRail.tsx
+              is derived from this number and moves with it. */}
+          <div className="max-w-5xl mx-auto px-4 py-4 sm:px-6 sm:py-5 lg:px-8 lg:py-6">
+            {/* Never absent: the list's day rules are `<h2>`s and the
+                opens feed's section heading is an `<h2>`, so without this
+                a screen reader's outline would start at level 2. It names
+                the SELECTION, not just the view, so changing folder or
+                account changes what it announces.
+
+                VISIBLE below `lg:`, hidden above it. Below `lg:` the
+                sidebar is a closed drawer and the top bar's copy of the
+                selection has given its space to the search field, so this
+                is the only visible answer to "which folder am I in?" —
+                the one place a filtered view could otherwise look
+                identical to an unfiltered empty one. */}
+            <div className="mb-4 lg:mb-0">
+              <h1 className="truncate text-base font-semibold text-neutral-900 dark:text-foreground lg:sr-only">
+                {heading}
+              </h1>
+            </div>
             {children}
           </div>
         </main>

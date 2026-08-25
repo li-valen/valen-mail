@@ -208,9 +208,33 @@ export function describeEvent(event: OpenEvent): EventCopy {
  * tried.
  */
 export function formatOpenRowSentence(event: OpenEvent, now: number): string {
-  const relativeTime = formatRelativeTime(event.occurredAt, now);
+  return `${formatOpenRowLead(event)} · ${formatRelativeTime(event.occurredAt, now)}`;
+}
+
+/**
+ * The WHO-and-WHAT half of the sentence above, without the time.
+ *
+ * Exists because the rail is a 320px column and the row is one truncating
+ * line: `li.valen.008@gmail.com opened "Postbox end-to-end send test" ·
+ * 2h ago` renders there as `li.valen.008@gmail.com opened "…`, which
+ * loses BOTH facts the row exists to carry. The recipient address is also
+ * the least informative part — in this mailbox it is very nearly always
+ * the same address — and it is first, so it eats the width that the
+ * subject and the time needed.
+ *
+ * Splitting the sentence lets OpensFeed.tsx pin the time in its own
+ * right-aligned column, where it cannot be truncated, and truncate only
+ * this half. `formatOpenRowSentence` is now built FROM this rather than
+ * beside it, so the two spellings of the same row cannot drift.
+ *
+ * Reads exactly `recipientEmail` and `subject` — never `deviceClass` or
+ * `os` (see the note above and
+ * tests/opens-rail-static-guards.test.ts) — and returns a plain string,
+ * never markup.
+ */
+export function formatOpenRowLead(event: OpenEvent): string {
   const subjectFragment = event.subject !== null ? ` "${event.subject}"` : '';
-  return `${event.recipientEmail} opened${subjectFragment} · ${relativeTime}`;
+  return `${event.recipientEmail} opened${subjectFragment}`;
 }
 
 /** `expandedDetailFor`'s subject fallback when `event.subject` is `null` —

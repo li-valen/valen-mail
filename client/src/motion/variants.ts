@@ -156,9 +156,19 @@ export function settleGroupVariantsFor(isReduced: boolean, groupCount: number): 
   if (isReduced) return removedVariants();
   const isStaggered = groupCount > 1 && groupCount <= MAX_STAGGERED_GROUPS;
   return {
-    hidden: { opacity: 0, transform: `translateY(${LIFT_PX}px)` },
+    // NO TRANSFORM ON THE PARENT — and this is a fix, not a preference.
+    // `transform` COMPOSES down the tree: a parent at translateY(6px)
+    // with children at translateY(6px) puts each child 12px from its
+    // resting place, so the day groups were travelling twice the
+    // distance LIFT_PX says they do, and no amount of retuning the
+    // token would have found it. The lift belongs to the GROUPS, which
+    // are the things a reader sees arrive; this element only fades and
+    // orchestrates. `opacity` composes too, but multiplicatively and
+    // over the same window — the result is still a fade from nothing to
+    // fully present, which is what it claims to be.
+    hidden: { opacity: 0 },
     visible: {
-      ...AT_REST,
+      opacity: 1,
       transition: {
         duration: seconds(DURATION_MS.settle),
         ease: EASE.out,

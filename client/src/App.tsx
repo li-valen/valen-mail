@@ -26,6 +26,7 @@ import { Skeleton } from './ui/Skeleton';
 import { cn } from './ui/cn';
 import { Settle } from './motion';
 import { initialViewFromSearch } from './initialView';
+import { useDebouncedQuery } from './useDebouncedQuery';
 import { useOpensFeed } from './useOpensFeed';
 import { useSessionGate } from './useSessionGate';
 
@@ -193,6 +194,15 @@ export default function App() {
   // value that must reach the wire as an absent param rather than an
   // empty one — see inboxFilters.ts's trap 2.
   const [account, setAccount] = useState<string | null>(DEFAULT_FILTER.account);
+  // The RAW search box, updated on every keystroke, and the DEBOUNCED,
+  // clamped query the list actually fetches with. Two values, one owner,
+  // for the same reason folder and account live here: the top bar renders
+  // the field and the list fetches from it, so neither of those two can
+  // own it. The debounce lives in a hook rather than in the field so that
+  // exactly one value in this app is ever "the query", and it is the one
+  // the list and the results banner both read.
+  const [searchInput, setSearchInput] = useState('');
+  const searchQuery = useDebouncedQuery(searchInput);
   const [accounts, setAccounts] = useState<readonly AccountSummary[]>([]);
   // The registry `resolveOpenTarget` (components/openEvents.ts) searches
   // when a Recent-opens row is clicked (task V3, Ask 2) — folded from
@@ -410,6 +420,38 @@ export default function App() {
   );
 
   /**
+   * Typing in the search box.
+   *
+   * STARTING A SEARCH IS NAVIGATION, and is treated as exactly that:
+   * results are mail, mail lives in the list view, and a search run from
+   * the Opens page or from the composer that quietly filtered a list
+   * nobody could see would be the dead interaction this codebase keeps
+   * refusing elsewhere. So the first keystroke of a new search closes the
+   * reader and returns to the list, through the SAME
+   * `canLeaveCompose()` guard a folder click goes through — and if the
+   * user declines to discard their draft, the box does not change either,
+   * so the refusal leaves nothing half-applied.
+   *
+   * Only the FIRST keystroke does this (`searchInput === ''`). Every
+   * subsequent one is refining a search already on screen, and re-running
+   * navigation per character would ask about the draft once per letter.
+   */
+  const handleSearchChange = useCallback(
+    (next: string) => {
+      if (next !== '' && searchInput === '') {
+        if (!canLeaveCompose()) return;
+        isComposeDirtyRef.current = false;
+        leaveReader();
+        setView('inbox');
+      }
+      setSearchInput(next);
+    },
+    [searchInput, canLeaveCompose, leaveReader],
+  );
+
+  const clearSearch = useCallback(() => setSearchInput(''), []);
+
+  /**
    * Restores the list exactly as it was left, and is the whole of what
    * "Back" has to get right.
    *
@@ -465,6 +507,8 @@ export default function App() {
       account={account}
       onAccountChange={changeAccount}
       accounts={accounts}
+      searchValue={searchInput}
+      onSearchChange={handleSearchChange}
       isBusy={gate.status === 'checking'}
       contentRef={contentRef}
       composeRef={composeTriggerRef}
@@ -492,49 +536,61 @@ export default function App() {
 
       {gate.status === 'checking' && <ShellSkeleton />}
 
+      {/* PLAN 7 TASK 3 — both notices SETTLE IN rather than appearing
+          between two frames. They are the app answering something the
+          user just did (a send completed; a Recent-opens row could not be
+          resolved), and an answer that materialises fully-formed at the
+          top of the column reads as a page that reloaded rather than as a
+          reply. `<Settle>` is 180ms of the same fade-and-lift every other
+          arriving surface uses, and it removes itself entirely under
+          `prefers-reduced-motion`.
+
+          Keyed so a SECOND send re-plays it: without the key the element
+          persists across summaries and the new confirmation would swap in
+          silently under an animation that had already run. There is no
+          exit animation, deliberately — dismissing is the user's own
+          action and they do not need it confirmed back to them slowly. */}
       {isAuthorized && sentNotice !== null && (
-        <SentNotice summary={sentNotice} onDismiss={() => setSentNotice(null)} />
+        <Settle key={`sent-${sentNotice.sentCount}-${sentNotice.failedCount}`}>
+          <SentNotice summary={sentNotice} onDismiss={() => setSentNotice(null)} />
+        </Settle>
       )}
 
       {isAuthorized && isOpenNotFoundVisible && (
-        <OpenNotFoundNotice onDismiss={() => setIsOpenNotFoundVisible(false)} />
+        <Settle>
+          <OpenNotFoundNotice onDismiss={() => setIsOpenNotFoundVisible(false)} />
+        </Settle>
       )}
 
       {/*
-        PLAN 7 TASK 2 — the view swap. `key={view}` is what makes this a
-        transition at all: changing view remounts this wrapper, which
-        replays the entrance on whatever is inside it.
+        PLAN 7 TASK 2/3 — the view swap, and why there is NO wrapper here
+        any more.
 
-        THE KEY IS `view` AND NOTHING ELSE, and that is load-bearing in
-        both directions.
+        This block used to be `<Settle key={view} lift={false}>`, one fade
+        replayed on every view change. The motion review caught what that
+        costs: the wrapper also covers InboxList's LOADING branch, so
+        arriving at a folder from Opens or from the composer faded the
+        SKELETON in over 180ms, while clicking between folders — which
+        does not change `view`, so the wrapper never remounted — showed it
+        on the next frame. One gesture, two different feelings depending
+        on where the user came from, and the slower one contradicts the
+        rule the skeleton exists to serve: instant, then smooth.
 
-        It must not include `selected`. InboxList is kept MOUNTED behind
-        the reader on purpose (see the branch below) — that is what makes
-        Back instant and lossless — and folding the reader's open/closed
-        state into this key would unmount it on every open, costing a
-        refetch, every loaded page, and the restored scroll position.
+        Removing it costs nothing, because every branch below already
+        animates its own arrival at the moment its own content is ready:
+        Compose is wrapped in `<Panel>`, MessageView is wrapped in
+        `<Panel>`, OpensView's feed and OpensRail both carry `<Settle>`
+        inside OpensFeed, and InboxList carries `<Settle>` around its
+        resolved list and deliberately NOT around its skeleton. Content
+        now settles when it arrives rather than when the view changes,
+        which is also the more honest signal.
 
-        It must not include `folder`/`account` either, for a subtler
-        reason: remounting InboxList also resets its `syncedFolders`
-        state, which is the client's ONLY evidence that a folder has ever
-        produced a row this session, and therefore the difference between
-        an honest "Trash is empty" and an honest "Trash may not have
-        synced yet" (components/../emptyState.ts's TRAP 3). Folder and
-        account changes get their own, narrower entrance INSIDE InboxList,
-        where remounting the list is not the price of animating it.
-
-        `view` alone happens to be exactly today's mount/unmount boundary
-        — the ternary below already unmounts each branch when the view
-        changes — so this wrapper adds an entrance without moving a single
-        component's lifetime.
-
-        `lift={false}`: fade only, no transform. A resting transform on
-        this element would make it a containing block and silently
-        un-stick OpensRail's `position: sticky` column. The lift lives one
-        level down, inside the message column. See src/motion/variants.ts.
+        It also retires the `lift={false}` workaround: with no wrapper
+        there is no resting transform above OpensRail's `position: sticky`
+        column, so nothing can un-stick it.
       */}
       {isAuthorized && (
-        <Settle key={view} lift={false}>
+        <>
           {view === 'compose' ? (
           // Replaces the list rather than overlaying it, for the same
           // reason MessageView does: writing a message is the whole task
@@ -572,6 +628,8 @@ export default function App() {
                   onAccountsChange={handleAccountsChange}
                   onMessagesChange={handleMessagesChange}
                   onOpenMessage={openMessage}
+                  search={searchQuery}
+                  onClearSearch={clearSearch}
                 />
               </div>
               <OpensRail feed={feed} onOpenEvent={handleOpenEvent} />
@@ -594,7 +652,7 @@ export default function App() {
         ) : (
           <OpensView feed={feed} onOpenEvent={handleOpenEvent} />
         )}
-        </Settle>
+        </>
       )}
     </AppShell>
   );

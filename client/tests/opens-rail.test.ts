@@ -4,6 +4,7 @@ import {
   formatLag,
   formatRelativeTime,
   formatSelfCountLine,
+  formatOpenRowLead,
   formatOpenRowSentence,
   selfCountLine,
   describeEvent,
@@ -558,5 +559,30 @@ describe('resolveOpenTarget — bridging messageId to a loaded row', () => {
     const copy = [...messages];
     resolveOpenTarget(event, messages);
     expect(messages).toEqual(copy);
+  });
+});
+
+/**
+ * The rail row is drawn in two pieces so its time can be pinned to a
+ * right-hand column instead of truncated away (OpensFeed.tsx). These hold
+ * the split honest: the lead is the sentence minus the time, and the
+ * sentence is still built from the lead rather than beside it.
+ */
+describe('formatOpenRowLead — the who-and-what half, without the time', () => {
+  it('is the sentence with the time removed', () => {
+    const event = buildEvent({ token: 'lead-a', subject: 'Re: invoice' });
+    expect(formatOpenRowLead(event)).toBe('someone@example.com opened "Re: invoice"');
+    expect(formatOpenRowSentence(event, ROW_NOW)).toBe(`${formatOpenRowLead(event)} · 5m ago`);
+  });
+
+  it('drops the subject fragment entirely when there is no subject', () => {
+    expect(formatOpenRowLead(buildEvent({ token: 'lead-b', subject: null }))).toBe(
+      'someone@example.com opened',
+    );
+  });
+
+  it('carries an attacker-authored subject through as plain text, never markup', () => {
+    const hostile = '<img src=x onerror=alert(1)>';
+    expect(formatOpenRowLead(buildEvent({ token: 'lead-c', subject: hostile }))).toContain(hostile);
   });
 });

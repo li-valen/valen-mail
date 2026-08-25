@@ -185,8 +185,15 @@ interface TextBodyProps {
  * a plain-text newsletter — from forcing the page sideways at 400px.
  */
 function TextBody({ text }: TextBodyProps) {
+  // `max-w-[68ch]` (Plan 7 Task 3): the reader column is `max-w-5xl`, so
+  // a plain-text message was being set at roughly 150 characters per
+  // line — about twice the width at which the eye reliably finds the
+  // start of the next one, and the reason long plain-text mail read as a
+  // wall. 68 characters sits in the middle of the 45–75 band typography
+  // has settled on. HTML mail is untouched: it renders in its own iframe
+  // under the sender's own layout.
   return (
-    <pre className="overflow-x-auto whitespace-pre-wrap break-words px-4 py-4 font-sans text-sm leading-relaxed text-neutral-800 dark:text-foreground sm:px-6">
+    <pre className="max-w-[68ch] overflow-x-auto whitespace-pre-wrap break-words px-4 py-4 font-sans text-sm leading-relaxed text-neutral-800 dark:text-foreground sm:px-6">
       {text}
     </pre>
   );

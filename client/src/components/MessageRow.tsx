@@ -1,8 +1,10 @@
 import { Paperclip } from 'lucide-react';
 import type { InboxMessage } from '../api';
 import { Badge } from '../ui/Badge';
+import { cn } from '../ui/cn';
 import { formatWhen } from './inboxDates';
 import { messageKey } from './messageBody';
+import { rowLayoutFor } from './messageRowLayout';
 import { isUnread } from './messageFlags';
 
 export interface MessageRowProps {
@@ -19,52 +21,61 @@ export interface MessageRowProps {
 }
 
 /**
- * One row of the unified inbox, restyled onto Plunk's list vocabulary
- * (AGPL-3.0): the `divide-y divide-neutral-100` row list inside a `Card`
- * that `apps/web/src/pages/contacts/index.tsx` uses, with
- * `hover:bg-neutral-50` and a `Badge` for the account label.
+ * One row of the unified inbox.
  *
- * **Anatomy is width-dependent, on purpose.**
- *   - `>= sm` (640px+): one line — sender in a fixed 160px column, subject
- *     taking every remaining pixel, meta (paperclip · account · time)
- *     right-aligned.
- *   - `< sm` (phones): TWO lines, because a fixed sender column starves the
- *     subject at ~400px. Line 1 is sender + meta; line 2 is the subject at
- *     the FULL row width. DOM order stays sender → subject → meta (the
- *     order a screen reader should hear); the visual reflow is done with
- *     flex `order`, so nothing is announced out of sequence.
+ * **TWO ANATOMIES, SPLIT AT `lg:` — and the split is the user's, not a
+ * design preference.** Shown the desktop app they said *"it looks pretty
+ * decent on mac"*; shown a Gmail-mobile screenshot they asked for the
+ * phone layout to become that. So:
  *
- * **No snippet.** `snippet` is always `null` today (task-4-brief.md ground
- * truth: "a known, parked limitation"). This renders the row correctly
- * without one rather than reserving a line for it or writing placeholder
- * text that implies a snippet is coming.
+ *   - **`>= lg` — UNCHANGED.** One line: sender in a fixed 160px column,
+ *     subject taking every remaining pixel, meta (paperclip · account
+ *     chip · time) right-aligned, inside the divided `Card` this list has
+ *     always used. Its borders, spacing and unread expression are exactly
+ *     what shipped before Plan 7 Task 3. The ONE addition is the preview,
+ *     and it is an addition to the subject's own line rather than to the
+ *     row: see the height contract below.
+ *   - **`< lg` — the Gmail-mobile row.** A circular initial avatar, then
+ *     sender with the time right-aligned beside it, then subject and
+ *     preview. No card, no dividers, no rules of any kind: rows are
+ *     separated by nothing but the whitespace inside them, and the only
+ *     rounded thing is the soft press/hover shape. Unread is **weight
+ *     alone** — identical background and identical text colour on every
+ *     row, `font-semibold` on the two lines that carry meaning. The
+ *     borderless treatment lives in InboxList.tsx, which owns the card
+ *     and the dividers this row sits between.
  *
- * **Unread (sender at semibold).** Derived from `message.flags` via
- * `./messageFlags`'s `isUnread` — see that file's doc comment for why this
- * is safe to derive at all, and for the staleness caveat that comes with
- * it. The visually-hidden "Unread." prefix gives screen reader users the
- * same signal the weight gives sighted ones.
+ * **ONE `<button>`, TWO LAYOUT BLOCKS, and only ever one of them live.**
+ * The alternative — a single DOM reshuffled with `display: contents` and
+ * responsive `order` — was rejected for a reason bigger than taste: the
+ * whole point of the correction is that the desktop row must be
+ * verifiably untouched, and a shared DOM makes every mobile tweak a
+ * potential desktop regression. Two blocks under `hidden`/`lg:hidden`
+ * make the desktop markup readable as its own thing. `hidden` is
+ * `display: none`, so the inactive block is out of the accessibility tree
+ * and the tab order too — a screen reader never hears the subject twice.
+ * `data-message-key` stays on the single button, which is what App.tsx
+ * finds to restore focus when the reader closes; two buttons would give
+ * that query two answers.
  *
- * **A BUTTON, as of Plan 6.** Every earlier version of this file was a
- * plain `<li>`, correctly, because there was no reading view to navigate
- * to and focus affordances for a destination that does not exist are a
- * dead end. Task 2 builds that destination, so the row becomes the
- * control that reaches it — a real `<button>` inside the `<li>`, not a
- * `<li onClick>`: a button is in the tab order, announces itself as a
- * control, and gets Enter/Space activation from the platform rather than
- * from a hand-written `onKeyDown` that would have to reimplement both and
- * would still not be announced. The list stays a list; each item now has
- * one control in it.
+ * **THE HEIGHT CONTRACT — why the preview never gets a line of its own.**
+ * Plan 7 Task 1 populated `snippet` for newly-synced mail only, so all
+ * 461 rows in the database today have `snippet: null` permanently. A row
+ * that reserved line three for a preview would render as a blank gap on
+ * every message this user currently owns, and a row that GREW a line when
+ * one arrived would make the list change height under the reader's thumb
+ * as new mail syncs. So the preview extends the SUBJECT's line — "Q3
+ * numbers — Numbers attached, see tab two" — and a row without one is
+ * simply "Q3 numbers". Same height either way, at both breakpoints, and
+ * nothing anywhere reserves space for something that may never come.
+ * ./messageRowLayout.ts owns that resolution and
+ * tests/message-row-layout.test.ts holds it.
  *
- * `data-message-key` is what App.tsx finds this button by when the reader
- * closes, so keyboard focus returns to the row the user opened rather
- * than to the top of the document.
- *
- * **XSS.** `subject`, `from_name`/`from_email`, and `account_id` are
- * attacker-controlled — any Gmail sender picks their own display name and
- * subject line. They are only ever interpolated as JSX text children,
- * which React escapes by default; this file never touches
- * `dangerouslySetInnerHTML`.
+ * **XSS.** `subject`, `from_name`/`from_email`, `snippet` and
+ * `account_id` are attacker-controlled — any sender picks their own
+ * display name, subject line and message body. They are only ever
+ * interpolated as JSX text children, which React escapes; this file never
+ * touches `dangerouslySetInnerHTML`.
  */
 
 /**
@@ -79,10 +90,12 @@ function accountChip(accountId: string): string {
   return accountId.slice(0, 3).toLowerCase();
 }
 
-/** `ring-inset` rather than `ring-offset-2`: these rows sit inside a
- *  `Card`, which is `overflow-hidden`, so an outset ring would be clipped
- *  along the row's full-bleed left and right edges — visible focus that
- *  is only half visible is the failure this avoids.
+/** `ring-inset` rather than `ring-offset-2`: above `lg:` these rows sit
+ *  inside a `Card`, which is `overflow-hidden`, so an outset ring would
+ *  be clipped along the row's full-bleed left and right edges — visible
+ *  focus that is only half visible is the failure this avoids. Below
+ *  `lg:` there is no card, and an inset ring is still the right shape:
+ *  it follows the row's own rounded corners.
  *
  *  Exported (task V3) so OpensFeed.tsx's `OpenEntry` — a button-per-row
  *  inside the SAME kind of `overflow-hidden` `Card`/rail — gets the
@@ -91,10 +104,39 @@ function accountChip(accountId: string): string {
 export const ROW_FOCUS =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset';
 
+/**
+ * The avatar circles, below `lg:` only.
+ *
+ * SIX HAND-CHECKED PAIRS, not a generated ramp. Each entry names its own
+ * dark values explicitly rather than relying on a semantic token, because
+ * there is no semantic token for "one of several peer identities" — the
+ * palette in src/styles.css has exactly one accent. The light halves sit
+ * at the `-100`/`-900` steps and the dark halves at `-950`/`-200`, which
+ * keeps every tone a pale ground with dark text in light mode and the
+ * reverse in dark, at comparable contrast in both.
+ *
+ * DELIBERATELY LOW CHROMA. client/DESIGN.md's thesis reserves saturated
+ * colour for the three read-states, and the opens rail renders those
+ * marks on the same screen. Pale circles at the `-100` step do not
+ * compete with a saturated 8px dot; six mid-tone circles would.
+ *
+ * Kept in this `.tsx` file on purpose: tests/neutral-class-guard.test.ts
+ * scans `src/**\/*.tsx`, so a palette declared here is inside the guard's
+ * reach. Declared in a `.ts` module it would not be.
+ */
+const AVATAR_TONES: readonly string[] = [
+  'bg-rose-100 text-rose-900 dark:bg-rose-950 dark:text-rose-200',
+  'bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200',
+  'bg-emerald-100 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200',
+  'bg-sky-100 text-sky-900 dark:bg-sky-950 dark:text-sky-200',
+  'bg-violet-100 text-violet-900 dark:bg-violet-950 dark:text-violet-200',
+  'bg-teal-100 text-teal-900 dark:bg-teal-950 dark:text-teal-200',
+];
+
 export default function MessageRow({ message, now, onOpen }: MessageRowProps) {
-  const sender = message.from_name || message.from_email || 'Unknown sender';
-  const subject = message.subject || '(no subject)';
+  const { sender, subject, preview, initial, tone } = rowLayoutFor(message);
   const unread = isUnread(message);
+  const when = formatWhen(message.date, now);
 
   return (
     <li>
@@ -111,37 +153,140 @@ export default function MessageRow({ message, now, onOpen }: MessageRowProps) {
            `transition-colors` is Tailwind's 150ms, which is
            DURATION_MS.hover (src/motion/tokens.ts). No `motion-safe:`
            gate: this is a colour change with no movement in it, which is
-           the class of feedback reduced-motion guidance says to keep. */
-        className={`flex w-full cursor-pointer flex-wrap items-center gap-x-3 gap-y-0.5 px-4 py-2 text-left text-sm transition-colors hover:bg-neutral-50 active:bg-neutral-100 dark:hover:bg-accent dark:active:bg-accent ${ROW_FOCUS} sm:h-11 sm:flex-nowrap sm:py-0`}
+           the class of feedback reduced-motion guidance says to keep.
+
+           The tint itself is unchanged at both breakpoints; only its
+           SHAPE differs — `rounded-xl` below `lg:`, where there is no
+           card and the user asked for soft edges, and square above it,
+           where the row is a full-bleed slice of a divided card. */
+        className={cn(
+          'block w-full cursor-pointer text-left text-sm transition-colors',
+          'rounded-xl hover:bg-neutral-50 active:bg-neutral-100 dark:hover:bg-accent dark:active:bg-accent',
+          'lg:rounded-none',
+          ROW_FOCUS,
+        )}
       >
         {unread && <span className="sr-only">Unread. </span>}
 
-        <span
-          className={
-            unread
-              ? 'order-1 min-w-0 flex-1 truncate font-semibold text-neutral-900 dark:text-foreground sm:w-40 sm:flex-none'
-              : 'order-1 min-w-0 flex-1 truncate text-neutral-700 dark:text-muted-foreground sm:w-40 sm:flex-none'
-          }
-        >
-          {sender}
+        {/* ── below lg: the Gmail-mobile row ───────────────────────── */}
+        <span className="flex items-start gap-3 px-3 py-2.5 lg:hidden">
+          {/* `aria-hidden`: the circle is a recognition aid for the eye,
+              and its letter is the first letter of the sender name the
+              next line already announces. Reading "K, Kate Bell" is
+              noise. */}
+          <span
+            aria-hidden="true"
+            className={cn(
+              'flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-semibold',
+              AVATAR_TONES[tone] ?? AVATAR_TONES[0],
+            )}
+          >
+            {initial}
+          </span>
+
+          <span className="min-w-0 flex-1">
+            <span className="flex items-baseline gap-2">
+              {/* UNREAD IS WEIGHT ALONE below `lg:`. Same colour, same
+                  ground, both states — the user asked for the tinted
+                  highlight to go, and a colour step would be the same
+                  claim in a quieter voice. */}
+              <span
+                className={cn(
+                  'min-w-0 flex-1 truncate text-neutral-900 dark:text-foreground',
+                  unread && 'font-semibold',
+                )}
+              >
+                {sender}
+              </span>
+              {message.has_attach && (
+                <>
+                  <Paperclip
+                    className="h-3.5 w-3.5 shrink-0 text-neutral-500 dark:text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <span className="sr-only">Has attachment</span>
+                </>
+              )}
+              <span className="shrink-0 font-mono text-[11px] uppercase text-neutral-500 dark:text-muted-foreground">
+                {accountChip(message.account_id)}
+              </span>
+              <span className="shrink-0 font-mono text-xs tabular-nums text-neutral-500 dark:text-muted-foreground">
+                {when}
+              </span>
+            </span>
+
+            {/* ONE BLOCK, allowed to WRAP to two lines — not one
+                truncating line, and not a dedicated preview line.
+
+                The preview is a continuation of the subject rather than a
+                field of its own, which is what keeps a row's structure
+                independent of whether `snippet` is null. What varies is
+                how much TEXT there is, exactly as it would for a long
+                subject with no snippet at all — so a row with a preview
+                and a row without are not two shapes, they are the same
+                shape with different amounts of text in it. Nothing is
+                ever reserved and nothing is ever blank.
+
+                `line-clamp-2` rather than `truncate` because a phone is
+                ~250px wide here: on one line the subject consumes all of
+                it and the preview renders as three characters and an
+                ellipsis, which is the user's "longer descriptions at the
+                bottom" delivered in name only. Two lines is where the
+                preview becomes something you can actually read. The
+                desktop row keeps its single line, where 500+px means the
+                preview is legible without one. */}
+            <span
+              className={cn(
+                'mt-0.5 line-clamp-2 text-neutral-900 dark:text-foreground',
+                unread && 'font-semibold',
+              )}
+            >
+              {subject}
+              {preview !== null && (
+                <span className="font-normal text-neutral-500 dark:text-muted-foreground">
+                  {' '}
+                  — {preview}
+                </span>
+              )}
+            </span>
+          </span>
         </span>
 
-        <span className="order-3 w-full min-w-0 truncate text-neutral-500 dark:text-muted-foreground sm:order-2 sm:w-auto sm:flex-1">
-          {subject}
-        </span>
+        {/* ── lg and up: the desktop row, unchanged ────────────────── */}
+        <span className="hidden h-11 w-full items-center gap-3 px-4 lg:flex">
+          <span
+            className={
+              unread
+                ? 'w-40 shrink-0 truncate font-semibold text-neutral-900 dark:text-foreground'
+                : 'w-40 shrink-0 truncate text-neutral-700 dark:text-muted-foreground'
+            }
+          >
+            {sender}
+          </span>
 
-        <span className="order-2 flex shrink-0 items-center gap-2 sm:order-3">
-          {message.has_attach && (
-            <>
-              <Paperclip className="h-3.5 w-3.5 text-neutral-400 dark:text-muted-foreground" aria-hidden="true" />
-              <span className="sr-only">Has attachment</span>
-            </>
-          )}
-          <Badge variant="neutral" className="px-1.5 py-0 font-mono text-[10px] font-medium uppercase">
-            {accountChip(message.account_id)}
-          </Badge>
-          <span className="w-16 whitespace-nowrap text-right font-mono text-xs tabular-nums text-neutral-400 dark:text-muted-foreground">
-            {formatWhen(message.date, now)}
+          <span className="min-w-0 flex-1 truncate text-neutral-500 dark:text-muted-foreground">
+            {subject}
+            {preview !== null && (
+              <span className="text-neutral-400 dark:text-muted-foreground"> — {preview}</span>
+            )}
+          </span>
+
+          <span className="flex shrink-0 items-center gap-2">
+            {message.has_attach && (
+              <>
+                <Paperclip
+                  className="h-3.5 w-3.5 text-neutral-400 dark:text-muted-foreground"
+                  aria-hidden="true"
+                />
+                <span className="sr-only">Has attachment</span>
+              </>
+            )}
+            <Badge variant="neutral" className="px-1.5 py-0 font-mono text-[10px] font-medium uppercase">
+              {accountChip(message.account_id)}
+            </Badge>
+            <span className="w-16 whitespace-nowrap text-right font-mono text-xs tabular-nums text-neutral-400 dark:text-muted-foreground">
+              {when}
+            </span>
           </span>
         </span>
       </button>

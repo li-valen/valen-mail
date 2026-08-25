@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ApiError, getInbox } from '../api';
-import type { InboxCursor, InboxMessage } from '../api';
+import { SearchX } from 'lucide-react';
+import { ApiError, getInbox, getSearch } from '../api';
+import type { InboxCursor, InboxMessage, InboxPage } from '../api';
 import type { AccountSummary } from '../accountRoster';
-import { emptyStateFor } from '../emptyState';
+import { emptyStateFor, searchEmptyStateFor } from '../emptyState';
 import { FOLDER_ICONS } from '../folderIcons';
+import { headingFor } from '../inboxFilters';
 import type { FolderId, InboxFilter } from '../inboxFilters';
 import { Alert, AlertDescription } from '../ui/Alert';
 import { Button } from '../ui/Button';
@@ -27,6 +29,27 @@ export type { DayGroup } from './inboxDates';
  *  every page, not just the first. */
 const PAGE_SIZE = 50;
 const SKELETON_ROW_COUNT = 6;
+
+/**
+ * The list surface, at two breakpoints.
+ *
+ * Above `lg:` it is the bordered, shadowed `Card` this list has always
+ * been — the desktop treatment the user looked at and said *"it looks
+ * pretty decent on mac"*, so it is deliberately unchanged. Below `lg:`
+ * there is no card at all: no border, no shadow, no ground of its own,
+ * because the user's Gmail-mobile reference separates rows with
+ * whitespace and nothing else — *"dont do the outlined rectangles for the
+ * inbox, have it be fluid, no lines and rounded"*.
+ *
+ * Applied as overrides on the `Card` atom rather than as a hand-rolled
+ * `<div>` so there is still exactly one place the desktop card's values
+ * are written down.
+ */
+const LIST_SURFACE =
+  'rounded-none border-0 bg-transparent shadow-none lg:rounded-lg lg:border lg:bg-card lg:shadow-sm';
+
+/** The hairlines between rows, desktop only, for the same reason. */
+const LIST_DIVIDERS = 'lg:divide-y lg:divide-neutral-100 dark:lg:divide-border';
 
 type LoadState =
   | { readonly status: 'loading' }
@@ -87,6 +110,21 @@ export interface InboxListProps {
    *  is exactly the defect that task exists to fix. Handed straight to
    *  MessageRow. */
   readonly onOpenMessage: (message: InboxMessage) => void;
+  /**
+   * The DEBOUNCED, clamped search query, or `''` for "not searching".
+   *
+   * Owned by App.tsx alongside folder and account, and a peer of them
+   * rather than a mode: a search is the same list with one more filter
+   * on it, drawn by the same rows, grouped by the same days and paged by
+   * the same cursor. That is true on the wire too — sync/src/api/search.ts
+   * is /api/inbox with one extra WHERE clause — which is why this
+   * component gained a branch rather than a sibling.
+   */
+  readonly search: string;
+  /** Clears the search from inside the results banner. The other two ways
+   *  out (the field's own ✕, and Esc) live in components/SearchBar.tsx;
+   *  this is the one that is visible from where the results are. */
+  readonly onClearSearch: () => void;
 }
 
 /**
@@ -119,8 +157,11 @@ export default function InboxList({
   onAccountsChange,
   onMessagesChange,
   onOpenMessage,
+  search,
+  onClearSearch,
 }: InboxListProps) {
   const { folder, account } = filter;
+  const isSearching = search !== '';
   const [messages, setMessages] = useState<readonly InboxMessage[]>([]);
   const [cursor, setCursor] = useState<InboxCursor | null>(null);
   const [load, setLoad] = useState<LoadState>({ status: 'loading' });
@@ -192,7 +233,7 @@ export default function InboxList({
     setLoadMoreError(null);
     setIsLoadingMore(false);
 
-    getInbox({ limit: PAGE_SIZE, folder, account }).then(
+    fetchPage(search, { limit: PAGE_SIZE, folder, account }).then(
       (page) => {
         if (cancelled) return;
         setMessages(page.messages);
@@ -214,7 +255,12 @@ export default function InboxList({
     return () => {
       cancelled = true;
     };
-  }, [folder, account, attempt]);
+    // `search` is a dependency for the same reason `folder` and `account`
+    // are: it selects which mail the list shows. Including it here is
+    // also what makes a query change bump `selectionRef` below, so a
+    // `loadMore` still in flight for the PREVIOUS query is discarded by
+    // the machinery that already existed rather than by a second one.
+  }, [folder, account, search, attempt]);
 
   const accounts = useMemo(() => summarizeAccounts(messages), [messages]);
 
@@ -242,7 +288,7 @@ export default function InboxList({
     // with a perfectly ordinary 200, so page 2 of Sent would be page 2 of
     // Inbox and nothing would report it. They travel together here, and
     // `InboxRequest` is shaped so they cannot travel apart.
-    getInbox({ limit: PAGE_SIZE, folder, account, cursor }).then(
+    fetchPage(search, { limit: PAGE_SIZE, folder, account, cursor }).then(
       (page) => {
         // TRAP 2. The user may have switched folder/account while this
         // request was in flight — the fetch effect above can cancel its
@@ -271,134 +317,248 @@ export default function InboxList({
         setIsLoadingMore(false);
       },
     );
-  }, [cursor, isLoadingMore, folder, account]);
+  }, [cursor, isLoadingMore, folder, account, search]);
 
   const retry = useCallback(() => setAttempt((previous) => previous + 1), []);
+  // What the polite live region says. Derived, not stored: it has to
+  // change whenever the result set does, and a state variable would be
+  // one more thing that can disagree with what is on screen.
+  //
+  // NAMES THE QUERY AND THE SCOPE. "12 results" alone is useless to
+  // someone who cannot see the field they typed into — the whole point of
+  // announcing is to confirm WHAT was searched as much as how much came
+  // back. `search` is user text and reaches the DOM only as a JSX text
+  // child, which React escapes.
+  const scopeLabel = headingFor(folder, account);
+  const liveMessage = !isSearching
+    ? ''
+    : load.status === 'loading'
+      ? `Searching ${scopeLabel} for ${search}`
+      : load.status === 'error'
+        ? `Search failed for ${search}`
+        : `${messages.length}${cursor !== null ? '+' : ''} ${
+            messages.length === 1 ? 'result' : 'results'
+          } for ${search} in ${scopeLabel}`;
 
-  // NOT animated, deliberately, and this is the one branch in the file
-  // where the right answer is "no motion" (Plan 7 Task 2). The skeleton
-  // is what tells the user their sidebar click registered; anything that
-  // fades it in delays that acknowledgement by exactly as long as the
-  // fade. It appears on the same frame as the click, and the CONTENT that
-  // replaces it is what settles in. Instant, then smooth — never the
-  // other way round.
-  if (load.status === 'loading') {
-    return (
-      <Card aria-busy="true">
-        <p className="sr-only" role="status">
-          Loading messages…
-        </p>
-        <div className="divide-y divide-neutral-100 dark:divide-border" aria-hidden="true">
-          {Array.from({ length: SKELETON_ROW_COUNT }, (_, index) => (
-            <div key={index} className="flex h-11 items-center gap-3 px-4">
-              <Skeleton className="h-3 w-32 shrink-0" />
-              <Skeleton className="h-3 flex-1" />
-              <Skeleton className="h-3 w-10 shrink-0" />
-            </div>
-          ))}
-        </div>
-      </Card>
-    );
-  }
+  /**
+   * The "you are looking at search results" affordance, and the way back.
+   *
+   * ALWAYS RENDERED WHILE SEARCHING — including over the skeleton and
+   * over the error state. A banner that vanished for the ~200ms the next
+   * query is in flight would blink on every pause in typing, and worse,
+   * the way out would disappear at exactly the moment a user who mistyped
+   * wants it.
+   *
+   * The count is deliberately loose: `50+` rather than `50`, because
+   * `nextCursor` is the only thing this client knows about how much more
+   * there is, and reporting a page size as a total is the kind of precise
+   * wrong number that reads as authoritative.
+   */
+  const banner = !isSearching ? null : (
+    <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2">
+      <p className="min-w-0 flex-1 text-sm text-neutral-700 dark:text-muted-foreground">
+        <SearchX className="mr-1.5 inline h-4 w-4 align-[-3px] text-neutral-400 dark:text-muted-foreground" aria-hidden="true" />
+        Results for{' '}
+        <span className="font-semibold text-neutral-900 dark:text-foreground">{search}</span> in{' '}
+        {scopeLabel}
+      </p>
+      <Button variant="outline" size="sm" onClick={onClearSearch}>
+        Clear search
+      </Button>
+    </div>
+  );
 
-  if (load.status === 'error') {
-    return (
-      <Settle>
-        <Alert variant="destructive">
-          <AlertDescription className="flex flex-wrap items-center gap-3">
-            <span>{load.message}</span>
-            <Button variant="outline" size="sm" onClick={retry}>
-              Try again
-            </Button>
-          </AlertDescription>
-        </Alert>
-      </Settle>
-    );
-  }
-
-  if (messages.length === 0) {
-    // Copy per folder AND per account, and honest in both directions —
-    // never "Trash is empty" for a Trash that has never synced, never a
-    // permanent "still syncing…" for one that has. ../emptyState.ts owns
-    // every string and the reasoning behind it.
-    const copy = emptyStateFor(folder, account, { everSynced: syncedFolders.includes(folder) });
-    return (
-      <Settle>
-        <Card>
-          <EmptyState icon={FOLDER_ICONS[folder]} title={copy.title} description={copy.description} />
+  /**
+   * The list's four states, as one function rather than four early
+   * returns: the banner and the live region above have to survive all of
+   * them, and four `return <>{banner}…</>` copies is exactly how two of
+   * them would eventually drift.
+   */
+  function body() {
+    // NOT animated, deliberately, and this is the one branch in the file
+    // where the right answer is "no motion" (Plan 7 Task 2). The skeleton
+    // is what tells the user their sidebar click — or their keystroke —
+    // registered; anything that fades it in delays that acknowledgement
+    // by exactly as long as the fade. It appears on the same frame as the
+    // click, and the CONTENT that replaces it is what settles in.
+    // Instant, then smooth — never the other way round.
+    //
+    // App.tsx no longer wraps this component in a keyed `<Settle>`, which
+    // is what makes the sentence above true from EVERY origin rather than
+    // only from a within-inbox click. See that file's view-swap comment.
+    if (load.status === 'loading') {
+      return (
+        <Card className={LIST_SURFACE} aria-busy="true">
+          <p className="sr-only" role="status">
+            Loading messages…
+          </p>
+          <div className={LIST_DIVIDERS} aria-hidden="true">
+            {Array.from({ length: SKELETON_ROW_COUNT }, (_, index) => (
+              <div key={index} className="flex h-14 items-center gap-3 px-3 lg:h-11 lg:px-4">
+                <Skeleton className="h-9 w-9 shrink-0 rounded-full lg:hidden" />
+                <Skeleton className="hidden h-3 w-32 shrink-0 lg:block" />
+                <Skeleton className="h-3 flex-1" />
+                <Skeleton className="h-3 w-10 shrink-0" />
+              </div>
+            ))}
+          </div>
         </Card>
+      );
+    }
+
+    if (load.status === 'error') {
+      return (
+        <Settle>
+          <Alert variant="destructive">
+            <AlertDescription className="flex flex-wrap items-center gap-3">
+              <span>{load.message}</span>
+              <Button variant="outline" size="sm" onClick={retry}>
+                Try again
+              </Button>
+            </AlertDescription>
+          </Alert>
+        </Settle>
+      );
+    }
+
+    if (messages.length === 0) {
+      // Copy per folder AND per account, and honest in both directions —
+      // never "Trash is empty" for a Trash that has never synced, never a
+      // permanent "still syncing…" for one that has. While a search is
+      // running the same two causes reappear in a different costume ("no
+      // matches" vs "nothing here to match against yet") and
+      // `searchEmptyStateFor` tells them apart with the same
+      // `everSynced` proxy. ../emptyState.ts owns every string.
+      const everSynced = syncedFolders.includes(folder);
+      const copy = isSearching
+        ? searchEmptyStateFor(search, { folder, everSynced })
+        : emptyStateFor(folder, account, { everSynced });
+      return (
+        <Settle>
+          <Card className={LIST_SURFACE}>
+            <EmptyState
+              icon={isSearching ? SearchX : FOLDER_ICONS[folder]}
+              title={copy.title}
+              description={copy.description}
+            />
+          </Card>
+        </Settle>
+      );
+    }
+
+    const groups = groupByDay(messages, now);
+
+    return (
+      /*
+       * PLAN 7 TASK 2 — the mail settling into place.
+       *
+       * NO `key`, ON PURPOSE. This branch is only reachable from
+       * `status: 'loading'` or `'error'`, both of which render something
+       * else entirely, so React mounts this wrapper fresh every time a
+       * selection resolves and the entrance replays without being told to.
+       * Keying it on `{folder, account}` instead would fire one extra time
+       * per folder click — on the render where the folder has changed but
+       * the fetch effect has not yet run, i.e. against the OLD list — and
+       * animate content that is about to be replaced by the skeleton.
+       *
+       * THE STAGGER IS PER DAY GROUP, NEVER PER ROW. A page is 50 messages;
+       * at any per-row delay worth seeing that is seconds of animation and
+       * 50 simultaneously-compositing layers, on the one surface in this app
+       * that must never feel slow. Day groups number two to six, so the
+       * cascade is legible, costs under 200ms end to end, and composites a
+       * handful of layers. `settleGroupVariantsFor` drops the stagger
+       * entirely past its cap rather than compressing it — see
+       * src/motion/tokens.ts's MAX_STAGGERED_GROUPS — and contributes no
+       * transform of its own, so a group travels LIFT_PX rather than twice
+       * it (src/motion/variants.ts).
+       *
+       * "Load more" appends pages WITHOUT re-keying this wrapper, so
+       * already-visible groups never re-animate; a genuinely new day group
+       * mounts under an already-`visible` parent and inherits the entrance,
+       * which is the behaviour we want for free.
+       */
+      <Settle className="space-y-6" groupCount={groups.length}>
+        {groups.map((group) => (
+          // A plain grouping div, not a landmark <section> — the <h2> below
+          // already gives it heading structure, and a labelled <section> per
+          // day would register one ARIA "region" landmark per group,
+          // cluttering landmark navigation for no benefit. `SettleGroup`
+          // renders exactly that div, plus the variant wiring that makes it
+          // one step of the cascade.
+          <SettleGroup key={group.day}>
+            {/* `px-3 lg:px-4` puts the day label on the same vertical
+                line as the text of the rows beneath it at BOTH
+                breakpoints — it used to sit at `px-1`, hanging twelve
+                pixels to the left of every sender name in the card below
+                it. One alignment line down the column. */}
+            <h2 className="mb-2 px-3 text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-muted-foreground lg:px-4">
+              {group.day}
+            </h2>
+            <Card className={LIST_SURFACE}>
+              <ul className={LIST_DIVIDERS}>
+                {group.messages.map((message) => (
+                  <MessageRow
+                    key={messageKey(message)}
+                    message={message}
+                    now={now}
+                    onOpen={onOpenMessage}
+                  />
+                ))}
+              </ul>
+            </Card>
+          </SettleGroup>
+        ))}
+
+        {cursor !== null && (
+          <div className="space-y-3">
+            <Button variant="outline" className="w-full" onClick={loadMore} disabled={isLoadingMore}>
+              {isLoadingMore ? 'Loading…' : 'Load more'}
+            </Button>
+            {loadMoreError !== null && (
+              <Alert variant="destructive">
+                <AlertDescription>{loadMoreError}</AlertDescription>
+              </Alert>
+            )}
+          </div>
+        )}
       </Settle>
     );
   }
-
-  const groups = groupByDay(messages, now);
 
   return (
-    /*
-     * PLAN 7 TASK 2 — the mail settling into place.
-     *
-     * NO `key`, ON PURPOSE. This branch is only reachable from
-     * `status: 'loading'` or `'error'`, both of which render something
-     * else entirely, so React mounts this wrapper fresh every time a
-     * selection resolves and the entrance replays without being told to.
-     * Keying it on `{folder, account}` instead would fire one extra time
-     * per folder click — on the render where the folder has changed but
-     * the fetch effect has not yet run, i.e. against the OLD list — and
-     * animate content that is about to be replaced by the skeleton.
-     *
-     * THE STAGGER IS PER DAY GROUP, NEVER PER ROW. A page is 50 messages;
-     * at any per-row delay worth seeing that is seconds of animation and
-     * 50 simultaneously-compositing layers, on the one surface in this app
-     * that must never feel slow. Day groups number two to six, so the
-     * cascade is legible, costs under 200ms end to end, and composites a
-     * handful of layers. `settleGroupVariantsFor` drops the stagger
-     * entirely past its cap rather than compressing it — see
-     * src/motion/tokens.ts's MAX_STAGGERED_GROUPS.
-     *
-     * "Load more" appends pages WITHOUT re-keying this wrapper, so
-     * already-visible groups never re-animate; a genuinely new day group
-     * mounts under an already-`visible` parent and inherits the entrance,
-     * which is the behaviour we want for free.
-     */
-    <Settle className="space-y-6" groupCount={groups.length}>
-      {groups.map((group) => (
-        // A plain grouping div, not a landmark <section> — the <h2> below
-        // already gives it heading structure, and a labelled <section> per
-        // day would register one ARIA "region" landmark per group,
-        // cluttering landmark navigation for no benefit. `SettleGroup`
-        // renders exactly that div, plus the variant wiring that makes it
-        // one step of the cascade.
-        <SettleGroup key={group.day}>
-          <h2 className="mb-2 px-1 text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-muted-foreground">
-            {group.day}
-          </h2>
-          <Card>
-            <ul className="divide-y divide-neutral-100 dark:divide-border">
-              {group.messages.map((message) => (
-                <MessageRow
-                  key={messageKey(message)}
-                  message={message}
-                  now={now}
-                  onOpen={onOpenMessage}
-                />
-              ))}
-            </ul>
-          </Card>
-        </SettleGroup>
-      ))}
-
-      {cursor !== null && (
-        <div className="space-y-3">
-          <Button variant="outline" className="w-full" onClick={loadMore} disabled={isLoadingMore}>
-            {isLoadingMore ? 'Loading…' : 'Load more'}
-          </Button>
-          {loadMoreError !== null && (
-            <Alert variant="destructive">
-              <AlertDescription>{loadMoreError}</AlertDescription>
-            </Alert>
-          )}
-        </div>
-      )}
-    </Settle>
+    <>
+      {/* PERMANENTLY MOUNTED, not conditional on `isSearching`. A live
+          region announces CHANGES to its own contents, so one that mounts
+          at the same moment it gains text is a region assistive tech was
+          not watching when the text arrived — the first search of a
+          session, which is the one that most needs announcing, would be
+          silent. Empty while nothing is being searched. */}
+      <p className="sr-only" role="status" aria-live="polite">
+        {liveMessage}
+      </p>
+      {banner}
+      {body()}
+    </>
   );
+}
+
+/** One page of whatever the list is currently showing: the unfiltered
+ *  folder, or a search within it.
+ *
+ *  Both answer the SAME `InboxPage` shape, which is not a coincidence to
+ *  rely on quietly — sync/src/api/search.ts reuses /api/inbox's own
+ *  `getUnifiedInbox`, `nextCursorFrom` and folder resolution, so the two
+ *  routes order and paginate identically by construction. That is what
+ *  lets one component render, group and page both. */
+function fetchPage(
+  search: string,
+  request: {
+    readonly limit: number;
+    readonly folder: FolderId;
+    readonly account: string | null;
+    readonly cursor?: InboxCursor | null;
+  },
+): Promise<InboxPage> {
+  if (search === '') return getInbox(request);
+  return getSearch({ ...request, q: search });
 }
