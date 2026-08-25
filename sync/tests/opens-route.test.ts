@@ -73,6 +73,13 @@ describe('GET /api/opens', () => {
       classification: 'open',
       deviceClass: null,
       os: null,
+      // Required since the mint contract widened: every token carries the
+      // sending account and the real RFC Message-ID of the mail it rode in,
+      // which is what lets the client resolve an open back to its message.
+      // isValidOpenEvent drops an event missing either, so a fixture without
+      // them is silently filtered and this route returns [].
+      accountId: 'primary',
+      messageId: '<abc@postbox.test>',
     };
     const fetchImpl = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ opens: [event] }), { status: 200 }),
