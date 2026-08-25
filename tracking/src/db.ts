@@ -160,3 +160,51 @@ export async function recordOpen(input: RecordOpenInput): Promise<void> {
           < ${MAX_OPENS_PER_TOKEN}::int
   `;
 }
+
+export interface OpenRow {
+  readonly token: string;
+  readonly recipientEmail: string;
+  readonly subject: string | null;
+  readonly sentAt: number;
+  readonly occurredAt: number;
+  readonly classification: Classification;
+  readonly deviceClass: string | null;
+  readonly os: string | null;
+}
+
+/**
+ * Read side for the endpoint added in Plan 3 Task 1 (`api/opens.ts`). Joins
+ * `opens` to `tokens` so a caller gets recipient/subject context alongside
+ * each hit in one round trip, without any route running arbitrary SQL
+ * against this database — every query stays inside this file, same as
+ * every other function above.
+ *
+ * `limit` is trusted the same way `recentHitTimes`'s `sinceMs` above is
+ * trusted: the caller (`api/opens.ts`) is the system boundary that clamps a
+ * request-supplied value before this is ever called. The `::int` cast is
+ * defence in depth against a non-integer reaching Postgres's LIMIT clause,
+ * not a substitute for that clamp.
+ *
+ * Ordered newest-first so the caller can render "opened N ago" without a
+ * second sort.
+ */
+export async function listRecentOpens(limit: number): Promise<OpenRow[]> {
+  const rows = await sql_()`
+    select o.token, t.recipient_email, t.subject, t.sent_at,
+           o.occurred_at, o.classification, o.device_class, o.os
+    from opens o
+    join tokens t on t.token = o.token
+    order by o.occurred_at desc
+    limit ${limit}::int
+  `;
+  return rows.map((row) => ({
+    token: row.token,
+    recipientEmail: row.recipient_email,
+    subject: row.subject,
+    sentAt: new Date(row.sent_at).getTime(),
+    occurredAt: new Date(row.occurred_at).getTime(),
+    classification: row.classification,
+    deviceClass: row.device_class,
+    os: row.os,
+  }));
+}
