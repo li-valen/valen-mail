@@ -124,6 +124,40 @@ function isScannerBurst(ctx: HitContext): boolean {
 }
 
 export function classifyHit(ctx: HitContext): Classification {
+  // 'self' — the account owner's own fetch of their own pixel.
+  //
+  // UNREACHABLE FOR SERVER-SENT MAIL. `insertTokens` (src/db.ts) mints
+  // every production token with the column list
+  // `(token, account_id, message_id, recipient_email, subject)` and never
+  // writes `sender_ip`, so `sender_ip` is NULL on every row minted by
+  // `POST /api/tokens`; `api/o/[token].ts` therefore always passes
+  // `senderIps: []`, and this comparison can never be true in production.
+  // The only writer that names the column at all is
+  // `scripts/send-test.mjs`, whose own doc comment tells operators to
+  // leave `SENDER_IP` unset — so this branch is live only for a
+  // deliberate `SENDER_IP=...` calibration run and for direct
+  // `classifyHit` calls such as tests/classify.test.ts. Kept, not
+  // deleted, for exactly those two callers.
+  //
+  // WIRING `sender_ip` INTO THE MINT PATH WOULD NOT FIX THIS, which is
+  // why it was considered and rejected rather than left as a TODO. The
+  // dominant self-open is the sender reading their own Sent copy in Gmail
+  // web: the pixel is fetched by Google's image proxy, whose IP is
+  // Google's and never the sender's, so the comparison below still fails.
+  // This column's premise — that the sender's own mail client fetches the
+  // pixel directly from the sender's own network — predates both
+  // server-side sending and browser-based reading. Spec 7.2 also
+  // deliberately avoids storing raw IPs, so populating it would trade a
+  // real privacy property for an unreliable partial fix.
+  //
+  // WHAT PROTECTS THE USER INSTEAD, AND THE RESIDUAL. The sync service
+  // suppresses the PUSH (never the opens feed) when an open's recipient is
+  // one of the user's own configured accounts — `shouldNotifyOpen` in
+  // sync/src/push/dispatch.ts. That closes self-sends completely. It
+  // closes nothing else: a sender viewing their own Sent copy of mail sent
+  // to an EXTERNAL recipient produces a hit that nothing recorded here
+  // distinguishes from that recipient's genuine read. It falls through to
+  // 'open' below and is reported as one.
   if (ctx.senderIps.includes(ctx.ip)) return 'self';
 
   const ageSinceSend = ctx.occurredAt - ctx.sentAt;
