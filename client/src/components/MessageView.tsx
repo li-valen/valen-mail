@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, FileText, ImageOff } from 'lucide-react';
+import { ArrowLeft, FileText } from 'lucide-react';
 import { ApiError, getMessage } from '../api';
 import type { InboxMessage, ParsedMessage } from '../api';
 import { Alert, AlertDescription } from '../ui/Alert';
@@ -24,14 +24,22 @@ import { IFRAME_SANDBOX, bodyKind, srcDocFor } from './messageBody';
  * no lost pages, and the scroll position (and keyboard focus) restored to
  * the row that was opened.
  *
- * THREE INDEPENDENT FAILURE DOMAINS, deliberately not collapsed into one:
+ * TWO INDEPENDENT FAILURE DOMAINS, deliberately not collapsed into one:
  *
  *  1. The message itself — a failure here is the whole view, so it gets an
  *     in-place Alert with a retry, never a modal, and Back still works.
- *  2. Remote images — off until asked for, per message, never remembered.
- *  3. Thread context — secondary. A thread fetch that fails logs and
+ *  2. Thread context — secondary. A thread fetch that fails logs and
  *     renders nothing at all; a message must never fail to open because
  *     the conversation around it could not be listed.
+ *
+ * THERE USED TO BE A THIRD: remote images, blocked per message behind a
+ * "Load remote images" bar. The user removed it — "remove the dont load
+ * images thing i dont care if people can track me with the pixels" — so
+ * mail now renders the way the sender built it, first time. See
+ * components/messageBody.ts's `contentSecurityPolicyFor` for the full
+ * note, including why this changes the PRIVACY posture and leaves the XSS
+ * boundary (`IFRAME_SANDBOX`: no allow-scripts, no allow-same-origin)
+ * exactly where it was.
  *
  * SECURITY. `parsed.html` is the sender's markup, unsanitised on purpose
  * all the way from sync/src/api/message.ts. It reaches the DOM through
@@ -110,50 +118,8 @@ function MessageHeader({ message }: MessageHeaderProps) {
   );
 }
 
-interface RemoteImagesBarProps {
-  readonly allowRemote: boolean;
-  readonly onAllow: () => void;
-}
-
-/**
- * The remote-image control, and the one caveat in this product that IS
- * the feature rather than a footnote.
- *
- * Postbox detects opens on the sends the user makes by exactly this
- * mechanism: a remote image that loads tells the sender the message was
- * opened, when, and roughly from where. An email client that loads them
- * silently on the RECEIVING side therefore hands that same signal to
- * every sender in the mailbox — the app would be tracking its own user
- * all day. So the default is off, the copy says plainly why, and turning
- * them on is a deliberate, per-message act that is never remembered:
- * MessageView is keyed on the message in App.tsx, so opening the next
- * message starts blocked again.
- */
-function RemoteImagesBar({ allowRemote, onAllow }: RemoteImagesBarProps) {
-  if (allowRemote) {
-    return (
-      <p className="border-b border-neutral-200 dark:border-border px-4 py-2 text-xs text-neutral-500 dark:text-muted-foreground">
-        Remote images loaded for this message. The next message starts blocked again.
-      </p>
-    );
-  }
-  return (
-    <div className="flex flex-wrap items-center gap-3 border-b border-neutral-200 bg-neutral-50 px-4 py-2 text-xs text-neutral-600 dark:border-border dark:bg-muted dark:text-muted-foreground">
-      <ImageOff className="h-4 w-4 shrink-0" aria-hidden="true" />
-      <span className="min-w-0 flex-1">
-        Remote images are blocked — loading them tells the sender you opened this, which is exactly how
-        Postbox detects opens on the mail you send.
-      </span>
-      <Button variant="outline" size="sm" onClick={onAllow}>
-        Load remote images
-      </Button>
-    </div>
-  );
-}
-
 interface BodyFrameProps {
   readonly html: string;
-  readonly allowRemote: boolean;
   readonly subject: string;
 }
 
@@ -163,10 +129,13 @@ interface BodyFrameProps {
  * `sandbox={IFRAME_SANDBOX}` carries no `allow-scripts` and no
  * `allow-same-origin` — see components/messageBody.ts for the full
  * reasoning and for the guard test that keeps it that way. `srcDocFor`
- * puts a restrictive CSP `<meta>` inside the document as the second,
- * independent block on remote loads. Neither is a belt for the other's
- * braces: the sandbox stops execution, the CSP stops fetching, and
- * remote-image blocking specifically needs both to be true.
+ * puts a restrictive CSP `<meta>` inside the document, which is what
+ * denies everything the message might otherwise pull in — objects,
+ * frames, forms, a `<base>` of its own. The two are not belt and braces
+ * for one concern: the sandbox stops EXECUTION, the CSP stops FETCHING,
+ * and dropping either one leaves a real hole. `img-src` is the one
+ * directive that now permits remote hosts, by the user's decision — see
+ * components/messageBody.ts.
  *
  * **FIXED HEIGHT, ON PURPOSE.** An iframe cannot size itself to its
  * content without script inside it measuring and reporting the height —
@@ -182,14 +151,14 @@ interface BodyFrameProps {
  * components/messageBody.ts for why forcing dark inside here breaks real
  * mail rather than theming it.
  */
-function BodyFrame({ html, allowRemote, subject }: BodyFrameProps) {
+function BodyFrame({ html, subject }: BodyFrameProps) {
   return (
     <iframe
       // Named for what it contains: a screen reader user tabbing into an
       // unlabelled frame is told only "frame".
       title={`Message body: ${subject}`}
       sandbox={IFRAME_SANDBOX}
-      srcDoc={srcDocFor(html, { allowRemote })}
+      srcDoc={srcDocFor(html)}
       referrerPolicy="no-referrer"
       className="block h-[70vh] min-h-96 w-full border-0 bg-white dark:bg-white"
     />
@@ -226,8 +195,6 @@ function TextBody({ text }: TextBodyProps) {
 interface MessageBodyProps {
   readonly parsed: ParsedMessage;
   readonly subject: string;
-  readonly allowRemote: boolean;
-  readonly onAllow: () => void;
 }
 
 /**
@@ -240,17 +207,13 @@ interface MessageBodyProps {
  * being false for some input and the reader rendering a message with no
  * body area at all.
  */
-function MessageBody({ parsed, subject, allowRemote, onAllow }: MessageBodyProps) {
+function MessageBody({ parsed, subject }: MessageBodyProps) {
   const kind = bodyKind(parsed);
 
-  if (kind === 'html') {
-    return (
-      <>
-        <RemoteImagesBar allowRemote={allowRemote} onAllow={onAllow} />
-        <BodyFrame html={parsed.html ?? ''} allowRemote={allowRemote} subject={subject} />
-      </>
-    );
-  }
+  // No wrapping fragment any more: the html case used to be a
+  // remote-images bar stacked above the frame, and with the bar gone the
+  // frame IS the html body.
+  if (kind === 'html') return <BodyFrame html={parsed.html ?? ''} subject={subject} />;
 
   if (kind === 'text') return <TextBody text={parsed.text ?? ''} />;
 
@@ -282,10 +245,6 @@ export interface MessageViewProps {
 export default function MessageView({ message, now, onBack, onOpen }: MessageViewProps) {
   const [load, setLoad] = useState<LoadState>({ status: 'loading' });
   const [attempt, setAttempt] = useState(0);
-  // Per message, never persisted and never lifted: App.tsx keys this
-  // component on the message, so opening another one remounts and this
-  // returns to false. That is the intended behaviour, not a state bug.
-  const [allowRemote, setAllowRemote] = useState(false);
   // The Card, used only to find the <h2> inside it — see the focus
   // effect below. Card forwards `ref` to its own <div>, so this needs no
   // extra wrapper element.
@@ -327,7 +286,6 @@ export default function MessageView({ message, now, onBack, onOpen }: MessageVie
   }, [accountId, folder, uid]);
 
   const retry = useCallback(() => setAttempt((previous) => previous + 1), []);
-  const allow = useCallback(() => setAllowRemote(true), []);
 
   return (
     // PLAN 7 TASK 2 — the reader arrives. App.tsx keys this component on
@@ -369,12 +327,7 @@ export default function MessageView({ message, now, onBack, onOpen }: MessageVie
         )}
 
         {load.status === 'ready' && (
-          <MessageBody
-            parsed={load.parsed}
-            subject={message.subject || '(no subject)'}
-            allowRemote={allowRemote}
-            onAllow={allow}
-          />
+          <MessageBody parsed={load.parsed} subject={message.subject || '(no subject)'} />
         )}
       </Card>
 

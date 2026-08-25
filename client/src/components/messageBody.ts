@@ -49,30 +49,40 @@ import type { MessageAttachment, ParsedMessage } from '../api';
 export const IFRAME_SANDBOX = 'allow-popups allow-popups-to-escape-sandbox';
 
 /**
- * The `Content-Security-Policy` enforced INSIDE the srcdoc, and the
- * second, independent half of remote-image blocking (the first being the
- * absence of `allow-scripts`, which removes every scripted way to fetch
- * anything at all).
+ * The `Content-Security-Policy` enforced INSIDE the srcdoc.
  *
  * `default-src 'none'` is the base: no stylesheets, no fonts, no frames,
  * no media, no XHR — nothing loads from anywhere unless a directive below
- * re-permits it. The only two that do are `style-src 'unsafe-inline'`
- * (email layout is inline `style=` attributes and `<style>` blocks; with
- * no script able to run, inline CSS cannot exfiltrate anything) and
- * `img-src`, which is the one directive `allowRemote` moves.
+ * re-permits it. Exactly three do: `style-src 'unsafe-inline'` (email
+ * layout is inline `style=` attributes and `<style>` blocks; with no
+ * script able to run, inline CSS cannot exfiltrate anything), `font-src
+ * data:`, and `img-src`.
  *
- * **`img-src` is the privacy control, not a performance one.** Blocked,
- * it permits only `data:` (images the message carries itself) and `cid:`
- * (MIME parts, which a browser cannot resolve anyway — see MessageView's
- * note on embedded images). Permitted, it adds `https:`/`http:`, at which
- * point every tracking pixel in the message fires and the sender learns
- * the exact second this message was opened. Postbox detects opens by
- * exactly that mechanism on the sending side; loading them silently on
- * the receiving side would mean this app tracks its own user for every
- * sender who asks. That is why the flip is a per-message, explicit,
- * one-way action and never a remembered preference.
+ * **`img-src` PERMITS REMOTE HOSTS, and that is a user decision, not an
+ * oversight.** This function used to take an `allowRemote` flag, default
+ * false, so a reader had to press "Load remote images" per message — the
+ * reasoning being that a remote image tells the sender the exact second
+ * their mail was opened, which is precisely the mechanism Postbox uses to
+ * detect opens on the mail the USER sends. The user reviewed that and
+ * overruled it, verbatim: "remove the dont load images thing i dont care
+ * if people can track me with the pixels." Mail now renders the way the
+ * sender built it, first time, with no bar and no button.
+ *
+ * WHAT THIS DOES NOT CHANGE, and the distinction matters because the two
+ * were argued together in the old comment: remote images were a PRIVACY
+ * control. `IFRAME_SANDBOX` above is the XSS boundary, and it is
+ * untouched — no `allow-scripts`, no `allow-same-origin`, both still
+ * pinned by tests/message-body.test.ts. A sender can now learn that their
+ * mail was opened. A sender still cannot run a line of code, read a
+ * cookie, or reach this origin. Trading the first away does not soften
+ * the second, and nothing in this file should ever be edited as though
+ * it did.
+ *
+ * `cid:` stays in the list beside `data:` and the remote schemes: it
+ * costs nothing, and a browser cannot resolve it anyway (see
+ * MessageView's note on embedded images).
  */
-export function contentSecurityPolicyFor(allowRemote: boolean): string {
+export function contentSecurityPolicyFor(): string {
   return [
     "default-src 'none'",
     "script-src 'none'",
@@ -82,7 +92,7 @@ export function contentSecurityPolicyFor(allowRemote: boolean): string {
     "base-uri 'none'",
     "style-src 'unsafe-inline'",
     'font-src data:',
-    allowRemote ? 'img-src data: cid: https: http:' : 'img-src data: cid:',
+    'img-src data: cid: https: http:',
   ].join('; ');
 }
 
@@ -122,12 +132,6 @@ const BODY_STYLE = [
   'a{color:#1d4ed8}',
 ].join('');
 
-export interface SrcDocOptions {
-  /** Whether `img-src` permits remote hosts. Defaults to false — see
-   *  `contentSecurityPolicyFor` for why the default is the safe one. */
-  readonly allowRemote?: boolean;
-}
-
 /**
  * Builds the complete document handed to the body iframe's `srcdoc`.
  *
@@ -145,12 +149,17 @@ export interface SrcDocOptions {
  * document — there is no parent-document HTML parse for it to break out
  * of.
  *
- * `<meta name="referrer" content="no-referrer">` is the same posture as
- * the img-src default applied to link clicks: following a link from a
- * message must not hand the destination the URL the reader came from.
+ * `<meta name="referrer" content="no-referrer">` survives the
+ * remote-image decision and is not part of it: the user chose to let
+ * senders learn THAT their mail was opened, not to hand every host a
+ * message linked to the URL the reader came from. Kept.
+ *
+ * There is no longer an options bag. `allowRemote` was its only member
+ * and it has one possible value now, so a parameter nothing sets would be
+ * a config knob pretending to still be a decision.
  */
-export function srcDocFor(html: string, options: SrcDocOptions = {}): string {
-  const csp = contentSecurityPolicyFor(options.allowRemote === true);
+export function srcDocFor(html: string): string {
+  const csp = contentSecurityPolicyFor();
   return (
     '<!doctype html><html><head>' +
     '<meta charset="utf-8">' +

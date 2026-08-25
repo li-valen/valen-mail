@@ -38,40 +38,58 @@ describe('srcDocFor — the sandboxed body document', () => {
     return match![1]!;
   }
 
-  it('blocks remote images by default — img-src permits only data: and cid:', () => {
-    const policy = policyOf(srcDocFor(HTML));
-    expect(policy).toContain('img-src data: cid:');
-    expect(policy).not.toContain('https:');
-    expect(policy).not.toContain('http:');
-    expect(policy).toBe(contentSecurityPolicyFor(false));
-  });
-
-  it('permits remote images only when explicitly asked, and says so in img-src', () => {
-    const policy = policyOf(srcDocFor(HTML, { allowRemote: true }));
-    expect(policy).toContain('img-src data: cid: https: http:');
-    expect(policy).toBe(contentSecurityPolicyFor(true));
-  });
-
   /**
-   * Non-vacuity for the flip above: if `allowRemote` were ever ignored —
-   * a dropped argument, a default that stopped being read — both branches
-   * would produce identical documents and every assertion above would
-   * still pass on the blocking one. This is the test that notices.
+   * PINNED THE OTHER WAY ROUND, ON PURPOSE.
+   *
+   * These three tests used to assert that remote images were BLOCKED by
+   * default and permitted only behind an explicit per-message
+   * `allowRemote` flag. The user removed that control outright —
+   * "remove the dont load images thing i dont care if people can track me
+   * with the pixels" — so the behaviour they pin is inverted rather than
+   * deleted: mail renders the way the sender built it, first time, and a
+   * future change that quietly reinstates blocking fails here.
+   *
+   * The sandbox guard further down is UNTOUCHED. Remote images were a
+   * privacy trade the user is entitled to make; `allow-scripts` and
+   * `allow-same-origin` are an XSS boundary and are not on the table.
    */
-  it('produces DIFFERENT documents for the two states (the flag is actually read)', () => {
-    expect(srcDocFor(HTML, { allowRemote: true })).not.toBe(srcDocFor(HTML, { allowRemote: false }));
-    expect(srcDocFor(HTML, {})).toBe(srcDocFor(HTML, { allowRemote: false }));
+  it('permits remote images — img-src allows data:, cid: and remote hosts', () => {
+    const policy = policyOf(srcDocFor(HTML));
+    expect(policy).toContain('img-src data: cid: https: http:');
+    expect(policy).toBe(contentSecurityPolicyFor());
   });
 
-  it('denies everything else in both states — scripts, objects, frames, forms, base', () => {
-    for (const doc of [srcDocFor(HTML), srcDocFor(HTML, { allowRemote: true })]) {
-      expect(doc).toContain("default-src 'none'");
-      expect(doc).toContain("script-src 'none'");
-      expect(doc).toContain("object-src 'none'");
-      expect(doc).toContain("frame-src 'none'");
-      expect(doc).toContain("form-action 'none'");
-      expect(doc).toContain("base-uri 'none'");
-    }
+  it('has no way left to ask for a blocking policy', () => {
+    // Non-vacuity for the assertion above, and the thing that makes the
+    // inversion stick: there is exactly ONE document `srcDocFor` can
+    // build for a given html, so there is no second, blocking branch for
+    // a caller to reach or for a default to drift back to.
+    expect(srcDocFor(HTML)).toBe(srcDocFor(HTML));
+    expect(srcDocFor.length).toBe(1);
+    expect(contentSecurityPolicyFor.length).toBe(0);
+  });
+
+  it('still denies every OTHER remote load — objects, frames, media, fonts, stylesheets', () => {
+    // Loosening `img-src` loosened `img-src`. `default-src 'none'` still
+    // means a message cannot pull in a stylesheet, a font from a remote
+    // host, a frame, an object or an XHR.
+    const policy = policyOf(srcDocFor(HTML));
+    expect(policy).toContain("default-src 'none'");
+    expect(policy).toContain("object-src 'none'");
+    expect(policy).toContain("frame-src 'none'");
+    expect(policy).toContain('font-src data:');
+    expect(policy).not.toContain('media-src');
+    expect(policy).not.toContain('connect-src');
+  });
+
+  it('denies scripts, objects, frames, forms and base', () => {
+    const doc = srcDocFor(HTML);
+    expect(doc).toContain("default-src 'none'");
+    expect(doc).toContain("script-src 'none'");
+    expect(doc).toContain("object-src 'none'");
+    expect(doc).toContain("frame-src 'none'");
+    expect(doc).toContain("form-action 'none'");
+    expect(doc).toContain("base-uri 'none'");
   });
 
   it('puts the CSP meta before any message markup, so nothing can load ahead of it', () => {
@@ -92,7 +110,7 @@ describe('srcDocFor — the sandboxed body document', () => {
 
   it('never emits allow-scripts anywhere in the document it builds', () => {
     expect(srcDocFor('<p>x</p>')).not.toContain('allow-scripts');
-    expect(srcDocFor('<p>x</p>', { allowRemote: true })).not.toContain('allow-scripts');
+    expect(srcDocFor(HTML)).not.toContain('allow-scripts');
   });
 
   it('sends no referrer, so following a link does not leak where it was followed from', () => {
@@ -107,12 +125,18 @@ describe('srcDocFor — the sandboxed body document', () => {
 });
 
 describe('contentSecurityPolicyFor', () => {
-  it('changes exactly one directive between the two states', () => {
-    const blocked = contentSecurityPolicyFor(false).split('; ');
-    const allowed = contentSecurityPolicyFor(true).split('; ');
-    expect(allowed.length).toBe(blocked.length);
-    const differing = blocked.filter((directive, index) => directive !== allowed[index]);
-    expect(differing).toEqual(['img-src data: cid:']);
+  it('emits one fixed policy, with img-src as the only permissive fetch directive', () => {
+    const directives = contentSecurityPolicyFor().split('; ');
+    // Every directive that names a scheme rather than 'none' or
+    // 'unsafe-inline'. If a future edit re-opens connect-src, media-src
+    // or anything else to the network, this list grows and the test
+    // fails — which is the point: the user traded away ONE control.
+    const permissive = directives.filter((directive) => /https:|http:/.test(directive));
+    expect(permissive).toEqual(['img-src data: cid: https: http:']);
+  });
+
+  it('is deterministic — the same policy on every call', () => {
+    expect(contentSecurityPolicyFor()).toBe(contentSecurityPolicyFor());
   });
 });
 
