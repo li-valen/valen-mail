@@ -266,6 +266,16 @@
   }
 }
 
+/* Fix round 1: the strip's visible content moved into its own `<span
+   id={bodyId}>` so `aria-labelledby` can compose the button's accessible
+   name from it (see RailStrip's doc comment in OpensRail.tsx).
+   `display: contents` removes that span's own box so its children —
+   ReadState, the label/headline/time spans — still lay out as direct
+   flex items of `.rail-strip`, exactly as before this wrapper existed. */
+.rail-strip__content {
+  display: contents;
+}
+
 .rail-strip__label,
 .rail-strip__headline {
   flex: 1;

@@ -115,6 +115,17 @@ describe('describeEvent', () => {
     expect(prefetch.headline).toBe(scanner.headline);
     expect(prefetch.headline).not.toBe(mpp.headline);
   });
+
+  // fix round 1: an unrecognised classification's meta line embeds the
+  // raw token (`readStateFor`'s default branch keeps it unbounded on
+  // purpose) — but the RENDERED meta string must still be bounded, or a
+  // pathological wire value distorts the row's layout the same way an
+  // unbounded badge would.
+  it('bounds a pathologically long unrecognised classification in the meta line', () => {
+    const pathological = 'x'.repeat(500);
+    const copy = describeEvent(buildEvent({ token: 'f', classification: pathological }));
+    expect(copy.meta.length).toBeLessThan(pathological.length);
+  });
 });
 
 describe('partitionOpens — self suppressed from the rail, but counted', () => {

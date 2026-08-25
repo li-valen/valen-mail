@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { getOpens } from '../api';
 import type { OpenEvent } from '../api';
@@ -286,8 +286,29 @@ interface RailStripProps {
  * Tapping it opens the full rail as a bottom sheet (`OpensRail`'s
  * `<dialog class="rail-sheet">`), which renders from the exact same
  * `load` state — there is no second fetch here.
+ *
+ * **Accessible name (fix round 1).** This used to be a plain `aria-label`
+ * on the button, which — per the accessible-name-and-description
+ * computation — wins outright over the button's rendered children,
+ * silencing the actual preview text a sighted user sees (the headline and
+ * relative time). `aria-labelledby` referencing two ids instead composes
+ * the name FROM that content: the button's accessible name becomes the
+ * concatenation of `${contentId}-prefix`'s text ("Open opens tracking.")
+ * and `${contentId}-content`'s text-from-content (which recurses into
+ * `ReadState`'s visible mono token — its mark stays `aria-hidden` and
+ * contributes nothing — plus the headline/time/label spans, in DOM
+ * order). Concretely, for a populated strip this announces as "Open
+ * opens tracking. OPEN kate@example.com opened this. 5m ago, button" (the
+ * trailing role is supplied by the browser/AT, not by this string); for
+ * the other states it announces "Open opens tracking. Loading opens…",
+ * "…Tracking unreachable", or "…No opens yet". I reasoned through this
+ * against the accname spec rather than testing it with a screen reader —
+ * see task-5-report.md's "fix round 1" section.
  */
 function RailStrip({ load, now, onExpand }: RailStripProps) {
+  const contentId = useId();
+  const prefixId = `${contentId}-prefix`;
+  const bodyId = `${contentId}-body`;
   const isUnavailable = load.status === 'loaded' && load.view.kind === 'unavailable';
   const mostRecent =
     load.status === 'loaded' && load.view.kind === 'ready' ? load.view.displayable[0] : undefined;
@@ -298,23 +319,28 @@ function RailStrip({ load, now, onExpand }: RailStripProps) {
       className={`rail-strip${isUnavailable ? ' rail-strip--unavailable' : ''}`}
       onClick={onExpand}
       aria-haspopup="dialog"
-      aria-label="Open opens tracking"
+      aria-labelledby={`${prefixId} ${bodyId}`}
     >
-      {load.status === 'loading' && <span className="rail-strip__label">Loading opens…</span>}
+      <span id={prefixId} className="visually-hidden">
+        Open opens tracking.
+      </span>
+      <span id={bodyId} className="rail-strip__content">
+        {load.status === 'loading' && <span className="rail-strip__label">Loading opens…</span>}
 
-      {isUnavailable && <span className="rail-strip__label">Tracking unreachable</span>}
+        {isUnavailable && <span className="rail-strip__label">Tracking unreachable</span>}
 
-      {load.status === 'loaded' && load.view.kind === 'ready' && mostRecent === undefined && (
-        <span className="rail-strip__label">No opens yet</span>
-      )}
+        {load.status === 'loaded' && load.view.kind === 'ready' && mostRecent === undefined && (
+          <span className="rail-strip__label">No opens yet</span>
+        )}
 
-      {mostRecent !== undefined && (
-        <>
-          <ReadState classification={mostRecent.classification} />
-          <span className="rail-strip__headline">{describeEvent(mostRecent).headline}</span>
-          <span className="rail-strip__time">{formatRelativeTime(mostRecent.occurredAt, now)}</span>
-        </>
-      )}
+        {mostRecent !== undefined && (
+          <>
+            <ReadState classification={mostRecent.classification} />
+            <span className="rail-strip__headline">{describeEvent(mostRecent).headline}</span>
+            <span className="rail-strip__time">{formatRelativeTime(mostRecent.occurredAt, now)}</span>
+          </>
+        )}
+      </span>
     </button>
   );
 }

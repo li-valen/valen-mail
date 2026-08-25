@@ -79,6 +79,29 @@ function tokenFor(classification: string): string {
   return classification === '' ? 'UNKNOWN' : classification.toUpperCase();
 }
 
+/** The mono badge's longest displayed length before it gets truncated —
+ *  comfortably longer than every known token (OPEN/MPP/PREFETCH/SCANNER
+ *  top out at 8 characters), but short enough that a pathological wire
+ *  value can't distort the rail's layout. */
+const MAX_TOKEN_DISPLAY_LENGTH = 16;
+
+/**
+ * Bounds a token string for rendering (fix round 1). `ReadStateInfo.token`
+ * itself is never bounded — `readStateFor`'s default branch deliberately
+ * surfaces the raw, unrecognised classification value verbatim, because
+ * showing what actually came back is more honest and more debuggable than
+ * hiding it, and it is the value a future reader would want in code, in a
+ * test failure, or in the DOM via `title`. But a classification value is
+ * wire data this client does not control, and rendering it unbounded — in
+ * the badge, or inline in a meta line (see openEvents.ts's
+ * `describeEvent`) — could distort the rail's layout. Bounding happens
+ * only at the point of display, never on the canonical value.
+ */
+export function boundedToken(token: string): string {
+  if (token.length <= MAX_TOKEN_DISPLAY_LENGTH) return token;
+  return `${token.slice(0, MAX_TOKEN_DISPLAY_LENGTH)}…`;
+}
+
 /**
  * Maps a raw `classification` string — sync/../tracking's `classify.ts`
  * emits `'self' | 'prefetch' | 'mpp' | 'scanner' | 'open'`, but this
@@ -220,10 +243,17 @@ export interface ReadStateProps {
  */
 export function ReadState({ classification }: ReadStateProps) {
   const state = readStateFor(classification);
+  const displayToken = boundedToken(state.token);
+  // Only set `title` when it would tell the inspector something the
+  // visible text does not already say — a redundant native tooltip on
+  // every ordinary "OPEN"/"MPP" badge would be noise, not a feature.
+  const fullTokenTitle = displayToken === state.token ? undefined : state.token;
   return (
     <span className={`read-state read-state--${state.tone}`}>
       <StateMark classification={classification} />
-      <span className="read-state__token">{state.token}</span>
+      <span className="read-state__token" title={fullTokenTitle}>
+        {displayToken}
+      </span>
     </span>
   );
 }

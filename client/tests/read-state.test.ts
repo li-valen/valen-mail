@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readStateFor, isDisplayable } from '../src/components/ReadState';
+import { readStateFor, isDisplayable, boundedToken } from '../src/components/ReadState';
 
 /**
  * task-5-brief.md Step 1's literal test file, plus the amendments it
@@ -93,5 +93,35 @@ describe('isDisplayable', () => {
   // Amendment 2's reasoning, applied one level up).
   it('shows a classification it has never seen before rather than hiding it', () => {
     expect(isDisplayable('a-future-classifier-value')).toBe(true);
+  });
+});
+
+// fix round 1: `readStateFor`'s default branch renders the raw wire
+// classification as its mono token, which is deliberately kept — but
+// unbounded, that value is attacker/upstream-controlled and could distort
+// the rail's layout. `boundedToken` is the display-time-only guard.
+describe('boundedToken', () => {
+  it('returns short, known tokens unchanged', () => {
+    expect(boundedToken('OPEN')).toBe('OPEN');
+    expect(boundedToken('PREFETCH')).toBe('PREFETCH');
+  });
+
+  it('truncates a token past the display limit and marks the cut with an ellipsis', () => {
+    const pathological = 'A'.repeat(200);
+    const result = boundedToken(pathological);
+    expect(result.length).toBeLessThan(pathological.length);
+    expect(result.endsWith('…')).toBe(true);
+  });
+
+  it('never returns a string longer than the bounded length even for extreme input', () => {
+    const result = boundedToken('X'.repeat(10_000));
+    expect(result.length).toBeLessThanOrEqual(17); // 16 chars + the ellipsis mark
+  });
+
+  it('leaves the canonical, unbounded token on ReadStateInfo untouched', () => {
+    const pathological = 'B'.repeat(200);
+    const state = readStateFor(pathological);
+    expect(state.token).toBe(pathological.toUpperCase());
+    expect(state.token).not.toBe(boundedToken(state.token));
   });
 });

@@ -1,5 +1,5 @@
 import type { OpenEvent, OpensResponse } from '../api';
-import { isDisplayable, readStateFor } from './ReadState';
+import { boundedToken, isDisplayable, readStateFor } from './ReadState';
 
 /**
  * Pure formatting and derivation logic for OpensRail.tsx, split out the
@@ -126,7 +126,7 @@ export function describeEvent(event: OpenEvent): EventCopy {
     return {
       headline: "Apple Mail. Opens can't be confirmed here.",
       sub: 'Not pending — this is the ceiling for this recipient.',
-      meta: `${state.token} · permanent`,
+      meta: `${boundedToken(state.token)} · permanent`,
     };
   }
 
@@ -135,7 +135,7 @@ export function describeEvent(event: OpenEvent): EventCopy {
   return {
     headline: 'Something fetched this. It was not a person.',
     sub: null,
-    meta: `${clock} · ${lag} · ${state.token}`,
+    meta: `${clock} · ${lag} · ${boundedToken(state.token)}`,
   };
 }
 
