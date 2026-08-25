@@ -7,7 +7,11 @@ import type { DiscoveredFolders } from './folders';
 import type { PreviewBudget, PreviewStore } from './previews';
 import { folderSyncOrder } from './folders.ts';
 import { BACKFILL_SHARE, DAILY_BYTE_LIMIT } from '../budget.ts';
-import { ESTIMATED_BYTES_PER_HEADER_FETCH, fetchHeaders } from './fetch.ts';
+import {
+  ESTIMATED_BYTES_PER_HEADER_FETCH,
+  ESTIMATED_BYTES_PER_PREVIEW_FETCH,
+  fetchHeaders,
+} from './fetch.ts';
 import { collectPreviews } from './previews.ts';
 import { applySnippet } from '../normalize.ts';
 
@@ -59,19 +63,36 @@ import { applySnippet } from '../normalize.ts';
  * for a ~600 KB worst-case page.
  *
  * WHAT THAT COSTS PER DAY, worst case: one page per folder per cycle, four
- * folders per account = ~2.4 MB per account per full cycle. At the FLOOR
- * cadence of one cycle per IDLE_LIVENESS_CHECK_INTERVAL_MS (180s) = 480
- * cycles/day, that is ~1.15 GB/day against BACKFILL_BYTE_LIMIT's 1.4 GiB —
- * inside the share, with live sync's own ~281 MB/day (see
- * ESTIMATED_BYTES_PER_PREVIEW_FETCH) still comfortably under the remaining
- * 30%. The budget, not this constant, is the real enforcement; this
- * constant is what keeps ONE page's mutex hold and memory footprint
- * bounded so a cycle stays a cycle.
+ * folders per account = 2,457,600 B (~2.4 MB) per account per full cycle.
+ * At the FLOOR cadence of one cycle per IDLE_LIVENESS_CHECK_INTERVAL_MS
+ * (180s) = 480 cycles/day, that is 1,179,648,000 B = **1.0986 GiB/day**
+ * (1.18 GB).
+ *
+ * THE MARGIN IS NOT COMFORTABLE, AND SAYING SO MATTERS. Backfill and live
+ * sync spend ONE shared per-account counter; the share is a second, lower
+ * LIMIT on that same counter, not a second allowance. So the number that
+ * has to fit under BACKFILL_BYTE_LIMIT (1.4000 GiB) is the SUM: backfill's
+ * 1.0986 GiB plus live sync's own ~0.2747 GiB (see
+ * ESTIMATED_BYTES_PER_PREVIEW_FETCH) = 1.3733 GiB, leaving about **27 MiB
+ * — roughly 1.9% — of headroom**. That is by design and it is safe in the
+ * direction that matters: in the last ~2% of a floor-cadence day, backfill
+ * pauses and live sync keeps running against the full DAILY_BYTE_LIMIT.
+ * But it is a thin margin, not a wide one, and an operator watching
+ * consumption should expect backfill to stop near the end of a heavy day.
+ *
+ * WHAT IT COSTS A CYCLE, which Task 3 will notice: four pages of up to 200
+ * envelopes each, plus up to 800 sequential upserts, all inside this
+ * account's mutex — roughly **10-30 seconds added per cycle**, delaying
+ * IDLE re-arm by the same amount, for about as long as the backfill runs
+ * (~a day). That is designed, not a regression; it also means the real
+ * cadence is nearer 410-455 cycles/day than the 180s floor's 480, which is
+ * why "about a day" is really about 1.1.
  *
  * 200 rather than 1000: the page is fetched while this account's mutex is
  * held, so it delays the liveness probe and any on-demand API download
  * queued behind it. 200 envelopes is a single round trip of a few hundred
- * kilobytes — seconds, not minutes.
+ * kilobytes — seconds, not minutes. 1000 would put a cycle's hold into the
+ * minutes and push it past IDLE_LIVENESS_CHECK_INTERVAL_MS itself.
  */
 export const BACKFILL_PAGE_SIZE = 200;
 
@@ -100,6 +121,35 @@ const LOWEST_IMAP_UID = 1;
  * itself; two counters would need both.
  */
 export const BACKFILL_BYTE_LIMIT = Math.floor(DAILY_BYTE_LIMIT * BACKFILL_SHARE);
+
+/**
+ * What one backfilled message is reserved at: its header fetch AND its
+ * preview fetch, together, BEFORE the page is fetched at all.
+ *
+ * Reserving both up front — rather than letting collectPreviews make its
+ * own, second reservation succeed or fail on its own — closes a hole that
+ * live sync does not have. collectPreviews returns an empty map when its
+ * reservation is refused, the messages upsert with `snippet: null`, and
+ * the watermark then moves past that span forever. Live sync self-heals
+ * because it re-polls the same newest 50 next cycle; a backfill never
+ * looks at that span again, so those rows would be permanently
+ * preview-less and permanently unsearchable on their body text.
+ *
+ * With the combined reservation, a page is attempted only when BOTH halves
+ * fit, so collectPreviews' own refusal branch is unreachable from here:
+ * `used + headers + previews <= limit` before the fetch implies
+ * `used' + previews <= limit` after the headers are recorded, and nothing
+ * else can spend this account's budget in between (same mutex). A refusal
+ * now stops the page BEFORE the watermark moves, and the same span is
+ * retried once the budget rolls over.
+ *
+ * A preview fetch that THROWS is a different case and is not fixed by
+ * this: those messages sync with a null snippet and the walk moves on.
+ * Accepted and stated rather than hidden — the alternative is a rescan
+ * pass over `snippet is null`, which is a feature, not a fix.
+ */
+export const ESTIMATED_BYTES_PER_BACKFILLED_MESSAGE =
+  ESTIMATED_BYTES_PER_HEADER_FETCH + ESTIMATED_BYTES_PER_PREVIEW_FETCH;
 
 /** The two byte-budget operations this needs, structurally rather than by
  *  class — ../budget.ts's ByteBudget satisfies it, and so does a fake.
@@ -139,6 +189,19 @@ export interface BackfillContext {
 
 export interface BackfillPageOptions extends BackfillContext {
   readonly folder: string;
+  /**
+   * This mailbox's CURRENT UIDVALIDITY, as live sync observed it earlier in
+   * THIS SAME cycle, or null when this cycle could not observe it (the
+   * folder's live sync threw and was caught).
+   *
+   * Threaded in rather than read here on purpose: the check it feeds has
+   * to run for a folder that is already `backfill_done`, and that path
+   * must stay one indexed lookup — opening the mailbox just to read
+   * UIDVALIDITY would be a round trip per folder per cycle, forever,
+   * against folders that finished months ago. Live sync already paid for
+   * this value; ConnectionPool.syncOnce passes it along.
+   */
+  readonly liveUidValidity: bigint | null;
 }
 
 /**
@@ -207,6 +270,44 @@ export function backfillFloor(
   if (watermark > 0) return watermark;
   if (oldestSyncedUid !== null && oldestSyncedUid > 0) return oldestSyncedUid;
   return null;
+}
+
+/**
+ * Whether the persisted watermark was computed against a DIFFERENT mailbox
+ * numbering than the one live now — i.e. the server renumbered the mailbox
+ * and every stored UID means something else.
+ *
+ * WHY THIS EXISTS, and why it is not merely tidy: `backfill_done` is
+ * TERMINAL. A folder that finished its walk is never paged again, and live
+ * sync only ever polls the newest 50 UIDs. If the server renumbers AFTER
+ * that flag is set — and every folder reaches it within about a day, so
+ * this is armed for the rest of the deployment's life — the entire
+ * renumbered history below that 50-UID window becomes permanently
+ * unreachable, silently, with nothing to detect it. Mid-walk the same
+ * change is survivable (a stale watermark sits above the renumbered top,
+ * spans clamp, and the walk self-heals); after `backfill_done` it is not.
+ *
+ * Conservative in both directions: a null on EITHER side means "cannot
+ * tell", and cannot-tell must never trigger a re-walk. Live sync failing
+ * for this folder this cycle (null live value) leaves the state alone
+ * until a cycle that did observe it.
+ *
+ * This is the watermark's counterpart to ./new-mail-marks.ts's UIDVALIDITY
+ * re-baseline, and the two are deliberately paired: a renumbering
+ * invalidates the notification high-water mark and the backfill watermark
+ * for exactly the same reason — a UID from before the change means
+ * something different from the same UID after it. Change one of these and
+ * look at the other.
+ *
+ * Pure, and exported so tests/backfill.test.ts can prove all four
+ * combinations without a database.
+ */
+export function isRenumbered(
+  state: SyncStateInput | null,
+  liveUidValidity: bigint | null,
+): boolean {
+  if (state === null || state.uidValidity === null || liveUidValidity === null) return false;
+  return state.uidValidity !== liveUidValidity;
 }
 
 /**
@@ -345,10 +446,20 @@ export async function runBackfillPage(
   const { accountId, budget, connection, db, folder } = options;
   const pageSize = options.pageSize ?? BACKFILL_PAGE_SIZE;
 
-  const state = await db.getSyncState(accountId, folder);
-  // The terminal check comes first and costs one indexed lookup: a folder
-  // that finished its walk months ago must not pay for an oldest-UID scan
-  // on every cycle forever.
+  const stored = await db.getSyncState(accountId, folder);
+
+  // UIDVALIDITY FIRST, because it is what makes `backfill_done`
+  // revocable. See isRenumbered for why a renumbering after that flag is
+  // set is the one unrecoverable case. Costs nothing on the overwhelmingly
+  // common path: a bigint comparison against a value live sync already
+  // had.
+  const state = isRenumbered(stored, options.liveUidValidity)
+    ? await resetForRenumbering(options, stored)
+    : stored;
+
+  // The terminal check then costs one indexed lookup and nothing else: a
+  // folder that finished its walk months ago must not pay for an
+  // oldest-UID scan on every cycle forever.
   if (state?.backfillDone) return COMPLETE;
 
   const oldestSyncedUid = await db.getOldestSyncedUid(accountId, folder);
@@ -363,7 +474,7 @@ export async function runBackfillPage(
   }
 
   const spanSize = span.highestUid - span.lowestUid + 1;
-  const requested = spanSize * ESTIMATED_BYTES_PER_HEADER_FETCH;
+  const requested = spanSize * ESTIMATED_BYTES_PER_BACKFILLED_MESSAGE;
   const decision = await budget.reserve(accountId, requested, BACKFILL_BYTE_LIMIT);
   if (!decision.allowed) {
     // The whole point of the share: backfill stops, live sync does not.
@@ -425,6 +536,48 @@ export async function runBackfillPage(
   };
 }
 
+/**
+ * Clears a watermark computed against a numbering the server has since
+ * replaced, and — the part that matters — clears `backfill_done` with it,
+ * so a folder that had finished walking the OLD numbering walks the new
+ * one from the top.
+ *
+ * `lastSeenUid: 0` rather than a guess: 0 is not a legal UID, so
+ * backfillFloor reads it as "no watermark" and falls back to the oldest
+ * row `messages` holds for this folder, which live sync has just refreshed
+ * under the new numbering earlier in this same cycle.
+ *
+ * LIMITATION, stated rather than implied: rows written under the OLD
+ * numbering are not purged. Nothing in this service reconciles `messages`
+ * against a UIDVALIDITY change — that gap belongs to the table, not to
+ * this module — so a renumbered folder can carry stale rows whose UIDs now
+ * address different messages, and the re-walk starts from whatever
+ * min(uid) that mix produces. What this fix guarantees is the property
+ * that was actually unrecoverable: the folder is paged again at all,
+ * instead of being terminal forever.
+ *
+ * One line, at the same severity as new-mail-marks.ts's own UIDVALIDITY
+ * log — a real Gmail renumbering is rare enough that logging it is signal,
+ * not spam.
+ */
+async function resetForRenumbering(
+  options: BackfillPageOptions,
+  stored: SyncStateInput | null,
+): Promise<SyncStateInput> {
+  const reset: SyncStateInput = {
+    uidValidity: options.liveUidValidity,
+    lastSeenUid: 0n,
+    backfillDone: false,
+  };
+  await options.db.setSyncState(options.accountId, options.folder, reset);
+  console.error(
+    `account "${options.accountId}" folder "${options.folder}": mailbox UIDVALIDITY changed ` +
+      `(${stored?.uidValidity} -> ${options.liveUidValidity}) — the backfill watermark and its ` +
+      'done flag address the old numbering and have been cleared; the folder will be re-walked',
+  );
+  return reset;
+}
+
 /** Marks a folder's walk finished without fetching anything: the floor had
  *  already reached LOWEST_IMAP_UID, which backfillFloor guarantees is the
  *  only way to get here (it never returns a value below 1). */
@@ -433,7 +586,12 @@ async function markComplete(
   state: SyncStateInput | null,
 ): Promise<void> {
   await options.db.setSyncState(options.accountId, options.folder, {
-    uidValidity: state?.uidValidity ?? null,
+    // The LIVE value takes precedence over whatever the row held. Writing
+    // `null` here — which is what a folder reaching the bottom on its very
+    // first cycle would otherwise store — would make isRenumbered
+    // permanently false for a row that is permanently terminal: exactly
+    // the combination this fix round exists to remove.
+    uidValidity: options.liveUidValidity ?? state?.uidValidity ?? null,
     lastSeenUid: BigInt(LOWEST_IMAP_UID),
     backfillDone: true,
   });
@@ -489,16 +647,27 @@ function logPage(
  * is bounded by BACKFILL_PAGE_SIZE so a cycle's mutex hold stays a
  * cycle's.
  *
+ * `liveUidValidity` is what the pool's live folder loop observed for each
+ * folder path THIS cycle — see BackfillPageOptions.liveUidValidity for why
+ * the value is threaded in rather than read here.
+ *
  * Returns nothing. See runBackfillPage's SUPPRESSION note — there is no
  * value for a caller to hand a notification hook, by construction.
  */
 export async function runBackfillCycle(
   context: BackfillContext,
   folders: DiscoveredFolders,
+  liveUidValidity: ReadonlyMap<string, bigint>,
 ): Promise<void> {
   for (const target of folderSyncOrder(folders)) {
     try {
-      await runBackfillPage({ ...context, folder: target.path });
+      await runBackfillPage({
+        ...context,
+        folder: target.path,
+        // Absent for a folder whose live sync threw this cycle. null then
+        // means "cannot tell", never "renumbered" — see isRenumbered.
+        liveUidValidity: liveUidValidity.get(target.path) ?? null,
+      });
     } catch (error) {
       // Account id and folder name only — never a subject or an address.
       console.error(

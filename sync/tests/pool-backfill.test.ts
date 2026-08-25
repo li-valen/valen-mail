@@ -285,6 +285,56 @@ describe('ConnectionPool — historical backfill', () => {
     expect(fake.selectedMailbox()).toBe('INBOX');
   });
 
+  it('stays done, and fetches nothing, while the mailbox UIDVALIDITY is unchanged', async () => {
+    // The inverse of the re-walk below, and the one that matters more: a
+    // finished folder must cost one indexed lookup per cycle and nothing
+    // else. An implementation that re-walked on every cycle would pass the
+    // renumbering test and fail this one.
+    const fake = createFakeClient({ messages: mailbox(60), uidValidity: 4n });
+    const db = createFakeDb();
+    db.seedSyncState(ACCOUNT, 'INBOX', { uidValidity: 4n, lastSeenUid: 1n, backfillDone: true });
+
+    harness.launch(launchPool(fake, db));
+    await wait(80);
+
+    expect(headerRanges(fake)).toEqual(['11:60']);
+    expect(db.syncState(ACCOUNT, 'INBOX')).toEqual({
+      uidValidity: 4n,
+      lastSeenUid: 1n,
+      backfillDone: true,
+    });
+  });
+
+  it('re-walks a folder already marked done once the server renumbers the mailbox', async () => {
+    // backfill_done is TERMINAL and live sync only polls the newest 50, so
+    // without this the entire renumbered history below that window is
+    // permanently unreachable and nothing detects it. Every folder reaches
+    // the flag within about a day, so this is armed for the life of the
+    // deployment.
+    const fake = createFakeClient({ messages: mailbox(60), uidValidity: 4n });
+    const db = createFakeDb();
+    db.seedSyncState(ACCOUNT, 'INBOX', { uidValidity: 4n, lastSeenUid: 1n, backfillDone: true });
+
+    harness.launch(launchPool(fake, db));
+    await wait(80);
+    expect(headerRanges(fake)).toEqual(['11:60']);
+
+    // The server renumbers the mailbox mid-session, exactly as a real
+    // UIDVALIDITY change presents.
+    fake.setUidValidity(9n);
+    fake.triggerExists();
+    await wait(60);
+
+    // The folder pages again rather than staying terminal, and the row now
+    // records the numbering it was actually computed against.
+    expect(headerRanges(fake)).toEqual(['11:60', '11:60', '1:10']);
+    expect(db.syncState(ACCOUNT, 'INBOX')).toEqual({
+      uidValidity: 9n,
+      lastSeenUid: 1n,
+      backfillDone: true,
+    });
+  });
+
   it('pages nothing for a folder live sync has not landed anything in yet', async () => {
     // An empty mailbox has no oldest UID to walk backwards from. Backfill
     // must decline rather than invent a floor — and must NOT record a

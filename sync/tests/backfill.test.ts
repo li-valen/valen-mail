@@ -3,11 +3,16 @@ import type { SyncStateInput } from '../src/db';
 import {
   BACKFILL_BYTE_LIMIT,
   BACKFILL_PAGE_SIZE,
+  ESTIMATED_BYTES_PER_BACKFILLED_MESSAGE,
   backfillFloor,
+  isRenumbered,
   nextBackfillPage,
 } from '../src/imap/backfill';
 import { BACKFILL_SHARE, DAILY_BYTE_LIMIT } from '../src/budget';
-import { ESTIMATED_BYTES_PER_HEADER_FETCH } from '../src/imap/fetch';
+import {
+  ESTIMATED_BYTES_PER_HEADER_FETCH,
+  ESTIMATED_BYTES_PER_PREVIEW_FETCH,
+} from '../src/imap/fetch';
 
 /**
  * Plan 8 Task 1 — the paging decision, proved without a database, an IMAP
@@ -138,6 +143,34 @@ describe('nextBackfillPage — the paging rule', () => {
   });
 });
 
+describe('isRenumbered — the guard that makes backfill_done revocable', () => {
+  // `backfill_done` is terminal and live sync only polls the newest 50, so
+  // a renumbering AFTER that flag is set would make the whole renumbered
+  // history below that window permanently unreachable. Every folder
+  // reaches the flag within about a day, which is what arms it.
+
+  it('is true when the stored numbering differs from the live one', () => {
+    expect(isRenumbered(stateWith({ uidValidity: 1n, backfillDone: true }), 2n)).toBe(true);
+  });
+
+  it('is false when the numbering is unchanged — the overwhelmingly common path', () => {
+    // The inverse matters more than the reset: an implementation that
+    // re-walked every folder on every cycle would also pass a test that
+    // only proved the reset fires.
+    expect(isRenumbered(stateWith({ uidValidity: 7n, backfillDone: true }), 7n)).toBe(false);
+  });
+
+  it('is false whenever either side is unknown, so cannot-tell never re-walks', () => {
+    // A folder whose live sync threw this cycle reports null. Treating
+    // that as a renumbering would re-walk finished folders on every
+    // transient per-folder error.
+    expect(isRenumbered(stateWith({ uidValidity: 1n }), null)).toBe(false);
+    expect(isRenumbered(stateWith({ uidValidity: null }), 2n)).toBe(false);
+    expect(isRenumbered(null, 2n)).toBe(false);
+    expect(isRenumbered(null, null)).toBe(false);
+  });
+});
+
 describe('backfill budget arithmetic', () => {
   it('caps a backfill at BACKFILL_SHARE of the daily limit, leaving the rest for live sync', () => {
     // Derived, never a duplicated literal: tuning BACKFILL_SHARE must move
@@ -145,6 +178,18 @@ describe('backfill budget arithmetic', () => {
     expect(BACKFILL_BYTE_LIMIT).toBe(Math.floor(DAILY_BYTE_LIMIT * BACKFILL_SHARE));
     expect(BACKFILL_BYTE_LIMIT).toBeLessThan(DAILY_BYTE_LIMIT);
     expect(DAILY_BYTE_LIMIT - BACKFILL_BYTE_LIMIT).toBeGreaterThan(0);
+  });
+
+  it('reserves a page\'s previews up front, alongside its headers', () => {
+    // A preview reservation refused AFTER the page is fetched leaves those
+    // rows with snippet null forever — backfill never revisits a span,
+    // unlike live sync's re-poll. Reserving both together means a page is
+    // attempted only when both fit, so the watermark cannot move past a
+    // span whose previews were refused.
+    expect(ESTIMATED_BYTES_PER_BACKFILLED_MESSAGE).toBe(
+      ESTIMATED_BYTES_PER_HEADER_FETCH + ESTIMATED_BYTES_PER_PREVIEW_FETCH,
+    );
+    expect(BACKFILL_PAGE_SIZE * ESTIMATED_BYTES_PER_BACKFILLED_MESSAGE).toBe(614_400);
   });
 
   it('sizes one page at roughly 400 KB of headers', () => {
@@ -157,7 +202,7 @@ describe('backfill budget arithmetic', () => {
     // Sanity on the shape of the whole plan: if one page nearly filled the
     // share, a backfill would take years and this feature would not work
     // at all.
-    const pagesPerDay = BACKFILL_BYTE_LIMIT / (BACKFILL_PAGE_SIZE * ESTIMATED_BYTES_PER_HEADER_FETCH);
+    const pagesPerDay = BACKFILL_BYTE_LIMIT / (BACKFILL_PAGE_SIZE * ESTIMATED_BYTES_PER_BACKFILLED_MESSAGE);
     expect(pagesPerDay).toBeGreaterThan(1000);
   });
 });

@@ -520,10 +520,17 @@ export class ConnectionPool {
       // folder — see ESTIMATED_BYTES_PER_PREVIEW_FETCH in ./fetch.ts for
       // that arithmetic and why it is one-time rather than recurring.
       const newByFolder = new Map<FolderKind, readonly MessageInput[]>();
+      // Each folder's UIDVALIDITY as observed by the fetch below, for
+      // ./backfill.ts's terminal-flag invalidation (fix round 1). Collected
+      // here because live sync has already paid for it — the alternative is
+      // opening every finished folder's mailbox once per cycle, forever.
+      const liveUidValidity = new Map<string, bigint>();
 
       for (const target of folderSyncOrder(folders)) {
         try {
-          newByFolder.set(target.kind, await this.syncFolder(accountId, connection, target.path));
+          const synced = await this.syncFolder(accountId, connection, target.path);
+          newByFolder.set(target.kind, synced.newMessages);
+          if (synced.uidValidity !== null) liveUidValidity.set(target.path, synced.uidValidity);
         } catch (error) {
           // INBOX keeps its existing semantics: its failure IS the
           // connection's health signal (a mailbox that will not open on an
@@ -554,7 +561,9 @@ export class ConnectionPool {
       // INBOX-only dispatch guard below reads. Backfilling a year of mail
       // must not produce a year of buzzes; backfill.ts's own SUPPRESSION
       // note explains why that is structural, not conditional.
-      await runBackfillCycle({ db: this.db, budget: this.budget, accountId, connection }, folders);
+      await runBackfillCycle(
+        { db: this.db, budget: this.budget, accountId, connection }, folders, liveUidValidity,
+      );
 
       // The cycle must END with INBOX selected: imapflow leaves the last
       // locked mailbox selected after release(), so a cycle ending on
@@ -635,12 +644,18 @@ export class ConnectionPool {
    * Returning the new messages rather than dispatching them keeps the
    * INBOX-only notification guard in ONE place (syncOnce's call site)
    * instead of duplicating `if (folder === INBOX)` down every path.
+   *
+   * The mailbox's UIDVALIDITY rides along (fix round 1) so the backfill
+   * pass can invalidate a watermark — and a terminal `backfill_done` —
+   * computed against a numbering the server has since replaced. Nothing
+   * about this fetch changed to produce it: FetchResult already carried
+   * the field and this method used to drop it.
    */
   private async syncFolder(
     accountId: string,
     connection: ImapConnection,
     folder: string,
-  ): Promise<readonly MessageInput[]> {
+  ): Promise<{ readonly newMessages: readonly MessageInput[]; readonly uidValidity: bigint | null }> {
     const decision = await this.budget.reserve(accountId, RESERVE_BYTES_PER_FOLDER_SYNC);
     if (!decision.allowed) {
       // Amendment 4: a refused reservation skips the fetch entirely
@@ -650,7 +665,9 @@ export class ConnectionPool {
         `account "${accountId}" folder "${folder}": daily byte budget exhausted, skipping sync ` +
           `(requested ${RESERVE_BYTES_PER_FOLDER_SYNC}, remaining ${decision.remaining})`,
       );
-      return [];
+      // No fetch, so no UIDVALIDITY observed — null, which backfill reads
+      // as "cannot tell" rather than "renumbered".
+      return { newMessages: [], uidValidity: null };
     }
 
     const result = await fetchHeaders(connection, folder, { limit: HEADER_FETCH_LIMIT });
@@ -675,7 +692,10 @@ export class ConnectionPool {
       await this.persistAttachments(accountId, folder, message.uid, result.attachments.get(message.uid));
     }
 
-    return this.marks.track(accountId, folder, result.messages, result.uidValidity);
+    return {
+      newMessages: this.marks.track(accountId, folder, result.messages, result.uidValidity),
+      uidValidity: result.uidValidity,
+    };
   }
 
   /**
