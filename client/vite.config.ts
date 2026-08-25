@@ -12,7 +12,18 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   // The sync service serves these as static files, which is what keeps the
   // client on ONE origin with the API — no CORS, no second bearer token.
-  build: { outDir: '../sync/public', emptyOutDir: true },
+  build: {
+    outDir: '../sync/public',
+    emptyOutDir: true,
+    // `motion` is ~42 kB gzip — the largest single dependency, and it earns
+    // that only if the user pays for it once rather than on every deploy.
+    // Without this it rides in the main app chunk, whose content hash changes
+    // whenever any app code changes, so a one-line edit to App.tsx re-downloads
+    // the whole animation library. sw.js deliberately has no Cache Storage (it
+    // would persist mailbox JSON), so the HTTP cache is the ONLY thing keeping
+    // this off the wire — and a stable chunk is what makes that cache hit.
+    rollupOptions: { output: { manualChunks: { motion: ['motion'] } } },
+  },
   server: { proxy: { '/api': 'http://127.0.0.1:8080' } },
   // css: true — vitest's own default (`css.include: []`) stubs every CSS
   // import to an empty module. Nothing under src/ imports a stylesheet by
