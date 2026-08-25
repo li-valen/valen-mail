@@ -1,4 +1,3 @@
-import { timingSafeEqual } from 'node:crypto';
 import { listRecentOpens, type OpenRow } from '../src/db';
 
 export const config = { runtime: 'edge' };
@@ -38,18 +37,45 @@ export function classificationIsConfirmed(c: string): boolean {
 }
 
 /**
- * Constant-time comparison, reusing the exact pattern `sync/src/api/routes.ts`
- * uses for its own bearer token. A plain `===` short-circuits on the first
- * differing byte, leaking token length and prefix through response timing.
- * `timingSafeEqual` throws on a length mismatch, so the length check must
- * happen first — and that check itself leaks nothing the caller doesn't
- * already know (their own input's length).
+ * Constant-time comparison built only on Web-standard APIs. `node:crypto`'s
+ * `timingSafeEqual` — the pattern `sync/src/api/routes.ts` uses for its own
+ * bearer token — is not an option here: this route runs on Vercel Edge, and
+ * Edge's documented "Compatible Node.js modules" list is exactly
+ * `async_hooks`, `events`, `buffer`, `assert`, `util` (vercel.com/docs/
+ * functions/runtimes/edge) — `crypto` is not on it. `Buffer` is dropped too:
+ * it's a Vercel-specific global, not a Web standard, and having removed one
+ * non-standard dependency there's no reason to keep the other. `TextEncoder`
+ * is already used elsewhere in this service (`src/db.ts`'s `hashIp`) and is
+ * unambiguously Edge-safe.
+ *
+ * A plain `===` short-circuits on the first differing byte, leaking token
+ * length and prefix through response timing. The length check below is
+ * exempt from that concern — it leaks only the length of the caller's own
+ * input, which they already know, the same property `timingSafeEqual`
+ * itself relies on by throwing on a length mismatch rather than comparing.
+ *
+ * The loop that follows has NO early exit, on purpose. Returning `false`
+ * the instant a differing byte is found would reintroduce exactly the
+ * timing leak this function exists to prevent — just moved from "did the
+ * whole token match" down to "how many leading bytes matched before the
+ * first difference." Every byte pair is XORed into one accumulator across
+ * the *entire* length no matter where they first diverge, and only the
+ * final accumulator — zero if and only if every byte pair was equal — is
+ * checked once, after the loop ends. A future edit that adds
+ * `if (diff) return false;` inside the loop as an "optimization" would
+ * silently undo this property; that's the thing to protect in review, since
+ * nothing here or in the type system enforces it structurally.
  */
-function tokenMatches(provided: string, expected: string): boolean {
-  const a = Buffer.from(provided);
-  const b = Buffer.from(expected);
+export function tokenMatches(provided: string, expected: string): boolean {
+  const a = new TextEncoder().encode(provided);
+  const b = new TextEncoder().encode(expected);
   if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
+
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a[i]! ^ b[i]!;
+  }
+  return diff === 0;
 }
 
 /**

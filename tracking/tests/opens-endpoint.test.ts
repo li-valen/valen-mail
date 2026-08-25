@@ -89,6 +89,36 @@ describe('opens endpoint auth: bearer token check', () => {
   });
 });
 
+describe('tokenMatches', () => {
+  it('matches two identical strings', async () => {
+    const { tokenMatches } = await freshImport();
+    expect(tokenMatches(TOKEN, TOKEN)).toBe(true);
+  });
+
+  it('rejects a same-length string that differs', async () => {
+    const { tokenMatches } = await freshImport();
+    expect(tokenMatches(WRONG_TOKEN_SAME_LENGTH, TOKEN)).toBe(false);
+  });
+
+  it('rejects a shorter string, even one that is a strict prefix of the expected value', async () => {
+    const { tokenMatches } = await freshImport();
+    const prefix = TOKEN.slice(0, TOKEN.length - 1);
+    expect(tokenMatches(prefix, TOKEN)).toBe(false);
+  });
+
+  it('rejects a longer string that extends past the expected value', async () => {
+    const { tokenMatches } = await freshImport();
+    expect(tokenMatches(`${TOKEN}x`, TOKEN)).toBe(false);
+  });
+
+  it('is symmetric: swapping provided/expected gives the same verdict', async () => {
+    const { tokenMatches } = await freshImport();
+    expect(tokenMatches(TOKEN, WRONG_TOKEN_SAME_LENGTH)).toBe(
+      tokenMatches(WRONG_TOKEN_SAME_LENGTH, TOKEN),
+    );
+  });
+});
+
 describe('classificationIsConfirmed', () => {
   it('never reports mpp or prefetch as a confirmed read', async () => {
     const { classificationIsConfirmed } = await freshImport();
