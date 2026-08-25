@@ -15,8 +15,9 @@
  * time"), per this task's instruction that the DESIGN.md anatomy section
  * is binding.
  *
- * "unread" (sender at weight 500) is deliberately NOT implemented here —
- * see MessageRow.tsx's doc comment.
+ * "unread" (sender at weight 500) is implemented via `.row__sender--unread`
+ * below — see MessageRow.tsx and messageFlags.ts for the derivation, its
+ * evidence, and its staleness caveat.
  */
 
 .row {
@@ -44,6 +45,13 @@
   font-weight: 400;
   letter-spacing: -0.006em;
   color: var(--fg-primary);
+}
+
+/* DESIGN.md §3.2/§6: "sender (500 if unread)" — the ONE visual difference
+   between a read and unread row. See MessageRow.tsx/messageFlags.ts for
+   the \Seen-membership derivation and its staleness caveat. */
+.row__sender--unread {
+  font-weight: 500;
 }
 
 .row__subject {

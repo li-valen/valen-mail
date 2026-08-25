@@ -1,6 +1,7 @@
 import { Paperclip } from 'lucide-react';
 import type { InboxMessage } from '../api';
 import { formatWhen } from './inboxDates';
+import { isUnread } from './messageFlags';
 import './MessageRow.css';
 
 export interface MessageRowProps {
@@ -14,8 +15,9 @@ export interface MessageRowProps {
 
 /**
  * One row of the unified inbox (client/DESIGN.md §6, component #7):
- * account label · sender · subject · time, one line, ellipsis-truncated,
- * plus a paperclip when the message has an attachment.
+ * account label · sender (500 if unread) · subject · time, one line,
+ * ellipsis-truncated, plus a paperclip when the message has an
+ * attachment.
  *
  * **No snippet.** `snippet` is always `null` today (task-4-brief.md ground
  * truth: "a known, parked limitation"). This renders the row correctly
@@ -24,16 +26,18 @@ export interface MessageRowProps {
  * snippet, but rendering an empty/greyed placeholder there would promise
  * something the sync service does not deliver.
  *
- * **No "unread" bold treatment.** DESIGN.md's anatomy lists "sender (500
- * if unread)", derivable in principle from `message.flags` containing the
- * IMAP `\Seen` flag. Left out here: the ground truth sample this task was
- * given shows `flags: []` for a real, already-synced message, and there
- * is no way to confirm from here whether that means "flags are not being
- * populated for any message" (in which case every row would render bold,
- * a systematically wrong and misleading result) or "this message is
- * actually unread." Guessing at unverified wire behavior and shipping it
- * either way risked a UI that is confidently wrong for every row in a
- * live inbox — flagged in task-4-report.md rather than guessed here.
+ * **Unread (sender at weight 500).** Derived from `message.flags` via
+ * `./messageFlags`'s `isUnread` — see that file's doc comment for why this
+ * is safe to derive at all (it was NOT implemented in this task's first
+ * pass, on the reasoning that an empty `flags: []` sample was ambiguous
+ * between "genuinely unread" and "sync never captured flags"; resolved
+ * with a live 200-message sample, task-4-report.md "fix round 1"), for the
+ * staleness caveat that comes with it (a message read in Gmail long ago
+ * can still render unread here, permanently, once it ages out of the
+ * sync backfill window), and for why that caveat is documented in code
+ * rather than the UI. The visually-hidden "Unread." prefix gives screen
+ * reader users the same signal the bold weight gives sighted ones — bold
+ * alone is a purely visual cue.
  *
  * **Not a link or button.** No later task in this plan adds a message
  * detail/reading view yet, so this row has nowhere to navigate to; giving
@@ -50,11 +54,13 @@ export interface MessageRowProps {
 export default function MessageRow({ message, now }: MessageRowProps) {
   const sender = message.from_name || message.from_email || 'Unknown sender';
   const subject = message.subject || '(no subject)';
+  const unread = isUnread(message);
 
   return (
     <li className="row">
       <div className="row__primary">
-        <span className="row__sender">{sender}</span>
+        {unread && <span className="visually-hidden">Unread. </span>}
+        <span className={`row__sender${unread ? ' row__sender--unread' : ''}`}>{sender}</span>
         <span className="row__subject">{subject}</span>
       </div>
       <div className="row__meta">
