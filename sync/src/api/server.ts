@@ -14,6 +14,8 @@ import { notifyNewMail } from '../push/dispatch.ts';
 import { createOpensPoll } from '../push/opens-poll.ts';
 import type { OpensPoll } from '../push/opens-poll';
 import type { VapidConfig } from '../push/vapid';
+import { createTransports } from '../send/transports.ts';
+import type { Transports } from '../send/transports';
 
 /** Amendment 4: a missing or short token must fail the whole startup, not
  *  silently degrade to "no auth required" — that would publish four (soon
@@ -358,18 +360,30 @@ export function registerShutdownHandlers(
  * simple invariant ("nothing new begins once server.close() starts
  * draining") is easier to reason about than a special case for the one
  * background loop that happens not to need it.
+ *
+ * `transports` (Plan 4 Task 2) joins the same `Promise.all` for a simpler
+ * reason than either: each SMTP transport holds only its own TCP socket to
+ * smtp.gmail.com and touches no database state at all, so unlike
+ * `opensPoll` it has no `db` dependency to order against — it is grouped
+ * here purely so shutdown does not serialise behind releasing a resource
+ * `db.close()` never needed in the first place.
  */
 export function createShutdown(
   server: Server,
   pool: ConnectionPool,
   db: Db,
   opensPoll: OpensPoll | null = null,
+  transports: Transports | null = null,
 ): () => Promise<void> {
   return onceOnly(async () => {
     await new Promise<void>((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
     });
-    await Promise.all([pool.stop(), opensPoll ? opensPoll.stop() : Promise.resolve()]);
+    await Promise.all([
+      pool.stop(),
+      opensPoll ? opensPoll.stop() : Promise.resolve(),
+      transports ? Promise.resolve(transports.closeAll()) : Promise.resolve(),
+    ]);
     await db.close();
   });
 }
@@ -407,6 +421,11 @@ export function createRouterFromConfig(
     // so tests can stub the /api/opens proxy (see routes.ts).
     undefined,
     config.vapidConfig,
+    // staticRoot: undefined keeps createRouter's own default
+    // (defaultStaticRoot()) — skipped positionally, the same way
+    // fetchImpl is skipped two lines up, to reach accounts below it.
+    undefined,
+    config.accounts,
   );
 }
 
@@ -506,6 +525,12 @@ export async function startServer(): Promise<{ close(): Promise<void> }> {
   const opensPoll = createOpensPollFromConfig(db, config);
   opensPoll?.start();
 
+  // Plan 4 Task 2: one lazy, per-account SMTP transport. Nothing calls
+  // .get() yet — POST /api/send is Task 3 — so this exists purely to be
+  // wired into createShutdown below from the moment it does, rather than
+  // introducing that wiring later alongside the route that first needs it.
+  const transports = createTransports(config.accounts);
+
   const router = createRouterFromConfig(db, pool, apiToken, config);
   const server = createServer((nodeRequest, nodeResponse) => {
     void handleRequest(router, nodeRequest, nodeResponse);
@@ -516,7 +541,7 @@ export async function startServer(): Promise<{ close(): Promise<void> }> {
     `api: postbox-sync listening on ${BIND_HOST}:${config.port}, ${config.accounts.length} accounts`,
   );
 
-  const close = createShutdown(server, pool, db, opensPoll);
+  const close = createShutdown(server, pool, db, opensPoll, transports);
   registerShutdownHandlers(close);
 
   return { close };

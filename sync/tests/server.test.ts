@@ -541,3 +541,48 @@ describe('createShutdown — stopping the opens poll', () => {
     expect(parts.order).toEqual(['server', 'pool', 'db']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Plan 4 Task 2 — SMTP transports join the same shutdown, before db.close()
+// ---------------------------------------------------------------------------
+
+describe('createShutdown — closing SMTP transports', () => {
+  it('closes transports before db.close(), alongside the IMAP pool and opens poll', async () => {
+    const parts = makeShutdownParts();
+    const closeCalls: string[] = [];
+    const transports = {
+      get: () => undefined,
+      closeAll() {
+        closeCalls.push('transports');
+      },
+    };
+
+    await createShutdown(parts.server, parts.pool, parts.db, null, transports)();
+
+    // Same reasoning as the opens-poll block above: transports.closeAll()
+    // is independent of the pool (it holds TCP sockets, not database
+    // state) and runs inside the same Promise.all, so its order relative
+    // to 'pool' is not asserted — only that it really ran, and that 'db'
+    // still comes after 'pool' in this same call.
+    expect(parts.order).toContain('pool');
+    expect(closeCalls).toEqual(['transports']);
+    expect(parts.order.indexOf('db')).toBeGreaterThan(parts.order.indexOf('pool'));
+  });
+
+  it('is a no-op for transports when none was configured', async () => {
+    const parts = makeShutdownParts();
+    await expect(
+      createShutdown(parts.server, parts.pool, parts.db, null, null)(),
+    ).resolves.toBeUndefined();
+    expect(parts.order).toEqual(['server', 'pool', 'db']);
+  });
+
+  it('still defaults safely when called with the pre-Task-2 3-argument form', async () => {
+    // Every existing call site across this suite — createShutdown(server,
+    // pool, db) with no 4th or 5th argument — must keep compiling and
+    // behaving exactly as before adding this parameter.
+    const parts = makeShutdownParts();
+    await expect(createShutdown(parts.server, parts.pool, parts.db)()).resolves.toBeUndefined();
+    expect(parts.order).toEqual(['server', 'pool', 'db']);
+  });
+});

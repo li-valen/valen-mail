@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import type { Db, InboxCursor } from '../db';
 import type { ConnectionPool } from '../imap/pool';
 import type { ImapConnection } from '../imap/connection';
-import type { TrackingConfig } from '../config';
+import type { AccountConfig, TrackingConfig } from '../config';
 import { fetchBodyPart, BodyPartTooLargeError, MAX_BODY_PART_BYTES } from '../imap/fetch.ts';
 import { fetchOpens } from './opens.ts';
 import { MAX_LIMIT, DEFAULT_LIMIT } from './limits.ts';
@@ -17,6 +17,7 @@ import type { RateLimiter } from './rate-limit';
 import { json, noContent, NO_STORE, PRIVATE_NO_STORE } from './http.ts';
 import { handlePushKey, handlePushSubscribe, handlePushUnsubscribe } from './push.ts';
 import type { VapidConfig } from '../push/vapid';
+import { handleIdentities } from './identities.ts';
 import { createStaticHandler, defaultStaticRoot } from './static.ts';
 
 /**
@@ -574,6 +575,13 @@ async function handleAttachment(
  * global `fetch` (the default). It exists so tests can inject a stub and
  * exercise this route without a live network call, mirroring the
  * FetchOpensDeps.fetchImpl pattern in opens.ts itself.
+ *
+ * `accounts` backs GET /api/identities (Plan 4 Task 2) — see
+ * ./identities.ts. Appended as the LAST parameter with a `[]` default,
+ * same as `vapidConfig` and `staticRoot` were before it: every existing
+ * caller of this function (tests included) keeps compiling unchanged, and
+ * a router built with no accounts degrades to an empty identities list
+ * rather than throwing.
  */
 export function createRouter(
   db: Db,
@@ -586,6 +594,7 @@ export function createRouter(
   // from ./static.ts's own module location (never the process cwd — see
   // that module's doc comment). Tests pass a fixture directory instead.
   staticRoot: string = defaultStaticRoot(),
+  accounts: readonly AccountConfig[] = [],
 ): (request: Request) => Promise<Response> {
   // One counter per router, created here rather than taken as a parameter:
   // production builds exactly one router, and giving each call its own
@@ -658,6 +667,10 @@ export function createRouter(
 
     if (path === '/api/push/key') {
       return handlePushKey(vapidConfig);
+    }
+
+    if (path === '/api/identities') {
+      return handleIdentities(accounts);
     }
 
     const threadMatch = path.match(/^\/api\/thread\/([^/]+)$/);

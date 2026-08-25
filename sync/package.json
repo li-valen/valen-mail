@@ -12,6 +12,7 @@
   "dependencies": {
     "imapflow": "^1.0.191",
     "mailparser": "^3.7.1",
+    "nodemailer": "^9.0.5",
     "pg": "^8.13.1",
     "web-push": "^3.6.7"
   },
