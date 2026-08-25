@@ -57,3 +57,32 @@ No test in Plan 3 renders a component. Layout, theme and focus are unverified by
 the suite, and the dark/light token split is the exposed case: a colour defined
 only inside a media block renders one theme's text on the other theme's ground.
 Step 9 is therefore mandatory, in BOTH colour schemes, at mobile and desktop widths.
+
+## Direction amendment (2026-08-25, user-directed)
+
+The user reviewed the running app and redirected: **use Superhuman/Gmail as the
+ergonomic guide.** The identity stays (tokens, three honest read-states, the
+uncertainty thesis); what changes is ergonomics: Gmail-density rows (~40px,
+single-line, sender column / subject flex / time right), quiet small day labels
+instead of display-size headings, one-line unconfirmable rail rows, dismissible
+status banner. Recorded per rule 3. DESIGN.md carries the amendment section.
+
+Root-cause note: the app rendered largely in Times because body never set
+font-family — tokens existed but were opted into piecemeal. body { font-family:
+var(--font-ui) } is the fix; components stop re-declaring it except for mono/display.
+
+## Direction pivot 2 (2026-08-25, user-directed): Plunk as the UI base
+
+User: "The UI is pretty terrible. Base the UI off https://github.com/useplunk/plunk...
+steal the UI for now... use it as a base." This supersedes the hand-rolled token
+system AND the no-Tailwind decision (user > project decisions), and matches the
+user's own global "clone battle-tested skeletons" rule.
+Reference clone: scratchpad/plunk-ref (read-only). AGPL-3.0 — fine for a personal,
+unpublished tool.
+Adopted: Tailwind v4 (CSS-first @theme), Plunk's shadcn-style palette
+(--background/--muted/--border HSL vars, radius 0.5rem), Inter, the sidebar +
+h-16 topbar shell, and ports of only the atoms we use.
+KEPT (not negotiable): all plumbing (api.ts, session gate, sw.js, manifest, icons),
+the three honest read-states semantics + their static guards, XSS text-only rules.
+DESIGN.md is superseded for visual values; its §5 read-state SEMANTICS and copy
+voice survive restyled.
