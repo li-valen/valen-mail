@@ -793,12 +793,12 @@ curl -s -o /dev/null -w '%{http_code} %{content_type}\n' \
 | PostgreSQL     | 16.15, running, tuned, `postbox`/`postbox_sync` ready |
 | App code       | deployed to `/opt/postbox/sync`, deps installed     |
 | `.env` / `accounts.json` | present, `600`, owned by `postbox`         |
-| systemd unit   | installed, valid, **enabled**, **inactive**         |
-| Caddy          | installed, running, staged (no TLS site yet)        |
-| postbox-sync   | **NOT started** — left to the controller (A5)       |
-| Browser auth   | bearer **or** `__Host-` session cookie; needs TLS live (§13) |
-| Web Push       | routes + table shipped; **VAPID keys NOT yet on the VM** (§14) |
-| `web-push` dep | **not yet installed on the VM** — rerun §7's npm install (§14) |
+| systemd unit   | installed, valid, **enabled**, **active** (2026-08-25 rollout) |
+| Caddy          | running, **TLS live** at https://postbox-valen.duckdns.org |
+| postbox-sync   | **running** — 4 accounts connected; opens poll ticking (sentinel verified) |
+| Browser auth   | bearer **or** `__Host-` session cookie — TLS live, login verified (§13) |
+| Web Push       | live — VAPID keys on the VM; `push_subscriptions` created at boot (§14) |
+| `web-push` dep | installed on the VM (`npm ci --omit=dev`, 2026-08-25) |
 
 ## 15. Full-stack deploy — Plan 3 (Task 8)
 
