@@ -31,7 +31,7 @@ const DEVICE_CLASS_ACCESS = /\.deviceClass\b/;
 const OS_FIELD_ACCESS = /\.os\b/;
 const CHECKMARK_ICON_IMPORT = /\bCheck(Circle2?|Square)?\b|\bBadgeCheck\b/;
 
-describe('OpensRail/ReadState source — DESIGN.md §5.1 hard bans', () => {
+describe('OpensView/ReadState source — read-state hard bans', () => {
   it('never reads event.deviceClass', () => {
     expect(SOURCE).not.toMatch(DEVICE_CLASS_ACCESS);
   });
