@@ -76,23 +76,23 @@ export default function LoginView({ onSubmit }: LoginViewProps) {
   }
 
   return (
-    <main className="flex min-h-dvh items-center justify-center bg-neutral-50 px-4 py-12">
+    <main className="flex min-h-dvh items-center justify-center bg-neutral-50 dark:bg-background px-4 py-12">
       <div className="w-full max-w-sm">
         <div className="mb-6 flex items-center justify-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-neutral-900 text-white">
+          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-neutral-900 text-white dark:bg-primary dark:text-primary-foreground">
             <Mailbox className="h-4 w-4" aria-hidden="true" />
           </div>
-          <span className="text-2xl font-bold text-neutral-900">Postbox</span>
+          <span className="text-2xl font-bold text-neutral-900 dark:text-foreground">Postbox</span>
         </div>
 
         <Card>
           <CardContent className="pt-6">
             <form onSubmit={handleSubmit} noValidate className="space-y-4">
               <div className="space-y-1.5">
-                <h1 className="text-lg font-semibold tracking-tight text-neutral-900">
+                <h1 className="text-lg font-semibold tracking-tight text-neutral-900 dark:text-foreground">
                   Postbox needs your token.
                 </h1>
-                <p className="text-sm leading-relaxed text-neutral-500">
+                <p className="text-sm leading-relaxed text-neutral-500 dark:text-muted-foreground">
                   This browser is not signed in. Paste the sync service&rsquo;s API token once.
                   Postbox keeps a signed session cookie for thirty days, never the token itself.
                 </p>

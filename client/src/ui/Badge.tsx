@@ -18,10 +18,16 @@ const badgeVariants = cva(
   {
     variants: {
       variant: {
-        default: 'border-transparent bg-neutral-100 text-neutral-900',
-        secondary: 'border-transparent bg-neutral-100 text-neutral-900',
-        outline: 'text-neutral-950',
-        neutral: 'border-transparent bg-neutral-50 text-neutral-600',
+        default: 'border-transparent bg-neutral-100 text-neutral-900 dark:bg-secondary dark:text-secondary-foreground',
+        secondary: 'border-transparent bg-neutral-100 text-neutral-900 dark:bg-secondary dark:text-secondary-foreground',
+        outline: 'text-neutral-950 dark:text-foreground',
+        neutral: 'border-transparent bg-neutral-50 text-neutral-600 dark:bg-muted dark:text-muted-foreground',
+        // destructive/success/warning are unused anywhere in this app
+        // today (only `neutral` — MessageRow's account chip — and
+        // `secondary` — OpensFeed's count — are ever rendered) and are
+        // not neutrals, so they are out of this task's audit scope; see
+        // ui/Alert.tsx's comment on its own destructive variant for the
+        // same reasoning applied to a variant that IS reachable.
         destructive: 'border-transparent bg-red-100 text-red-900',
         success: 'border-transparent bg-green-100 text-green-900',
         warning: 'border-transparent bg-amber-100 text-amber-900',

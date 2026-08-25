@@ -9,5 +9,5 @@ import { cn } from './cn';
  * anyone who asked for that.
  */
 export function Skeleton({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('animate-pulse rounded-md bg-neutral-100', className)} {...props} />;
+  return <div className={cn('animate-pulse rounded-md bg-neutral-100 dark:bg-muted', className)} {...props} />;
 }

@@ -13,17 +13,22 @@ import { cn } from './cn';
  * Everything else, including the focus-visible ring, is verbatim.
  */
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 cursor-pointer',
+  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 cursor-pointer',
   {
     variants: {
       variant: {
-        default: 'bg-neutral-900 text-neutral-50 hover:bg-neutral-900/90',
+        default: 'bg-neutral-900 text-neutral-50 hover:bg-neutral-900/90 dark:bg-primary dark:text-primary-foreground dark:hover:bg-primary/90',
+        // Not routed through --destructive: it is a saturated, fully
+        // opaque red button colour in both modes already (unlike Alert's
+        // subtle destructive variant), and reads fine as-is against a
+        // dark page. Left unchanged deliberately, not an oversight.
         destructive: 'bg-red-600 text-white hover:bg-red-600/90',
-        outline: 'border border-neutral-200 bg-white hover:bg-neutral-100 hover:text-neutral-900',
-        secondary: 'bg-neutral-100 text-neutral-900 hover:bg-neutral-100/80',
-        ghost: 'hover:bg-neutral-100 hover:text-neutral-900',
+        outline:
+          'border border-neutral-200 bg-card hover:bg-neutral-100 hover:text-neutral-900 dark:border-border dark:hover:bg-accent dark:hover:text-accent-foreground',
+        secondary: 'bg-neutral-100 text-neutral-900 hover:bg-neutral-100/80 dark:bg-secondary dark:text-secondary-foreground dark:hover:bg-secondary/80',
+        ghost: 'hover:bg-neutral-100 hover:text-neutral-900 dark:hover:bg-accent dark:hover:text-accent-foreground',
         destructiveGhost: 'text-red-600 hover:text-red-700 hover:bg-red-50',
-        link: 'text-neutral-900 underline-offset-4 hover:underline',
+        link: 'text-neutral-900 underline-offset-4 hover:underline dark:text-foreground',
       },
       size: {
         default: 'h-9 px-4 py-2',

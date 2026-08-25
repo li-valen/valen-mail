@@ -3,11 +3,46 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <!-- Postbox ships LIGHT-ONLY (see src/styles.css's header for why the
-         ported .dark palette is present but never applied), so there is one
-         theme-color, not a light/dark pair: #ffffff is the sidebar and the
-         mobile topbar, which is what sits under the browser chrome. -->
+    <!-- Static fallback only. The inline script right below overwrites this
+         attribute before first paint, and src/themeController.ts keeps it
+         in sync afterwards on every preference or OS change. Deliberately
+         NOT a media="(prefers-color-scheme: ...)" pair of tags: those can
+         only see the OS's own scheme, not an explicit in-app Light/Dark
+         choice overriding it, so they would show the wrong browser-chrome
+         colour the instant someone picked Dark on a light OS (or the
+         reverse) — a static pair can't express "the app disagrees with the
+         OS on purpose". #ffffff / #030711 are --background's light/dark
+         values (src/styles.css), i.e. the same colour as the sidebar and
+         mobile topbar sitting under this chrome. -->
     <meta name="theme-color" content="#ffffff" />
+    <!-- Applies the resolved theme's `.dark` class (and this tag's colour)
+         BEFORE first paint, so a stored Dark preference — or System while
+         the OS is dark — never flashes light and then swaps a moment
+         later. An inline script is the only way to run before the module
+         graph loads, which is the entire reason this exists outside
+         src/themeController.ts: it duplicates that file's `resolveTheme`
+         decision and class/meta application in plain, un-bundled JS.
+         Deliberately tiny — this is not the place for the real logic,
+         only for running an equivalent of it early. Keep the two in sync
+         by hand if either changes; no test can see into an inline
+         <script> to check for you. -->
+    <script>
+      (function () {
+        var stored = null;
+        try {
+          stored = localStorage.getItem('postbox:theme');
+        } catch (e) {
+          // Storage disabled (private-mode Safari, a locked-down profile):
+          // fall through to the OS preference below, same as "never set".
+        }
+        var isDark =
+          stored === 'dark' ||
+          (stored !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        if (isDark) document.documentElement.classList.add('dark');
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', isDark ? '#030711' : '#ffffff');
+      })();
+    </script>
     <!-- iOS: makes "Add to Home Screen" launch in the manifest's standalone
          display mode, which Web Push requires. -->
     <meta name="apple-mobile-web-app-capable" content="yes" />

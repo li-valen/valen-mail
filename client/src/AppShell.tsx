@@ -64,13 +64,18 @@ const VIEW_TITLES: Readonly<Record<ViewId, string>> = {
 };
 
 /** Plunk's own nav-item classes, lifted to a helper so the desktop and
- *  mobile copies of the sidebar cannot drift apart. */
+ *  mobile copies of the sidebar cannot drift apart.
+ *
+ *  Active and hover share `accent`/`accent-foreground` in dark mode
+ *  deliberately (light keeps them as two different literals, neutral-100
+ *  vs neutral-50 — too close to tell apart anyway) so a hover preview
+ *  matches what clicking actually produces. */
 function navItemClass(isActive: boolean): string {
   return cn(
-    'w-full flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+    'w-full flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
     isActive
-      ? 'bg-neutral-100 text-neutral-900'
-      : 'text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900',
+      ? 'bg-neutral-100 text-neutral-900 dark:bg-accent dark:text-accent-foreground'
+      : 'text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900 dark:text-muted-foreground dark:hover:bg-accent dark:hover:text-accent-foreground',
   );
 }
 
@@ -79,13 +84,15 @@ function Wordmark({ size }: { readonly size: 'sm' | 'md' }) {
     <div className="flex items-center gap-2">
       <div
         className={cn(
-          'rounded-md bg-neutral-900 text-white flex items-center justify-center',
+          'rounded-md bg-neutral-900 text-white dark:bg-primary dark:text-primary-foreground flex items-center justify-center',
           size === 'md' ? 'h-7 w-7' : 'h-6 w-6',
         )}
       >
         <Mailbox className={size === 'md' ? 'h-4 w-4' : 'h-3.5 w-3.5'} aria-hidden="true" />
       </div>
-      <span className={cn('font-bold text-neutral-900', size === 'md' ? 'text-xl' : 'text-lg')}>
+      <span
+        className={cn('font-bold text-neutral-900 dark:text-foreground', size === 'md' ? 'text-xl' : 'text-lg')}
+      >
         Postbox
       </span>
     </div>
@@ -100,14 +107,14 @@ function AccountList({ accounts }: AccountListProps) {
   if (accounts.length === 0) return null;
   return (
     <div className="mt-6">
-      <p className="px-3 mb-2 text-xs font-semibold text-neutral-500 uppercase tracking-wider">
+      <p className="px-3 mb-2 text-xs font-semibold text-neutral-500 uppercase tracking-wider dark:text-muted-foreground">
         Accounts
       </p>
       <ul className="space-y-1">
         {accounts.map((account) => (
           <li key={account.id} className="flex items-center gap-3 px-3 py-1.5 text-sm">
             <span
-              className="h-6 w-6 rounded-md bg-neutral-100 text-neutral-700 flex items-center justify-center text-[10px] font-semibold shrink-0"
+              className="h-6 w-6 rounded-md bg-neutral-100 text-neutral-700 dark:bg-secondary dark:text-secondary-foreground flex items-center justify-center text-[10px] font-semibold shrink-0"
               aria-hidden="true"
             >
               {account.id.charAt(0).toUpperCase()}
@@ -115,8 +122,12 @@ function AccountList({ accounts }: AccountListProps) {
             {/* Text child, never markup: an account id comes from the sync
                 service's config, and every string this app renders goes
                 through JSX escaping. */}
-            <span className="flex-1 min-w-0 truncate text-neutral-700">{account.id}</span>
-            <span className="text-xs text-neutral-400 tabular-nums font-mono">{account.count}</span>
+            <span className="flex-1 min-w-0 truncate text-neutral-700 dark:text-muted-foreground">
+              {account.id}
+            </span>
+            <span className="text-xs text-neutral-400 tabular-nums font-mono dark:text-muted-foreground">
+              {account.count}
+            </span>
           </li>
         ))}
       </ul>
@@ -129,7 +140,8 @@ export interface AppShellProps {
   readonly onViewChange: (view: ViewId) => void;
   readonly accounts: readonly AccountSummary[];
   /** Rendered in the sidebar's bottom block, where Plunk puts Settings and
-   *  the account menu. Postbox puts the notifications control there. */
+   *  the account menu. Postbox puts the theme control and the
+   *  notifications control there (App.tsx). */
   readonly sidebarFooter?: ReactNode;
   /** Marks the content column busy while the session is still being
    *  established, so assistive tech knows the emptiness is temporary. */
@@ -154,12 +166,12 @@ export default function AppShell({
 
   const sidebarContent = (
     <>
-      <div className="h-16 flex items-center justify-between px-6 border-b border-neutral-200 shrink-0">
+      <div className="h-16 flex items-center justify-between px-6 border-b border-neutral-200 dark:border-border shrink-0">
         <Wordmark size="md" />
         <button
           type="button"
           onClick={() => setMobileMenuOpen(false)}
-          className="lg:hidden p-1 rounded-md text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          className="lg:hidden p-1 rounded-md text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:text-muted-foreground dark:hover:bg-accent dark:hover:text-accent-foreground transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
         >
           <X className="h-5 w-5" aria-hidden="true" />
           <span className="sr-only">Close menu</span>
@@ -190,14 +202,14 @@ export default function AppShell({
       </nav>
 
       {sidebarFooter !== undefined && (
-        <div className="border-t border-neutral-200 p-3 shrink-0">{sidebarFooter}</div>
+        <div className="border-t border-neutral-200 dark:border-border p-3 shrink-0">{sidebarFooter}</div>
       )}
     </>
   );
 
   return (
-    <div className="flex h-dvh bg-neutral-50">
-      <div className="hidden lg:flex w-64 bg-white border-r border-neutral-200 flex-col">
+    <div className="flex h-dvh bg-neutral-50 dark:bg-background">
+      <div className="hidden lg:flex w-64 bg-card border-r border-neutral-200 dark:border-border flex-col">
         {sidebarContent}
       </div>
 
@@ -209,7 +221,7 @@ export default function AppShell({
 
       <div
         className={cn(
-          'fixed inset-y-0 left-0 z-50 w-64 bg-white transform transition-transform duration-300 ease-in-out lg:hidden',
+          'fixed inset-y-0 left-0 z-50 w-64 bg-card transform transition-transform duration-300 ease-in-out lg:hidden',
           isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full',
         )}
         /* Plunk leaves the closed drawer in the tab order (it is only
@@ -223,13 +235,13 @@ export default function AppShell({
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="lg:hidden h-16 bg-white border-b border-neutral-200 flex items-center px-4 shrink-0">
+        <div className="lg:hidden h-16 bg-card border-b border-neutral-200 dark:border-border flex items-center px-4 shrink-0">
           <button
             type="button"
             onClick={() => setMobileMenuOpen(true)}
-            className="p-2 rounded-lg hover:bg-neutral-100 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            className="p-2 rounded-lg hover:bg-neutral-100 dark:hover:bg-accent transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           >
-            <Menu className="h-6 w-6 text-neutral-900" aria-hidden="true" />
+            <Menu className="h-6 w-6 text-neutral-900 dark:text-foreground" aria-hidden="true" />
             <span className="sr-only">Open menu</span>
           </button>
           <div className="ml-4">

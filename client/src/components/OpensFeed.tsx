@@ -114,7 +114,7 @@ function OpensFeedBody({ load, now, compact }: OpensFeedBodyProps) {
         <p className="sr-only" role="status">
           Loading opens…
         </p>
-        <div className="divide-y divide-neutral-100" aria-hidden="true">
+        <div className="divide-y divide-neutral-100 dark:divide-border" aria-hidden="true">
           {Array.from({ length: SKELETON_ENTRY_COUNT }, (_, index) => (
             <div key={index} className="flex items-center gap-3 px-4 py-2">
               <Skeleton className="h-2.5 w-2.5 shrink-0 rounded-full" />
@@ -171,18 +171,18 @@ function OpensFeedBody({ load, now, compact }: OpensFeedBodyProps) {
           check. */}
       <SelfCount count={selfCount} />
       <Panel compact={compact}>
-        <CardHeader className="flex-row items-center justify-between space-y-0 border-b border-neutral-200 p-4">
+        <CardHeader className="flex-row items-center justify-between space-y-0 border-b border-neutral-200 dark:border-border p-4">
           {/* Plunk's CardTitle is a <div>; this needs to be a real heading
               so the opens feed sits under the shell's <h1> in the document
               outline, so it borrows the atom's classes rather than the atom. */}
-          <h2 className="text-sm font-semibold leading-none tracking-tight text-neutral-900">
+          <h2 className="text-sm font-semibold leading-none tracking-tight text-neutral-900 dark:text-foreground">
             Recent opens
           </h2>
           <Badge variant="secondary" className="font-mono tabular-nums">
             {displayable.length}
           </Badge>
         </CardHeader>
-        <ol className="divide-y divide-neutral-100">
+        <ol className="divide-y divide-neutral-100 dark:divide-border">
           {displayable.map((event) => (
             // NOT `event.token` alone: the same token legitimately appears
             // more than once (e.g. an mpp prefetch and a later real open on
@@ -209,7 +209,7 @@ function OpensFeedBody({ load, now, compact }: OpensFeedBodyProps) {
 function SelfCount({ count }: { readonly count: number }) {
   const line = selfCountLine(count);
   if (line === null) return null;
-  return <p className="px-1 text-xs text-neutral-500">{line}</p>;
+  return <p className="px-1 text-xs text-neutral-500 dark:text-muted-foreground">{line}</p>;
 }
 
 interface OpenEntryProps {
@@ -267,10 +267,10 @@ interface OpenEntryProps {
  */
 function OpenEntry({ event, now }: OpenEntryProps) {
   return (
-    <li className="transition-colors hover:bg-neutral-50">
+    <li className="transition-colors hover:bg-neutral-50 dark:hover:bg-accent">
       <div className="flex items-center gap-3 px-4 py-2">
         <ReadState classification={event.classification} />
-        <span className="min-w-0 flex-1 truncate text-sm text-neutral-900">
+        <span className="min-w-0 flex-1 truncate text-sm text-neutral-900 dark:text-foreground">
           {formatOpenRowSentence(event, now)}
         </span>
       </div>

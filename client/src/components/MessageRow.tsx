@@ -70,34 +70,34 @@ export default function MessageRow({ message, now }: MessageRowProps) {
   const unread = isUnread(message);
 
   return (
-    <li className="flex flex-wrap items-center gap-x-3 gap-y-0.5 px-4 py-2 text-sm transition-colors hover:bg-neutral-50 sm:h-11 sm:flex-nowrap sm:py-0">
+    <li className="flex flex-wrap items-center gap-x-3 gap-y-0.5 px-4 py-2 text-sm transition-colors hover:bg-neutral-50 dark:hover:bg-accent sm:h-11 sm:flex-nowrap sm:py-0">
       {unread && <span className="sr-only">Unread. </span>}
 
       <span
         className={
           unread
-            ? 'order-1 min-w-0 flex-1 truncate font-semibold text-neutral-900 sm:w-40 sm:flex-none'
-            : 'order-1 min-w-0 flex-1 truncate text-neutral-700 sm:w-40 sm:flex-none'
+            ? 'order-1 min-w-0 flex-1 truncate font-semibold text-neutral-900 dark:text-foreground sm:w-40 sm:flex-none'
+            : 'order-1 min-w-0 flex-1 truncate text-neutral-700 dark:text-muted-foreground sm:w-40 sm:flex-none'
         }
       >
         {sender}
       </span>
 
-      <span className="order-3 w-full min-w-0 truncate text-neutral-500 sm:order-2 sm:w-auto sm:flex-1">
+      <span className="order-3 w-full min-w-0 truncate text-neutral-500 dark:text-muted-foreground sm:order-2 sm:w-auto sm:flex-1">
         {subject}
       </span>
 
       <span className="order-2 flex shrink-0 items-center gap-2 sm:order-3">
         {message.has_attach && (
           <>
-            <Paperclip className="h-3.5 w-3.5 text-neutral-400" aria-hidden="true" />
+            <Paperclip className="h-3.5 w-3.5 text-neutral-400 dark:text-muted-foreground" aria-hidden="true" />
             <span className="sr-only">Has attachment</span>
           </>
         )}
         <Badge variant="neutral" className="px-1.5 py-0 font-mono text-[10px] font-medium uppercase">
           {accountChip(message.account_id)}
         </Badge>
-        <span className="w-16 whitespace-nowrap text-right font-mono text-xs tabular-nums text-neutral-400">
+        <span className="w-16 whitespace-nowrap text-right font-mono text-xs tabular-nums text-neutral-400 dark:text-muted-foreground">
           {formatWhen(message.date, now)}
         </span>
       </span>

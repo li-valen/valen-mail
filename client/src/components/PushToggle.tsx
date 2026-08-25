@@ -129,12 +129,14 @@ export default function PushToggle() {
   if (capability !== 'available') {
     if (isNoteDismissed) return null;
     return (
-      <div className="flex items-start gap-2 rounded-lg bg-neutral-50 p-3">
-        <p className="flex-1 text-xs leading-relaxed text-neutral-600">{NOTES[capability]}</p>
+      <div className="flex items-start gap-2 rounded-lg bg-neutral-50 dark:bg-muted p-3">
+        <p className="flex-1 text-xs leading-relaxed text-neutral-600 dark:text-muted-foreground">
+          {NOTES[capability]}
+        </p>
         <Button
           variant="ghost"
           size="icon"
-          className="h-6 w-6 shrink-0 text-neutral-500"
+          className="h-6 w-6 shrink-0 text-neutral-500 dark:text-muted-foreground"
           onClick={() => setNoteDismissed(true)}
         >
           <X aria-hidden="true" />
@@ -149,7 +151,7 @@ export default function PushToggle() {
       <div className="flex items-center justify-between gap-3 px-3 py-2">
         <Label
           htmlFor={switchId}
-          className="flex cursor-pointer items-center gap-3 text-neutral-600 select-none"
+          className="flex cursor-pointer items-center gap-3 text-neutral-600 dark:text-muted-foreground select-none"
         >
           {/* Decorative: the visible label beside it carries the meaning, so
               the icon must not be announced twice. */}

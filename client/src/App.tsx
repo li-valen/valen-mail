@@ -6,6 +6,7 @@ import InboxList from './components/InboxList';
 import OpensRail from './components/OpensRail';
 import OpensView from './components/OpensView';
 import PushToggle from './components/PushToggle';
+import ThemeToggle from './components/ThemeToggle';
 import { Alert, AlertDescription } from './ui/Alert';
 import { Button } from './ui/Button';
 import { Card } from './ui/Card';
@@ -76,7 +77,7 @@ function SessionError({ message, onRetry, onDismiss }: SessionErrorProps) {
 function ShellSkeleton() {
   return (
     <Card aria-hidden="true">
-      <div className="divide-y divide-neutral-100">
+      <div className="divide-y divide-neutral-100 dark:divide-border">
         {Array.from({ length: SKELETON_ROW_COUNT }, (_, index) => (
           <div key={index} className="flex h-11 items-center gap-3 px-4">
             <Skeleton className="h-3 w-32 shrink-0" />
@@ -126,12 +127,19 @@ export default function App() {
       onViewChange={setView}
       accounts={accounts}
       isBusy={gate.status === 'checking'}
-      // Gated on `authorized`, not merely on the shell rendering: every
-      // call PushToggle makes (/api/push/key, /api/push/subscribe) needs
-      // the session cookie, so a toggle offered while the session is still
+      // ThemeToggle renders unconditionally: it is a device preference,
+      // not a mailbox operation, so it needs no session. PushToggle stays
+      // gated on `authorized`, not merely on the shell rendering: every
+      // call it makes (/api/push/key, /api/push/subscribe) needs the
+      // session cookie, so a toggle offered while the session is still
       // being checked — or after it failed — is a control whose only
       // possible outcome is a 401 rendered as "could not subscribe".
-      sidebarFooter={isAuthorized ? <PushToggle /> : undefined}
+      sidebarFooter={
+        <>
+          <ThemeToggle />
+          {isAuthorized && <PushToggle />}
+        </>
+      }
     >
       {gate.status === 'error' && gate.message !== dismissedErrorMessage && (
         <SessionError

@@ -248,6 +248,29 @@ export interface ReadStateProps {
  * bar), which is what keeps this legible for colour-blind users once the
  * token word is gone.
  *
+ * DARK MODE (task V2) repicks both tones rather than reusing the light
+ * ones behind a bare `dark:` class-for-class swap, because neither light
+ * value carries over with real contrast on `--background`'s dark ground
+ * (`hsl(224 71% 4%)`, effectively `#030711`):
+ *   - confirmed: `text-green-600` is a 3.2:1 contrast choice against
+ *     WHITE (already the light mode's own floor, unchanged) — the same
+ *     numeric colour against near-black would still read as a plausible
+ *     6:1-ish, but a materially dimmer, less confident green than this
+ *     mark is supposed to be, which is the one tone in this whole product
+ *     that means "a person really read this." `dark:text-green-400`
+ *     measures 11.4:1 against the dark ground — vivid on purpose.
+ *   - unconfirmable: `text-neutral-400` measures only 2.6:1 against
+ *     WHITE already (acceptable for a small decorative mark, not
+ *     reused as a standard for anything else). Rather than pick another
+ *     arbitrary neutral shade for dark, `dark:text-muted-foreground`
+ *     routes it through the palette's own "secondary text" token — 6.0:1
+ *     against the dark ground, and semantically the same "the machine
+ *     read this, not you" quietness the light neutral carries.
+ * Both ratios computed via the WCAG relative-luminance formula against
+ * `--background`'s resolved hex in each mode; see
+ * .superpowers/sdd/2026-08-24-web-client/task-v2-report.md for the
+ * numbers on every candidate shade considered.
+ *
  * The user's own directive drove the token's removal: "don't show the MPP
  * mail thing... Do it like superhuman or mailspring does it." The token
  * text, and the word "unconfirmable", no longer render anywhere in this
@@ -277,7 +300,10 @@ export interface ReadStateProps {
  */
 export function ReadState({ classification }: ReadStateProps) {
   const state = readStateFor(classification);
-  const toneClassName = state.tone === 'confirmed' ? 'text-green-600' : 'text-neutral-400';
+  const toneClassName =
+    state.tone === 'confirmed'
+      ? 'text-green-600 dark:text-green-400'
+      : 'text-neutral-400 dark:text-muted-foreground';
   return (
     <span
       className={`inline-flex shrink-0 items-center ${toneClassName}`}

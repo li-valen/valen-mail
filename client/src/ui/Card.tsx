@@ -13,7 +13,7 @@ export function Card({ className, ref, ...props }: React.ComponentProps<'div'>) 
     <div
       ref={ref}
       className={cn(
-        'rounded-lg border border-neutral-200 bg-white text-neutral-950 shadow-sm overflow-hidden',
+        'rounded-lg border border-neutral-200 bg-card text-neutral-950 dark:border-border dark:text-card-foreground shadow-sm overflow-hidden',
         className,
       )}
       {...props}
@@ -35,7 +35,7 @@ export function CardTitle({ className, ref, ...props }: React.ComponentProps<'di
 CardTitle.displayName = 'CardTitle';
 
 export function CardDescription({ className, ref, ...props }: React.ComponentProps<'div'>) {
-  return <div ref={ref} className={cn('text-sm text-neutral-500', className)} {...props} />;
+  return <div ref={ref} className={cn('text-sm text-neutral-500 dark:text-muted-foreground', className)} {...props} />;
 }
 CardDescription.displayName = 'CardDescription';
 

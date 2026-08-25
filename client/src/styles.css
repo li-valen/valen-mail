@@ -18,19 +18,35 @@
  *   - The Radix overlay-motion choreography at the bottom of their file —
  *     same reason as tw-animate-css: no Radix overlay is rendered here.
  *
- * DARK MODE — SHIPPED LIGHT-ONLY, DELIBERATELY. Plunk's globals define a
- * complete `.dark` palette (kept verbatim below, so the token architecture
- * stays faithful and a future dark pass has a starting point), but Plunk's
- * own components do not consume it: `Button` is `bg-neutral-900`, `Card`
- * is `bg-white`, `Badge` is `bg-neutral-100`. Applying `.dark` would swap
- * the page ground to near-black while every card, button and badge stayed
- * light — a half-dark page, which is worse than a deliberate light one.
- * So nothing in this app ever adds the `.dark` class, and `:root` declares
- * `color-scheme: light` so a viewer whose OS is dark still gets light form
- * controls, scrollbars and canvas rather than a browser-darkened hybrid.
- * tests/theme-tokens.test.ts pins both halves of this: the light palette is
- * complete in bare `:root`, and the `.dark` block redefines exactly the
- * same token set (never introduces one).
+ * DARK MODE — LIVE AS OF TASK V2. Task 7.6 shipped this `.dark` palette
+ * present but unapplied: Plunk's own components hardcode neutrals rather
+ * than reading the semantic tokens (`Button` was `bg-neutral-900`, `Card`
+ * was `bg-white`, `Badge` was `bg-neutral-100`), so stamping `.dark` would
+ * have swapped the page ground to near-black while every card, button and
+ * badge stayed light — a half-dark page, worse than a deliberate light
+ * one. Task V2 is the fix: every component under src/ was audited and
+ * routed through the semantic utilities this `@theme` block generates
+ * (`bg-background`, `text-foreground`, `bg-muted`, `text-muted-foreground`,
+ * `border-border`, `bg-card`, `bg-secondary`, `bg-accent`, `bg-primary`, …),
+ * either as a direct token swap (where the token's LIGHT value matched the
+ * literal exactly — `bg-white` and `bg-background`/`bg-card` are both
+ * `hsl(0 0% 100%)`) or as `<light-literal> dark:<token>` where it did not,
+ * so the shipped light rendering never moved. See client/CLAUDE.md and
+ * .superpowers/sdd/2026-08-24-web-client/task-v2-report.md for the full
+ * audit, the read-state marks' hand-picked dark values (the one place this
+ * needed real design judgment rather than a token lookup), and the
+ * handful of places a light literal plus an explicit `dark:` pairing was
+ * kept over a token that did not fit the role in dark mode.
+ *
+ * `.dark` is stamped on `document.documentElement` by exactly one module,
+ * src/themeController.ts, driven by a System/Light/Dark preference held in
+ * `localStorage` (defaulting to System) — never by a media query alone,
+ * because `@custom-variant dark (&:is(.dark *))` below requires the class
+ * to be present, not just the OS preference to match. index.html carries a
+ * small inline script that applies the same decision before first paint,
+ * so a stored Dark preference (or System while the OS is dark) never
+ * flashes light and then swaps. tests/theme-tokens.test.ts enforces that
+ * src/themeController.ts is the ONLY file that ever stamps the class.
  */
 
 @import 'tailwindcss';
@@ -93,9 +109,12 @@
 
 @layer base {
     :root {
-        /* The app never stamps `.dark`; telling the browser so keeps an
-           OS-dark viewer from getting darkened form controls on a light page. */
-        color-scheme: light;
+        /* `light dark`, not a bare `light`: the app DOES stamp `.dark` now
+           (src/themeController.ts), and this is what lets native form
+           controls, the scrollbar and the canvas follow whichever palette
+           is actually applied, instead of always rendering as if the page
+           were light regardless of which class is present. */
+        color-scheme: light dark;
 
         --background: 0 0% 100%;
         --foreground: 222.2 47.4% 11.2%;
@@ -175,7 +194,15 @@
        that MUST be able to scroll on a short viewport, which a body-level
        `overflow-hidden` would prevent. */
     body {
-        @apply bg-background text-neutral-800;
+        /* text-neutral-800, not text-foreground: Plunk's own body rule
+           (see the comment above) is text-neutral-800, and that colour's
+           light value does not exactly match --foreground's (a blue-grey
+           HSL literal vs a true grey), so swapping it outright would
+           shift the shipped light text colour. dark:text-foreground kept
+           instead — this is the body-wide default every unstyled text
+           node inherits, so getting its dark value right matters more
+           than any single component's. */
+        @apply bg-background text-neutral-800 dark:text-foreground;
         font-feature-settings: "rlig" 1, "calt" 1;
     }
 }

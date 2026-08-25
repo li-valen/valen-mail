@@ -159,7 +159,7 @@ export default function InboxList({ onAccountsChange }: InboxListProps) {
         <p className="sr-only" role="status">
           Loading messages…
         </p>
-        <div className="divide-y divide-neutral-100" aria-hidden="true">
+        <div className="divide-y divide-neutral-100 dark:divide-border" aria-hidden="true">
           {Array.from({ length: SKELETON_ROW_COUNT }, (_, index) => (
             <div key={index} className="flex h-11 items-center gap-3 px-4">
               <Skeleton className="h-3 w-32 shrink-0" />
@@ -203,11 +203,11 @@ export default function InboxList({ onAccountsChange }: InboxListProps) {
         // day would register one ARIA "region" landmark per group,
         // cluttering landmark navigation for no benefit.
         <div key={group.day}>
-          <h2 className="mb-2 px-1 text-xs font-semibold uppercase tracking-wider text-neutral-500">
+          <h2 className="mb-2 px-1 text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-muted-foreground">
             {group.day}
           </h2>
           <Card>
-            <ul className="divide-y divide-neutral-100">
+            <ul className="divide-y divide-neutral-100 dark:divide-border">
               {group.messages.map((message) => (
                 <MessageRow key={`${message.account_id}:${message.uid}`} message={message} now={now} />
               ))}

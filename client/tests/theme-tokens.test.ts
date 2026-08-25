@@ -27,12 +27,21 @@ import mainSource from '../src/main.tsx?raw';
  * (b) `.dark` redefines exactly that set and never introduces a token of
  * its own.
  *
- * It additionally pins the two facts that make Postbox's light-only
- * decision correct rather than accidental: `:root` declares
- * `color-scheme: light` (so an OS-dark viewer gets light form controls
- * instead of a browser-darkened hybrid), and no source file ever applies
- * the `.dark` class — Plunk's own atoms hardcode `bg-white` /
- * `bg-neutral-900`, so stamping `.dark` would produce a half-dark page.
+ * REWRITTEN AGAIN FOR TASK V2 (dark mode goes live). Two of the facts this
+ * file pins flipped along with the feature:
+ *
+ *   - `:root` now declares `color-scheme: light dark`, not a bare
+ *     `light` — the app DOES stamp `.dark` now, and this is what lets
+ *     native form controls, the scrollbar and the canvas follow whichever
+ *     palette is actually applied.
+ *   - "no source file ever applies the `.dark` class" is no longer true,
+ *     and was never really the property worth protecting — the actual
+ *     bug it stood in for is a SECOND, independent place deciding whether
+ *     to stamp the class, which would silently fight the real one. So
+ *     that check is now "src/themeController.ts is the ONLY file that
+ *     ever stamps `.dark`" — still scanning every other source file for
+ *     the same class-list mutation, still failing if one is found, just
+ *     with a legitimate single exception instead of zero.
  *
  * Finally it verifies the entry stylesheet is actually reachable from the
  * app: a perfect palette in a file nobody imports styles nothing.
@@ -201,8 +210,8 @@ describe('src/styles.css palette structure', () => {
     expect([...blocks.dark].sort()).toEqual([...blocks.light].sort());
   });
 
-  it('pins the light-only decision: :root declares color-scheme: light', () => {
-    expect(source).toMatch(/:root\s*\{[\s\S]*?color-scheme:\s*light/);
+  it('declares color-scheme: light dark, so native controls follow whichever palette is applied', () => {
+    expect(source).toMatch(/:root\s*\{[\s\S]*?color-scheme:\s*light\s+dark\b/);
   });
 
   it('gives body an explicit, non-transparent background', () => {
@@ -220,35 +229,90 @@ describe('the entry stylesheet is reachable from the app', () => {
   });
 });
 
-describe('no source file ever stamps the .dark class (Postbox ships light-only)', () => {
+describe('src/themeController.ts is the ONLY source file that stamps .dark', () => {
   // Plunk's atoms hardcode `bg-white` / `bg-neutral-900` / `bg-neutral-100`
-  // rather than reading the semantic tokens, so applying `.dark` would swap
-  // the page ground to near-black and leave every card, button and badge
-  // light. A deliberate single look beats a broken second one.
+  // rather than reading the semantic tokens (task V2's audit fixed every
+  // ported atom; see src/styles.css's header for the summary), so a
+  // SECOND place independently deciding whether `.dark` is stamped is
+  // exactly how a stray "helpful" `classList.add('dark')` added to some
+  // other component later would silently fight src/themeController.ts and
+  // produce a half-rendered page. Scoping the check to "every file except
+  // the controller" — rather than asserting the controller itself never
+  // stamps, which would be vacuously wrong the moment it does its job —
+  // is what makes this a regression guard instead of a snapshot.
+  const CONTROLLER_PATH = '../src/themeController.ts';
+
   const sources = import.meta.glob('../src/**/*.{ts,tsx}', {
     eager: true,
     query: '?raw',
     import: 'default',
   }) as Record<string, string>;
 
+  // `(?!:)` after `\bdark\b` is the one change this rewrite makes to the
+  // regex itself (task 7.6's original had no need for it — no file
+  // legitimately said "dark" anywhere). Task V2 fills every ported
+  // component with legitimate `dark:bg-accent`-style Tailwind variant
+  // classes; without the lookahead, `\bdark\b` alone matches "dark"
+  // inside `dark:` too (`:` is a non-word character, so it still counts
+  // as a word boundary), which would flag nearly every file this task
+  // touched as if it were stamping the class. The lookahead requires the
+  // word "dark" NOT be immediately followed by `:` — true for a literal
+  // stamped class (`className="dark bg-background"`), false for a
+  // variant prefix (`className="dark:bg-accent"`).
   const DARK_CLASS_STAMP =
-    /classList\.(add|toggle)\(\s*['"]dark['"]|className\s*=\s*['"][^'"]*\bdark\b/;
+    /classList\.(add|toggle)\(\s*['"]dark['"]|className\s*=\s*['"][^'"]*\bdark\b(?!:)/;
+
+  function stampOffenders(fileSources: Record<string, string>): string[] {
+    return Object.entries(fileSources)
+      .filter(([path]) => path !== CONTROLLER_PATH)
+      .filter(([, text]) => DARK_CLASS_STAMP.test(text))
+      .map(([path]) => path);
+  }
 
   it('finds source files to scan (the glob is not empty)', () => {
     expect(Object.keys(sources).length).toBeGreaterThan(5);
   });
 
-  it('never adds `dark` to an element class list', () => {
-    const offenders = Object.entries(sources)
-      .filter(([, text]) => DARK_CLASS_STAMP.test(text))
-      .map(([path]) => path);
-    expect(offenders).toEqual([]);
+  it('finds src/themeController.ts itself (so excluding it from the scan below is not vacuous)', () => {
+    expect(Object.keys(sources)).toContain(CONTROLLER_PATH);
+  });
+
+  it('src/themeController.ts really does stamp `.dark` — the one legitimate call site exists', () => {
+    expect(sources[CONTROLLER_PATH]).toMatch(DARK_CLASS_STAMP);
+  });
+
+  it('no file OTHER than src/themeController.ts ever adds `dark` to a class list', () => {
+    expect(stampOffenders(sources)).toEqual([]);
   });
 
   it('the stamp regex is not vacuous', () => {
     expect('document.documentElement.classList.add("dark");').toMatch(DARK_CLASS_STAMP);
     expect('<div className="dark bg-background">').toMatch(DARK_CLASS_STAMP);
     expect('<div className="rounded-lg border">').not.toMatch(DARK_CLASS_STAMP);
+  });
+
+  it('does not mistake a dark: Tailwind variant for a literal stamp', () => {
+    // The precise bug the `(?!:)` lookahead above exists to avoid: every
+    // component task V2 touched now legitimately contains `dark:`
+    // variant classes, and a regex that could not tell those apart from
+    // an actual `classList.add('dark')` / `className="dark ..."` would
+    // fail this file's own real source (src/AppShell.tsx, ui/Button.tsx,
+    // …) the moment the audit shipped.
+    expect('<div className="rounded-lg border dark:bg-accent dark:text-accent-foreground">').not.toMatch(
+      DARK_CLASS_STAMP,
+    );
+  });
+
+  it('the exclusion is scoped to the controller specifically — a stray stamp elsewhere still fails', () => {
+    // Proves the "no file OTHER than..." check above is a real guard and
+    // not vacuously passing just because today's codebase happens to be
+    // clean: a synthetic offender OUTSIDE the controller must still be
+    // caught even alongside a legitimate stamp INSIDE it.
+    const withARogueStamp: Record<string, string> = {
+      [CONTROLLER_PATH]: sources[CONTROLLER_PATH] ?? 'document.documentElement.classList.add("dark");',
+      '../src/components/RogueComponent.tsx': 'document.documentElement.classList.add("dark");',
+    };
+    expect(stampOffenders(withARogueStamp)).toEqual(['../src/components/RogueComponent.tsx']);
   });
 });
 
