@@ -1,0 +1,362 @@
+/**
+ * client/src/components/OpensRail.css
+ *
+ * The Recent Opens rail (client/DESIGN.md §4.2 "the time spine", §6
+ * components #13 OpensRail / #14 RailStrip / #15 RailSheet, §7 loading /
+ * empty / unavailable). Every value is a token from client/src/theme.css.
+ * Read-state colour/mark styling itself lives in ReadState.css, not here
+ * — this file only lays the rail out around it.
+ */
+
+.rail__inner {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  padding-block: var(--s-4) var(--s-6);
+}
+
+.rail__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-2);
+  padding-inline-start: calc(var(--spine-inset) + var(--s-4));
+  padding-inline-end: var(--s-4);
+}
+
+.rail__heading {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-secondary);
+}
+
+.rail__count {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-secondary);
+}
+
+/* task-5-brief.md Amendment 2: self events are counted, never rendered
+   as a row — this is the ONLY place their count appears. */
+.rail__self-count {
+  margin: 0;
+  padding-block-start: var(--s-1);
+  padding-inline-start: calc(var(--spine-inset) + var(--s-4));
+  font-family: var(--font-ui);
+  font-size: var(--t-xs);
+  color: var(--fg-secondary);
+}
+
+/* The time spine (DESIGN.md §4.2): one continuous vertical line, not
+   drawn per-entry. `flex: 1` is what lets it read as "full height" even
+   with zero rows (the empty and unavailable states, DESIGN.md §7.2/§7.3
+   both specify a full-height spine) — without it, an empty `.rail__list`
+   would collapse to its content height (0) and the spine would vanish
+   along with the rows. */
+.rail__list {
+  position: relative;
+  flex: 1;
+  min-height: var(--s-16);
+  list-style: none;
+  margin: 0;
+  padding-inline-start: calc(var(--spine-inset) + var(--s-4));
+  padding-inline-end: var(--s-4);
+  padding-block: var(--s-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+}
+
+.rail__list::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: var(--spine-inset);
+  width: var(--spine-w);
+  background: var(--line-spine);
+}
+
+/* DESIGN.md §7.3: "the pen is up" — dashed, and the ONLY achromatic
+   state colour in the product's read-state vocabulary. */
+.rail__list[data-available='false']::before {
+  background: none;
+  border-inline-start: var(--spine-w) dashed var(--state-unavailable);
+}
+
+.rail__skeleton-entry {
+  height: var(--row-min-h);
+  border-radius: var(--r-sm);
+  background: var(--bg-skeleton);
+}
+
+/* ---- one entry (DESIGN.md §6 component #11 OpenEvent) ---------------- */
+
+.rail__entry {
+  position: relative;
+}
+
+/* `.rail__entry--permanent` (mpp) is deliberately styled IDENTICALLY to
+   every other entry here — DESIGN.md §5.4 bans a hover "lift" or any
+   affordance implying the ceiling might resolve, but a plain background
+   swap on interaction (the same one every entry gets) is a static state
+   change, not motion, so it stays. The class exists as a semantic hook
+   (and for `rail__entry-details[open]` differences later, if any), not
+   because this state needs its own visual treatment today. */
+
+.rail__entry-details > summary {
+  list-style: none;
+}
+.rail__entry-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.rail__entry-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+  width: 100%;
+  min-height: var(--hit-min);
+  padding-block: var(--s-1);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.rail__entry-summary:hover {
+  background: var(--bg-hover);
+}
+.rail__entry-summary:active {
+  background: var(--bg-active);
+}
+
+/* DESIGN.md §5.2: "Marks are centred on the spine with margin-inline-
+   start: calc(var(--mark-size) / -2 - var(--s-4)) relative to the
+   entry." */
+.rail__entry-summary .read-state {
+  margin-inline-start: calc(var(--mark-size) / -2 - var(--s-4));
+  margin-block-start: 4px; /* optical alignment with the headline's cap-height */
+  flex-shrink: 0;
+}
+
+.rail__entry-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.rail__entry-headline {
+  font-family: var(--font-ui);
+  font-size: var(--t-sm);
+  font-weight: 500;
+  letter-spacing: -0.006em;
+  color: var(--fg-primary);
+  overflow-wrap: break-word;
+}
+
+.rail__entry-sub {
+  font-family: var(--font-ui);
+  font-size: var(--t-xs);
+  color: var(--fg-secondary);
+}
+
+.rail__entry-meta {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-secondary);
+}
+
+/* The expanded note (component #12 StateNote) — plain flow content
+   inside <details>, not an absolutely positioned popover, so it can
+   never be clipped by `.rail`'s own `overflow-y: auto`; it just pushes
+   the rows below it down instead. */
+.rail__note {
+  margin: 0;
+  padding-block: var(--s-2);
+  padding-inline-start: calc(var(--mark-size) + var(--s-4));
+  padding-inline-end: var(--s-4);
+  max-width: var(--measure);
+  font-family: var(--font-ui);
+  font-size: var(--t-xs);
+  line-height: 1.5;
+  color: var(--fg-secondary);
+}
+
+/* ---- empty / unavailable (DESIGN.md §7.2, §7.3) ----------------------- */
+
+.rail__empty,
+.rail__unavailable {
+  padding-block: var(--s-10) var(--s-6);
+  padding-inline-start: calc(var(--spine-inset) + var(--s-4));
+  padding-inline-end: var(--s-4);
+}
+
+.rail__empty-headline,
+.rail__unavailable-headline {
+  margin: 0;
+  margin-block-end: var(--s-2);
+  font-family: var(--font-ui);
+  font-size: var(--t-2xl);
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.028em;
+  color: var(--fg-primary);
+  text-wrap: balance;
+}
+
+.rail__empty-sub,
+.rail__unavailable-sub {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--t-md);
+  line-height: 1.6;
+  letter-spacing: -0.008em;
+  color: var(--fg-secondary);
+}
+
+/* ---- the <1080px collapsed strip (DESIGN.md §4.3, component #14) ----- */
+
+/* Hidden above the rail breakpoint by default — the strip only exists
+   because the always-visible desktop aside (`.rail`, client/src/
+   shell.css) is itself hidden below that width. client/src/shell.css's
+   own mobile media query adds the matching `.inbox` bottom padding this
+   strip's fixed height requires, so the strip never overlaps the last
+   row of mail. */
+.rail-strip {
+  display: none;
+}
+
+@media (max-width: 1079px) {
+  .rail-strip {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    position: fixed;
+    inset: auto 0 0 0;
+    z-index: 20;
+    min-height: var(--shell-strip-h);
+    width: 100%;
+    padding-inline: var(--s-4);
+    padding-block-end: env(safe-area-inset-bottom, 0px);
+    font: inherit;
+    text-align: start;
+    color: var(--fg-primary);
+    background: var(--bg-rail);
+    border: 0;
+    border-block-start: 1px solid var(--line-border);
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .rail-strip--unavailable {
+    border-block-start: 1px dashed var(--state-unavailable);
+  }
+
+  .rail-strip:active {
+    background: var(--bg-hover);
+  }
+}
+
+.rail-strip__label,
+.rail-strip__headline {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--t-sm);
+}
+
+.rail-strip__time {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-secondary);
+}
+
+/* ---- the mobile sheet (DESIGN.md §4.3, component #15) ----------------
+   Only ever reachable via the strip above, which is itself unreachable
+   at ≥1080px — so this is written unscoped by width on purpose; nothing
+   at desktop widths ever sets its `open` attribute. */
+
+.rail-sheet {
+  position: fixed;
+  inset: auto 0 0 0;
+  margin: 0;
+  width: 100%;
+  height: min(70dvh, 520px);
+  max-width: 100%;
+  max-height: none;
+  padding: 0;
+  padding-block-end: env(safe-area-inset-bottom, 0px);
+  border: 0;
+  border-start-start-radius: var(--r-sm);
+  border-start-end-radius: var(--r-sm);
+  color: var(--fg-primary);
+  background: var(--bg-raised);
+}
+
+.rail-sheet[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.rail-sheet::backdrop {
+  background: color-mix(in oklab, var(--p-ink-1000) 45%, transparent);
+}
+
+.rail-sheet__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  padding: var(--s-4) var(--s-4) var(--s-2);
+}
+
+.rail-sheet__title {
+  font-family: var(--font-ui);
+  font-size: var(--t-base);
+  font-weight: 600;
+  color: var(--fg-primary);
+}
+
+.rail-sheet__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--hit-min);
+  height: var(--hit-min);
+  padding: 0;
+  color: var(--fg-secondary);
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.rail-sheet__close:hover {
+  background: var(--bg-hover);
+  color: var(--fg-primary);
+}
+.rail-sheet__close:active {
+  background: var(--bg-active);
+}
+
+.rail-sheet .rail__inner {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}

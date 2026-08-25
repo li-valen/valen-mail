@@ -65,7 +65,10 @@
 }
 
 /* Below 1080px the rail collapses to a bottom strip; it does not vanish
-   (DESIGN.md §4.3). The strip itself is rendered by Task 5. */
+   (DESIGN.md §4.3). The strip itself is rendered by Task 5
+   (client/src/components/OpensRail.tsx's `RailStrip`, styled in its
+   OpensRail.css) — this block only needs to reserve room for it so the
+   fixed-position strip never overlaps the inbox's last row. */
 @media (max-width: 1079px) {
   .shell {
     grid-template-columns: minmax(0, 1fr);
@@ -74,6 +77,9 @@
   }
   .rail {
     display: none;
+  }
+  .inbox {
+    padding-block-end: calc(var(--shell-strip-h) + env(safe-area-inset-bottom, 0px));
   }
 }
 

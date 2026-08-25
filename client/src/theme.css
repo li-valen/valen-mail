@@ -305,8 +305,15 @@ body {
 
 /* The focus state, once, for everything. Two-layer achromatic ring,
    legible on every ground and every wash. Never `outline: none` without
-   this replacement; `:focus-visible`, not `:focus`. */
-:where(a, button, [role='button'], input, select, textarea, [tabindex]):focus-visible {
+   this replacement; `:focus-visible`, not `:focus`.
+   `summary` added for Task 5's OpensRail: the rail's per-entry expanded
+   note (client/DESIGN.md §6 component #12 StateNote) is a native
+   <details>/<summary> disclosure rather than a button, and `summary` is
+   natively focusable but was not in this list — without it, the entry's
+   own keyboard focus falls back to the browser's default outline instead
+   of Postbox's ring, the one interactive element in the product that
+   would silently disagree with the rest. */
+:where(a, button, [role='button'], input, select, textarea, [tabindex], summary):focus-visible {
   outline: 2px solid var(--focus-outer);
   outline-offset: 2px;
   box-shadow: 0 0 0 2px var(--focus-inner);

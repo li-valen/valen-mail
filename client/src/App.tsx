@@ -1,5 +1,6 @@
 import LoginView from './LoginView';
 import InboxList from './components/InboxList';
+import OpensRail from './components/OpensRail';
 import { useSessionGate } from './useSessionGate';
 import './shell.css';
 
@@ -73,20 +74,17 @@ export default function App() {
         </div>
       </main>
 
-      <aside className="rail" aria-label="Opens tracking">
-        {/*
-          Task 5: OpensRail.
+      {/*
+        OpensRail (Task 5) renders its own `<aside class="rail">` — the
+        one place `grid-area: rail` is claimed — plus the <1080px
+        collapsed strip and its expanded sheet as siblings of it, all
+        three sharing one fetch. See OpensRail.tsx's own doc comment.
 
-          Ruling from task-3-brief.md: `self`-classified events are
-          suppressed from the rail's list but counted, shown as one muted
-          line ("N views from you") rather than dropped silently. DESIGN.md
-          itself does not specify this affordance's exact placement or copy
-          (its §9 flags the underlying question and offers this as the
-          alternative to hiding self-views outright, without picking exact
-          wording), so per the task's own instruction this slot is left for
-          Task 5 rather than guessed here.
-        */}
-      </aside>
+        Self-classified events are suppressed from the rail's list but
+        counted, shown as one muted "N views from you" line rather than
+        dropped silently (task-5-brief.md Amendment 2).
+      */}
+      {gate.status === 'authorized' && <OpensRail />}
     </div>
   );
 }
