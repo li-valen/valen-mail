@@ -179,6 +179,79 @@ export async function recordOpen(input: RecordOpenInput): Promise<void> {
   `;
 }
 
+/**
+ * Row shape accepted by `insertTokens` (Plan 4 Task 1, POST /api/tokens).
+ * `account_id` and `message_id` are NOT NULL on `tokens` (see schema.sql),
+ * but that route's wire contract — `{sends:[{recipientEmail,subject}]}` —
+ * carries neither: identities are sync's domain (Plan 4 Task 2), not
+ * tracking's, and this service has no account config of its own to
+ * consult (contrast `scripts/send-test.mjs`, which had `GMAIL_USER`
+ * available because it ran as that account). A real SMTP Message-ID also
+ * doesn't exist yet at mint time — tokens are minted *before* the SMTP
+ * send, per Plan 4 Task 3's ordering. `api/tokens.ts` is responsible for
+ * filling both fields with its documented placeholders before calling
+ * this function; `insertTokens` itself just persists whatever
+ * fully-formed row it's given, matching every other function in this
+ * file (compare `RecordOpenInput` above).
+ */
+export interface InsertTokenInput {
+  readonly token: string;
+  readonly accountId: string;
+  readonly messageId: string;
+  readonly recipientEmail: string;
+  readonly subject: string;
+}
+
+/** token, account_id, message_id, recipient_email, subject — see the INSERT below. */
+const TOKEN_INSERT_COLUMNS = 5;
+
+/**
+ * One INSERT for all N rows, built with neon's "ordinary function" call
+ * form — `sql_()(text, params)` — rather than the tagged-template form
+ * every other function in this file uses. The tagged-template form fixes
+ * its number of interpolation slots at the call site, which can't flex to
+ * however many rows a given batch has; `(text, params)` is neon's own
+ * documented alternative for exactly this (see `NeonQueryFunction` in
+ * `@neondatabase/serverless`), and it carries the same safety property.
+ * `text` is assembled here from nothing but loop-counter arithmetic, so it
+ * can only ever contain digits and punctuation — never a caller-supplied
+ * value. Every value from `rows` lands solely in the `params` array, bound
+ * server-side the same way a literal `$1` substitution is elsewhere in
+ * this file — no string-built SQL, no recipient data ever touches `text`.
+ *
+ * `sent_at` is deliberately absent from the column list, matching
+ * `scripts/send-test.mjs`'s own `insert into tokens (...)` — the only
+ * other token-insert in this codebase — which also omits it and relies on
+ * schema.sql's `default now()` (a `timestamptz`) to populate it. Not
+ * passing it here keeps that one established convention in one place
+ * rather than reintroducing it as an epoch-ms value that would need its
+ * own conversion.
+ *
+ * A no-op on an empty array short-circuits before building any SQL: a
+ * zero-row `values` clause is not valid syntax, and an empty batch is a
+ * legitimate (if degenerate) input from `api/tokens.ts` — an empty
+ * `sends` array in the request body — not an error condition.
+ */
+export async function insertTokens(rows: readonly InsertTokenInput[]): Promise<void> {
+  if (rows.length === 0) return;
+
+  const placeholderGroups: string[] = [];
+  const params: string[] = [];
+  rows.forEach((row, i) => {
+    const base = i * TOKEN_INSERT_COLUMNS;
+    placeholderGroups.push(
+      `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5})`,
+    );
+    params.push(row.token, row.accountId, row.messageId, row.recipientEmail, row.subject);
+  });
+
+  const text =
+    'insert into tokens (token, account_id, message_id, recipient_email, subject) ' +
+    `values ${placeholderGroups.join(',')}`;
+
+  await sql_()(text, params);
+}
+
 export interface OpenRow {
   readonly token: string;
   readonly recipientEmail: string;
