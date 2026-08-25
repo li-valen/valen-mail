@@ -117,6 +117,30 @@ function buildRow(send: SendInput): InsertTokenInput {
   };
 }
 
+/**
+ * Mirrors sync/src/send/error-code.ts's `errorCode` (not imported — sync
+ * and tracking deploy separately, and this is one small function, not a
+ * shared dependency worth coupling two deploys over). Kept local to this
+ * route rather than split into its own tracking/src/ module: unlike
+ * src/compare.ts's tokenMatches (shared by this route and api/opens.ts),
+ * nothing else in tracking/ needs this yet — see extractBearerToken just
+ * above for the same "one caller, no cross-cutting reasoning to protect"
+ * call on staying local, made in this same file already.
+ *
+ * A code (Postgres's SQLSTATE, e.g. neon surfaces `'23514'` for a CHECK
+ * violation) identifies the failure without quoting anything the request
+ * supplied; `error.name` is the fallback for whatever isn't a driver
+ * error at all. Neither can ever carry request content the way `.message`
+ * or the error object itself can.
+ */
+function errorCode(error: unknown): string {
+  if (typeof error === 'object' && error !== null && 'code' in error) {
+    const code = (error as { code: unknown }).code;
+    if (typeof code === 'string' && code.length > 0) return code;
+  }
+  return error instanceof Error ? error.name : 'unknown';
+}
+
 export default async function handler(request: Request): Promise<Response> {
   const expected = process.env.READ_API_TOKEN;
   if (!expected || expected.length < MIN_TOKEN_LENGTH) {
@@ -165,9 +189,17 @@ export default async function handler(request: Request): Promise<Response> {
   try {
     await insertTokens(rows);
   } catch (error) {
-    // Never log recipient/subject content (Plan 4 Global Constraints) —
-    // only that the insert failed and how many rows were involved.
-    console.error(`tokens: insert failed for ${rows.length} row(s)`, error);
+    // Never log the error OBJECT, only a stable code/name (Plan 4 Global
+    // Constraints on recipient/subject content). Unlike api/opens.ts's
+    // query-failure log — a read-only SELECT, so nothing it does can ever
+    // trip a table constraint — this route inserts fresh recipient/
+    // subject content on every request. A future CHECK constraint on
+    // `tokens` could echo a rejected value back in Postgres's error
+    // DETAIL, and `console.error(..., error)` (opens.ts's own pattern)
+    // would hand that straight to the logs. errorCode() cannot carry that:
+    // it surfaces only a driver code or an error name, never a message,
+    // never the object itself.
+    console.error(`tokens: insert failed for ${rows.length} row(s) — ${errorCode(error)}`);
     return json({ error: 'insert failed' }, 500);
   }
 

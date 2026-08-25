@@ -443,4 +443,41 @@ describe('database failure', () => {
 
     consoleErrorSpy.mockRestore();
   });
+
+  it('never lets a planted recipient sentinel from the driver error reach the log line', async () => {
+    // Simulates the risk named in review: this route inserts fresh
+    // recipient/subject content on every request, and a future CHECK
+    // constraint could echo a rejected value back in Postgres's error
+    // DETAIL. Neon/pg errors carry a SQLSTATE `code` alongside `message` —
+    // both are modelled here so the fix (errorCode() in api/tokens.ts) has
+    // something real to prefer over the message.
+    process.env.READ_API_TOKEN = TOKEN;
+    const sentinelRecipient = 'sentinel-leak-4f8a@example.com';
+    const handler = await freshHandlerWithSql(async () => {
+      const dbError = new Error(
+        `insert or update on table "tokens" violates check constraint "tokens_check" ` +
+          `DETAIL: Failing row contains (..., ${sentinelRecipient}, ...).`,
+      );
+      (dbError as Error & { code: string }).code = '23514'; // Postgres check_violation
+      throw dbError;
+    });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await handler(
+      postBody({ sends: [validSend({ recipientEmail: sentinelRecipient })] }),
+    );
+
+    expect(res.status).toBe(500);
+    const loggedText = consoleErrorSpy.mock.calls
+      .map((call) => call.map((arg) => String(arg)).join(' '))
+      .join('\n');
+    expect(loggedText).not.toContain(sentinelRecipient);
+    // Non-vacuity: proves this isn't passing because nothing meaningful
+    // was logged at all — the failure is still identified, just without
+    // the sentinel content.
+    expect(loggedText).toContain('insert failed');
+    expect(loggedText).toContain('23514');
+
+    consoleErrorSpy.mockRestore();
+  });
 });
