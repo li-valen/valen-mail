@@ -112,7 +112,7 @@ export default function OpensRail() {
   return (
     <>
       <aside className="rail" aria-label="Opens tracking" aria-busy={load.status === 'loading'}>
-        <RailBody load={load} />
+        <RailBody load={load} now={now} />
       </aside>
 
       <p className="visually-hidden" role="status" aria-live="polite">
@@ -135,7 +135,7 @@ export default function OpensRail() {
             <span className="visually-hidden">Close</span>
           </button>
         </div>
-        <RailBody load={load} />
+        <RailBody load={load} now={now} />
       </dialog>
     </>
   );
@@ -143,12 +143,16 @@ export default function OpensRail() {
 
 interface RailBodyProps {
   readonly load: LoadState;
+  readonly now: number;
 }
 
 /** The rail's actual content — shared verbatim between the always-visible
  *  desktop aside and the mobile sheet, so the two never drift out of
- *  sync (both are rendered from the same fetched `load` state). */
-function RailBody({ load }: RailBodyProps) {
+ *  sync (both are rendered from the same fetched `load` state). `now` is
+ *  threaded through to `OpenEntry` for the unconfirmable rows' relative
+ *  time (task 7.5B's density pass) — resolved once per `OpensRail` mount,
+ *  same reasoning as the strip's own `now`. */
+function RailBody({ load, now }: RailBodyProps) {
   if (load.status === 'loading') {
     return (
       <div className="rail__inner">
@@ -214,7 +218,11 @@ function RailBody({ load }: RailBodyProps) {
             // once (e.g. an mpp prefetch and a later real open on the
             // same send), so `token` by itself collides as a React key
             // and would silently drop one of the two rows.
-            <OpenEntry key={`${event.token}:${event.occurredAt}:${event.classification}`} event={event} />
+            <OpenEntry
+              key={`${event.token}:${event.occurredAt}:${event.classification}`}
+              event={event}
+              now={now}
+            />
           ))}
         </ol>
       )}
@@ -224,12 +232,27 @@ function RailBody({ load }: RailBodyProps) {
 
 interface OpenEntryProps {
   readonly event: OpenEvent;
+  readonly now: number;
 }
 
 /**
- * One event on the spine (client/DESIGN.md §6 component #11 OpenEvent):
- * mark · headline · (sub, for the permanent-ceiling case) · meta · token,
- * with the classification's full explanatory note revealed on demand.
+ * One event on the spine (client/DESIGN.md §6 component #11 OpenEvent),
+ * with the classification's full explanatory note revealed on demand via
+ * `<details>/<summary>`.
+ *
+ * Task 7.5B (user-directed density pass, client/CLAUDE.md's "Direction
+ * amendment"): a **confirmed** row keeps two visible lines (who + time ·
+ * lag) — confirmed is rare and valuable, and stays visually dominant.
+ * An **unconfirmable** row (mpp/prefetch/scanner) collapses to ONE
+ * visible line — mark, mono token, relative time, plus a compact
+ * `· permanent` suffix for mpp (DESIGN.md §5.4's ceiling fact must stay
+ * visible, not buried) — because four consecutive MPP events used to
+ * repeat the same three-line explanation four times. The distinct
+ * per-cause explanation (`state.title`), the ceiling copy
+ * (`copy.headline`/`copy.sub`), and the absolute clock/lag meta
+ * (`copy.meta`) all still exist — they move into the `<details>` note
+ * instead of rendering unconditionally, closed by default, one
+ * tap/click away. Nothing described here is deleted, only relocated.
  *
  * `<details>/<summary>` rather than DESIGN.md's literal Popover-API
  * suggestion for the note (component #12 StateNote): both give "the
@@ -249,22 +272,43 @@ interface OpenEntryProps {
  * which React escapes by default; this file never touches
  * `dangerouslySetInnerHTML`.
  */
-function OpenEntry({ event }: OpenEntryProps) {
+function OpenEntry({ event, now }: OpenEntryProps) {
   const state = readStateFor(event.classification);
   const copy = describeEvent(event);
+  const isConfirmed = state.tone === 'confirmed';
 
   return (
     <li className={`rail__entry${state.permanent ? ' rail__entry--permanent' : ''}`}>
       <details className="rail__entry-details">
-        <summary className="rail__entry-summary">
-          <ReadState classification={event.classification} />
-          <span className="rail__entry-body">
-            <span className="rail__entry-headline">{copy.headline}</span>
-            {copy.sub !== null && <span className="rail__entry-sub">{copy.sub}</span>}
-            <span className="rail__entry-meta">{copy.meta}</span>
-          </span>
-        </summary>
-        <p className="rail__note">{state.title}</p>
+        {isConfirmed ? (
+          <summary className="rail__entry-summary">
+            <ReadState classification={event.classification} />
+            <span className="rail__entry-body">
+              <span className="rail__entry-headline">{copy.headline}</span>
+              <span className="rail__entry-meta">{copy.meta}</span>
+            </span>
+          </summary>
+        ) : (
+          <summary className="rail__entry-summary rail__entry-summary--compact">
+            <ReadState classification={event.classification} />
+            <span className="rail__entry-compact-meta">
+              {formatRelativeTime(event.occurredAt, now)}
+              {state.permanent ? ' · permanent' : ''}
+            </span>
+          </summary>
+        )}
+        <div className="rail__note">
+          {isConfirmed ? (
+            <p>{state.title}</p>
+          ) : (
+            <>
+              <p>{copy.headline}</p>
+              {copy.sub !== null && <p>{copy.sub}</p>}
+              <p>{state.title}</p>
+              <p className="rail__entry-meta">{copy.meta}</p>
+            </>
+          )}
+        </div>
       </details>
     </li>
   );

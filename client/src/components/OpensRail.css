@@ -26,7 +26,6 @@
 
 .rail__heading {
   margin: 0;
-  font-family: var(--font-ui);
   font-size: var(--t-sm);
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -47,7 +46,6 @@
   margin: 0;
   padding-block-start: var(--s-1);
   padding-inline-start: calc(var(--spine-inset) + var(--s-4));
-  font-family: var(--font-ui);
   font-size: var(--t-xs);
   color: var(--fg-secondary);
 }
@@ -115,12 +113,20 @@
   display: none;
 }
 
+/* Task 7.5B (density pass): `box-sizing: border-box` explicitly, the
+   same local override PushToggle.css already uses (this project has no
+   global box-sizing reset) — with it, `min-height` below is the row's
+   actual rendered height including `padding-block`, which is what makes
+   the confirmed/unconfirmable row-height targets (client/CLAUDE.md's
+   Direction amendment) land where the numbers say rather than plus
+   padding on top. */
 .rail__entry-summary {
   display: flex;
   align-items: flex-start;
   gap: var(--s-2);
   width: 100%;
-  min-height: var(--hit-min);
+  box-sizing: border-box;
+  min-height: var(--hit-min); /* confirmed: 44px, DESIGN.md's touch-target floor */
   padding-block: var(--s-1);
   border-radius: var(--r-sm);
   cursor: pointer;
@@ -136,6 +142,17 @@
   background: var(--bg-active);
 }
 
+/* Unconfirmable rows (mpp/prefetch/scanner): one line, not the
+   confirmed row's stacked two — align the mark and the compact meta on
+   the same baseline instead of `flex-start`, and drop to `--s-8` (32px)
+   for the row height, the closest spacing token to the density target's
+   32-36px band. Below `--hit-min`'s 44px touch-target floor on purpose:
+   see task-7.5B-report.md's concerns section. */
+.rail__entry-summary--compact {
+  align-items: center;
+  min-height: var(--s-8);
+}
+
 /* DESIGN.md §5.2: "Marks are centred on the spine with margin-inline-
    start: calc(var(--mark-size) / -2 - var(--s-4)) relative to the
    entry." */
@@ -143,6 +160,14 @@
   margin-inline-start: calc(var(--mark-size) / -2 - var(--s-4));
   margin-block-start: 4px; /* optical alignment with the headline's cap-height */
   flex-shrink: 0;
+}
+
+/* Declared after the rule above so it wins the tie (equal, two-class
+   specificity) on source order — `--compact`'s single-line row has no
+   headline cap-height to optically align against, so the mark is simply
+   vertically centred by the summary's own `align-items: center`. */
+.rail__entry-summary--compact .read-state {
+  margin-block-start: 0;
 }
 
 .rail__entry-body {
@@ -153,18 +178,11 @@
 }
 
 .rail__entry-headline {
-  font-family: var(--font-ui);
   font-size: var(--t-sm);
   font-weight: 500;
   letter-spacing: -0.006em;
   color: var(--fg-primary);
   overflow-wrap: break-word;
-}
-
-.rail__entry-sub {
-  font-family: var(--font-ui);
-  font-size: var(--t-xs);
-  color: var(--fg-secondary);
 }
 
 .rail__entry-meta {
@@ -174,20 +192,55 @@
   color: var(--fg-secondary);
 }
 
+/* The unconfirmable row's one-line compact meta (mark + token, rendered
+   by `<ReadState>`, sit to its left) — relative time, plus a `·
+   permanent` suffix for mpp appended as plain text by OpensRail.tsx, so
+   DESIGN.md §5.4's ceiling fact stays visible on the row itself rather
+   than moving into the disclosure with everything else. */
+.rail__entry-compact-meta {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-secondary);
+  white-space: nowrap;
+}
+
 /* The expanded note (component #12 StateNote) — plain flow content
    inside <details>, not an absolutely positioned popover, so it can
    never be clipped by `.rail`'s own `overflow-y: auto`; it just pushes
-   the rows below it down instead. */
+   the rows below it down instead.
+   Task 7.5B: now a flex column of paragraphs, not a single one — the
+   unconfirmable row's headline/sub/title/meta all moved in here off the
+   row itself, and each renders as its own line rather than one run-on
+   paragraph. `display: flex` is deliberately NOT set on the bare
+   `.rail__note` rule below: the browser's own `details:not([open]) >
+   *:not(summary) { display: none }` UA rule is what keeps this closed
+   by default, and an author-origin `display` declaration on the element
+   itself — regardless of specificity — wins over that UA rule and would
+   force the note permanently visible, defeating the entire disclosure.
+   Scoping `display: flex` to `[open]` below applies the flex layout only
+   once the browser has already decided to show the content. */
 .rail__note {
   margin: 0;
   padding-block: var(--s-2);
   padding-inline-start: calc(var(--mark-size) + var(--s-4));
   padding-inline-end: var(--s-4);
   max-width: var(--measure);
-  font-family: var(--font-ui);
   font-size: var(--t-xs);
   line-height: 1.5;
   color: var(--fg-secondary);
+}
+
+/* See the comment above `.rail__note`: this is the ONLY place its
+   `display` is set, and only for the open state. */
+.rail__entry-details[open] .rail__note {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+
+.rail__note p {
+  margin: 0;
 }
 
 /* ---- empty / unavailable (DESIGN.md §7.2, §7.3) ----------------------- */
@@ -203,7 +256,6 @@
 .rail__unavailable-headline {
   margin: 0;
   margin-block-end: var(--s-2);
-  font-family: var(--font-ui);
   font-size: var(--t-2xl);
   font-weight: 600;
   line-height: 1.15;
@@ -215,7 +267,6 @@
 .rail__empty-sub,
 .rail__unavailable-sub {
   margin: 0;
-  font-family: var(--font-ui);
   font-size: var(--t-md);
   line-height: 1.6;
   letter-spacing: -0.008em;
@@ -334,7 +385,6 @@
 }
 
 .rail-sheet__title {
-  font-family: var(--font-ui);
   font-size: var(--t-base);
   font-weight: 600;
   color: var(--fg-primary);
