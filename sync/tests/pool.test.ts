@@ -3,11 +3,11 @@ import type { ImapFlow } from 'imapflow';
 import {
   computeBackoffMs,
   MAX_BACKOFF_MS,
-  KeyedMutex,
   waitForIdleWake,
   probeLiveness,
   ConnectionPool,
 } from '../src/imap/pool';
+import { KeyedMutex } from '../src/imap/keyed-mutex';
 import { ImapConnection } from '../src/imap/connection';
 import { DAILY_BYTE_LIMIT } from '../src/budget';
 import type { AccountConfig } from '../src/config';

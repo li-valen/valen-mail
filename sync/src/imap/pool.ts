@@ -4,6 +4,15 @@ import type { Db, MessageInput } from '../db';
 import type { AttachmentMeta } from '../attachments';
 import { ImapConnection } from './connection.ts';
 import { fetchHeaders, ESTIMATED_BYTES_PER_HEADER_FETCH } from './fetch.ts';
+import {
+  discoverFolders,
+  folderSyncOrder,
+  missingFolderKinds,
+  type DiscoveredFolders,
+  type FolderKind,
+} from './folders.ts';
+import { KeyedMutex } from './keyed-mutex.ts';
+import { NewMailMarks } from './new-mail-marks.ts';
 import { ByteBudget } from '../budget.ts';
 import { withTimeout } from '../timeout.ts';
 
@@ -44,9 +53,7 @@ export function computeBackoffMs(attempt: number): number {
 
 export type AccountStatus = 'connected' | 'reconnecting' | 'stopped';
 
-const SYNCED_FOLDER = 'INBOX';
-
-/** Bounded page size for each sync cycle. Amendment 3: no UID cursor here —
+/** Bounded page size for each folder's sync each cycle. Amendment 3: no UID cursor here —
  *  `resolveUidSpan` (fetch.ts) does not validate `sinceUid`, so a 0 or
  *  negative cursor would build a malformed IMAP range. This pool instead
  *  relies on repeated bounded polls of the newest messages plus
@@ -61,9 +68,10 @@ const SYNCED_FOLDER = 'INBOX';
 const HEADER_FETCH_LIMIT = 50;
 
 /** Pre-fetch reservation charged against the daily byte budget before each
- *  sync cycle. Derived from fetch.ts's own per-message estimate so the two
- *  numbers cannot silently drift apart. */
-const RESERVE_BYTES_PER_SYNC = HEADER_FETCH_LIMIT * ESTIMATED_BYTES_PER_HEADER_FETCH;
+ *  FOLDER's fetch (four per cycle at most, not one — see the budget maths
+ *  above syncOnce's folder loop). Derived from fetch.ts's own per-message
+ *  estimate so the two numbers cannot silently drift apart. */
+const RESERVE_BYTES_PER_FOLDER_SYNC = HEADER_FETCH_LIMIT * ESTIMATED_BYTES_PER_HEADER_FETCH;
 
 /**
  * How long an account's connection sits in IDLE before this pool breaks it
@@ -150,43 +158,15 @@ export async function probeLiveness(
 }
 
 /**
- * Serialises async work by key while leaving different keys fully
- * concurrent. Amendment 2: `ByteBudget.reserve()`/`record()` are
- * check-then-act with no transaction, so two concurrent fetch cycles for
- * the same account could both reserve against the same stale snapshot and
- * both proceed — overspending the daily budget and eating the safety
- * margin between our 2 GB target and Gmail's ~2.5 GB suspension ceiling.
- * Keying by account id (rather than a single pool-wide lock) is what keeps
- * ten accounts running fully concurrently with each other; only calls that
- * share a key ever queue behind one another.
- */
-export class KeyedMutex {
-  private readonly tails = new Map<string, Promise<void>>();
-
-  async run<T>(key: string, fn: () => Promise<T>): Promise<T> {
-    const previous = this.tails.get(key) ?? Promise.resolve();
-    // Wait for the previous task regardless of whether it succeeded or
-    // failed — a failed task must not permanently wedge the queue for
-    // every later caller sharing this key.
-    const previousSettled = previous.catch(() => undefined);
-    const result = previousSettled.then(fn);
-    this.tails.set(
-      key,
-      result.then(
-        () => undefined,
-        () => undefined,
-      ),
-    );
-    return result;
-  }
-}
-
-/**
  * Injected hook for genuinely new mail (Task 7 / Amendment 3). The pool
- * calls this with the messages `trackNewMessages` decided are new since
- * the account's own previous cycle — never on an account's first cycle,
- * no matter how many messages that cycle fetches (see trackNewMessages's
- * own comment for why).
+ * calls this with the messages `NewMailMarks.track()` decided are new
+ * since the account's own previous cycle — never on a folder's first
+ * cycle, no matter how many messages that cycle fetches (see
+ * new-mail-marks.ts for why).
+ *
+ * Plan 5: the pool syncs four folders per account but only ever calls this
+ * for INBOX's new messages (see syncOnce's INBOX-only dispatch guard), so
+ * a hook may assume every message it receives is an inbox message.
  *
  * This type is the ENTIRE surface the pool knows about push: a function
  * from (accountId, messages) to void or a promise of void. server.ts
@@ -219,18 +199,23 @@ export class ConnectionPool {
   private readonly statuses = new Map<string, AccountStatus>();
   private running = false;
 
-  // Amendment 3's backfill guard state, per account. Deliberately
-  // in-memory, not persisted: that is exactly what makes "a fresh service
-  // start against an existing mailbox produces zero new-mail
-  // notifications" hold on every restart, not just the very first one —
-  // see trackNewMessages().
-  private readonly firstCycleDone = new Set<string>();
-  private readonly maxSeenUid = new Map<string, number>();
-  // Fix round 1, Fix 3: the UIDVALIDITY the mark above was computed
-  // against. A change here means the server renumbered the mailbox, which
-  // invalidates `maxSeenUid` the same way a first cycle does — see
-  // trackNewMessages()'s own comment.
-  private readonly seenUidValidity = new Map<string, bigint>();
+  // Amendment 3's backfill guard, keyed per (account, folder) since Plan 5
+  // — see imap/new-mail-marks.ts for the whole rationale, including why
+  // the state is deliberately in-memory and why one mark per account
+  // stopped being correct once four folders shared it.
+  private readonly marks = new NewMailMarks();
+
+  // Folder discovery result per CONNECTION, not per account. Keying on
+  // the connection object makes "re-discover after reconnect" automatic
+  // rather than something to remember to invalidate: runAccount() builds a
+  // fresh ImapConnection on every pass of its retry loop, so a reconnected
+  // account simply misses this cache and LISTs again — which is what we
+  // want, since a folder the user created (or a Trash re-enabled by
+  // policy) between connections should be picked up rather than pinned to
+  // whatever the process's first LIST saw. A WeakMap so a discarded
+  // connection's entry is collectable with it, instead of a reconnect loop
+  // accumulating one dead entry per attempt forever.
+  private readonly foldersByConnection = new WeakMap<ImapConnection, DiscoveredFolders>();
 
   // Fix round 2, Fix A: every detached dispatch chain currently running
   // (Fix round 1, Fix 5 made dispatch fire-and-forget from syncOnce(), so
@@ -255,9 +240,9 @@ export class ConnectionPool {
    *   socket or a live Gmail account.
    * @param onNewMessages Optional (Task 7). When absent, this pool's
    *   behaviour is byte-identical to before this parameter existed —
-   *   trackNewMessages() still runs every cycle to keep its bookkeeping
-   *   current, but dispatchNewMessages() no-ops immediately without a
-   *   handler to call.
+   *   NewMailMarks.track() still runs every cycle, for every folder, to
+   *   keep its bookkeeping current, but dispatchNewMessages() no-ops
+   *   immediately without a handler to call.
    */
   constructor(
     accounts: readonly AccountConfig[],
@@ -530,43 +515,113 @@ export class ConnectionPool {
     }
   }
 
+  /**
+   * Resolves this connection's folders, LISTing once per connection and
+   * reusing the answer for every later cycle on it (see
+   * foldersByConnection for why the cache is keyed that way).
+   *
+   * The missing-folder log fires inside the cache miss, so it is one line
+   * per connection rather than one per cycle — an account whose Trash is
+   * disabled would otherwise log every three minutes forever. Only the
+   * folder KIND is named, never a path or anything else from the listing.
+   *
+   * A LIST failure is not caught: imap/folders.ts documents why a
+   * connection that cannot enumerate its own mailboxes is a
+   * connection-health signal, which runAccount()'s catch already handles.
+   */
+  private async resolveFolders(
+    accountId: string,
+    connection: ImapConnection,
+  ): Promise<DiscoveredFolders> {
+    const cached = this.foldersByConnection.get(connection);
+    if (cached) return cached;
+
+    const folders = await discoverFolders(() => connection.listMailboxes());
+    this.foldersByConnection.set(connection, folders);
+
+    const missing = missingFolderKinds(folders);
+    if (missing.length > 0) {
+      console.error(
+        `account "${accountId}": server reported no special-use folder for ${missing.join(', ')} ` +
+          '— those folders will not be synced; the rest continue normally',
+      );
+    }
+    return folders;
+  }
+
   private async syncOnce(accountId: string, connection: ImapConnection): Promise<void> {
     // Amendment 2: reserve -> fetch -> record is serialised per account so
     // two overlapping cycles can never both reserve against the same
     // stale budget snapshot. Different accounts use different keys, so
     // this never serialises across accounts.
+    //
+    // Plan 5: EVERY discovered folder is synced inside this one critical
+    // section, on this one connection, sequentially — deliberately not a
+    // per-folder mutex, and deliberately never released between folders.
+    // The key is what stops an on-demand API download (withAccountLock) or
+    // the liveness probe from interleaving with a cycle on the shared
+    // imapflow client; a cycle that let go halfway would reopen exactly
+    // that race, with the mailbox left pointing at Sent.
     const newMessages = await this.mutex.run(accountId, async (): Promise<readonly MessageInput[]> => {
-      const decision = await this.budget.reserve(accountId, RESERVE_BYTES_PER_SYNC);
-      if (!decision.allowed) {
-        // Amendment 4: a refused reservation skips the fetch entirely
-        // (not just a log line) — logged with the account id so an
-        // operator can see which account is throttled and why.
-        console.error(
-          `account "${accountId}": daily byte budget exhausted, skipping sync ` +
-            `(requested ${RESERVE_BYTES_PER_SYNC}, remaining ${decision.remaining})`,
-        );
-        return [];
+      const folders = await this.resolveFolders(accountId, connection);
+
+      // BYTE BUDGET, worst case, stated here because this loop is what
+      // multiplied it by four: 50 headers x 2 KB
+      // (ESTIMATED_BYTES_PER_HEADER_FETCH) = 100 KB per folder-fetch;
+      // x 4 folders = 400 KB per account per full cycle; x 4 accounts =
+      // ~1.6 MB per full cycle across the deployment. IDLE-driven cycles
+      // have no upper rate bound, but the FLOOR cadence of one per
+      // IDLE_LIVENESS_CHECK_INTERVAL_MS (180s) = 480/day puts a quiet
+      // account at ~187 MB/day — under 10% of DAILY_BYTE_LIMIT (2 GiB,
+      // per account per day). The budget machinery is unchanged and still
+      // the real enforcement: each folder reserves and records separately,
+      // so a busy account hits reserve()'s refusal exactly as it did with
+      // one folder, just up to four times per cycle instead of once.
+      const newByFolder = new Map<FolderKind, readonly MessageInput[]>();
+
+      for (const target of folderSyncOrder(folders)) {
+        try {
+          newByFolder.set(target.kind, await this.syncFolder(accountId, connection, target.path));
+        } catch (error) {
+          // INBOX keeps its existing semantics: its failure IS the
+          // connection's health signal (a mailbox that will not open on an
+          // authenticated connection is how an IMAP-suspended account
+          // presents), so it propagates to runAccount()'s reconnect ladder
+          // exactly as before Plan 5.
+          if (target.kind === 'inbox') throw error;
+          // Every other folder is best-effort: a Trash disabled by policy,
+          // a folder deleted between LIST and SELECT, a per-folder server
+          // error — none of those justify abandoning the rest of the cycle
+          // or tearing down a healthy connection. Account id and folder
+          // name only.
+          console.error(
+            `account "${accountId}": folder "${target.path}" failed to sync, continuing with the rest`,
+            error,
+          );
+        }
       }
 
-      const result = await fetchHeaders(connection, SYNCED_FOLDER, { limit: HEADER_FETCH_LIMIT });
-      for (const message of result.messages) {
-        await this.db.upsertMessage(message);
-        // Attachment metadata is written AFTER its message row: the
-        // attachments table has a foreign key onto
-        // messages(account_id, folder, uid), so the reverse order would
-        // fail on a message this cycle is seeing for the first time.
-        //
-        // Dropping result.attachments (which is what this loop used to do)
-        // left the table permanently empty, which in turn made
-        // lookupAttachmentMeta a guaranteed miss — every attachment served
-        // as application/octet-stream with no filename — and left a client
-        // with no way to discover a partId at all, so
-        // /api/attachment/:account/:folder/:uid/:partId was unreachable.
-        await this.persistAttachments(accountId, message.uid, result.attachments.get(message.uid));
-      }
-      await this.budget.record(accountId, result.bytesDownloaded);
+      // The cycle must END with INBOX selected: imapflow leaves the last
+      // locked mailbox selected after release(), so a cycle ending on
+      // Trash would arm IDLE against Trash — and IDLE is INBOX-only by
+      // design (one connection per account, Gmail's ~15 ceiling), so the
+      // account would simply stop waking on new mail. Unconditional
+      // because getMailboxLock short-circuits on an already-open mailbox
+      // (zero round trips in the INBOX-only case) and because it then also
+      // repairs the state after a folder that threw mid-open.
+      await connection.openMailbox(folders.inbox);
 
-      return this.trackNewMessages(accountId, result.messages, result.uidValidity);
+      // NOTIFICATIONS ARE INBOX-ONLY (Plan 5 global constraint). Every
+      // folder's high-water mark advanced above — syncFolder() called
+      // marks.track() for all of them — but only INBOX's genuinely-new
+      // messages reach the dispatch hook. A message the user just sent
+      // themselves, or spam Gmail just filed, must not buzz a phone.
+      //
+      // Read by key, not accumulated in the loop: an accumulator's
+      // correctness would depend on iteration order (the last folder
+      // visited wins, possibly overwriting with an empty array), and this
+      // guarantee must not rest on trash happening to be last.
+      return newByFolder.get('inbox') ?? [];
     });
 
     // Deliberately outside the mutex.run() above, AND deliberately NOT
@@ -591,8 +646,8 @@ export class ConnectionPool {
     // that has nothing to do with push at all — the exact kind of coupling
     // this pool's own backoff/liveness machinery exists to avoid.
     //
-    // Detaching it is safe because the mark trackNewMessages() computed is
-    // already committed to maxSeenUid/seenUidValidity by this point, and
+    // Detaching it is safe because the marks every folder's syncFolder()
+    // computed are already committed inside NewMailMarks by this point, and
     // dispatchNewMessages() never throws (its own try/catch) — so `void`
     // here drops nothing but the wait. Per-cycle dispatch work stays
     // individually bounded (50 messages x each send's own 5s cap) even
@@ -609,94 +664,56 @@ export class ConnectionPool {
   }
 
   /**
-   * Amendment 3 (backfill guard). Decides which of this cycle's fetched
-   * messages are genuinely new — arrived since the last cycle THIS PROCESS
-   * observed for this account — and returns only those. An account's
-   * first cycle always returns an empty array, no matter how many
-   * messages it fetched: that cycle only establishes the high-water mark,
-   * it never reports anything as new.
+   * One folder's share of a sync cycle: reserve, fetch the newest
+   * HEADER_FETCH_LIMIT headers, upsert them with their attachment
+   * metadata, record the bytes, and return the messages that are genuinely
+   * new for THIS folder.
    *
-   * LIMITATION, stated plainly (Fix round 1, Fix 4 — the previous wording
-   * here ("indistinguishable from have always been there") was not
-   * accurate and is corrected): this is not just "old mail is silently
-   * skipped". Mail that arrives WHILE THE SERVICE IS DOWN — a 10-minute
-   * outage, a deploy, a crash-restart loop — is genuinely new and the
-   * account's own recipient has never seen a notification for it, but the
-   * first cycle after the restart folds it into the baseline exactly like
-   * mail that has sat in the inbox for months. There is no signal at this
-   * layer (a UID and a fetch timestamp) that can tell those two cases
-   * apart. This is the accepted trade-off Amendment 3 makes: missing some
-   * notifications after a restart is safe-direction and tolerable;
-   * buzzing for the newest ~50 messages on every single restart is not.
+   * No new sync logic lives here — this is the body syncOnce() used to run
+   * inline against a hardcoded INBOX, with `folder` threaded through the
+   * three places that were pinned to it (fetchHeaders, the attachment
+   * rows' folder column, the high-water mark's key). The machinery was
+   * already folder-agnostic: resolveUidSpan() knows nothing about folders,
+   * and messages/sync_state have been keyed on (account, folder) since
+   * Plan 2.
    *
-   * `firstCycleDone`/`maxSeenUid`/`seenUidValidity` are in-memory and
-   * reset on every process restart BY DESIGN — this pool has no durable
-   * resume point today (spec 9 / L9's known limitation: the newest-50
-   * poll, not a backfill), so there is no reliable persisted watermark to
-   * compare against anyway. The in-memory guard turns that same
-   * limitation into the correct behaviour for notifications specifically:
-   * every restart re-earns "new" from a clean baseline instead of
-   * trusting stale state.
-   *
-   * On a LATER cycle, only messages whose UID exceeds the account's
-   * previous high-water mark count as new. This is also what stops the
-   * same ~50-newest poll from re-notifying every cycle: a liveness-probe
-   * -triggered re-poll (every IDLE_LIVENESS_CHECK_INTERVAL_MS at most) or
-   * a flag change re-fetches UIDs already at or below the mark, and they
-   * are filtered out here rather than by whatever the hook does with them.
-   *
-   * Fix round 1, Fix 3: the mark is also invalidated on a UIDVALIDITY
-   * change, and re-baselined exactly like a first cycle (report nothing
-   * this cycle, log one line, resume comparing on the NEXT cycle). Without
-   * this, a UIDVALIDITY change where the server starts numbering from a
-   * lower value makes `uid > previousMax` false for every message for the
-   * rest of the process's life — a silent, permanent stop to every
-   * new-mail notification for that account until something happens to
-   * restart the process. A real Gmail UIDVALIDITY change is rare enough
-   * that logging it is a signal, not spam.
-   *
-   * Runs unconditionally, whether or not a hook is configured — the
-   * bookkeeping itself must stay correct so that installing a hook later
-   * in the process's life (there is no such caller today, but nothing
-   * here assumes there won't be) sees an accurate baseline rather than one
-   * that stopped updating.
+   * Returning the new messages rather than dispatching them keeps the
+   * INBOX-only notification guard in ONE place (syncOnce's call site)
+   * instead of duplicating `if (folder === INBOX)` down every path.
    */
-  private trackNewMessages(
+  private async syncFolder(
     accountId: string,
-    messages: readonly MessageInput[],
-    uidValidity: bigint | null,
-  ): readonly MessageInput[] {
-    const isFirstCycle = !this.firstCycleDone.has(accountId);
-    this.firstCycleDone.add(accountId);
-
-    const previousUidValidity = this.seenUidValidity.get(accountId);
-    const uidValidityChanged =
-      !isFirstCycle &&
-      uidValidity !== null &&
-      previousUidValidity !== undefined &&
-      uidValidity !== previousUidValidity;
-
-    if (uidValidityChanged) {
+    connection: ImapConnection,
+    folder: string,
+  ): Promise<readonly MessageInput[]> {
+    const decision = await this.budget.reserve(accountId, RESERVE_BYTES_PER_FOLDER_SYNC);
+    if (!decision.allowed) {
+      // Amendment 4: a refused reservation skips the fetch entirely
+      // (not just a log line) — logged with the account id and folder so
+      // an operator can see which account is throttled and why.
       console.error(
-        `account "${accountId}": mailbox UIDVALIDITY changed (${previousUidValidity} -> ` +
-          `${uidValidity}) — re-establishing the new-mail baseline instead of comparing UIDs ` +
-          'against the stale numbering',
+        `account "${accountId}" folder "${folder}": daily byte budget exhausted, skipping sync ` +
+          `(requested ${RESERVE_BYTES_PER_FOLDER_SYNC}, remaining ${decision.remaining})`,
       );
+      return [];
     }
-    if (uidValidity !== null) this.seenUidValidity.set(accountId, uidValidity);
 
-    const startsNewBaseline = isFirstCycle || uidValidityChanged;
-    const previousMax = startsNewBaseline ? -Infinity : this.maxSeenUid.get(accountId) ?? -Infinity;
-    const currentMax = messages.reduce((max, message) => Math.max(max, message.uid), previousMax);
-    this.maxSeenUid.set(accountId, currentMax);
+    const result = await fetchHeaders(connection, folder, { limit: HEADER_FETCH_LIMIT });
+    for (const message of result.messages) {
+      await this.db.upsertMessage(message);
+      // AFTER its message row, never before — see persistAttachments()
+      // for the foreign key that requires this order and for what dropping
+      // result.attachments entirely used to cost.
+      await this.persistAttachments(accountId, folder, message.uid, result.attachments.get(message.uid));
+    }
+    await this.budget.record(accountId, result.bytesDownloaded);
 
-    if (startsNewBaseline) return [];
-    return messages.filter((message) => message.uid > previousMax);
+    return this.marks.track(accountId, folder, result.messages, result.uidValidity);
   }
 
   /**
-   * Invokes the injected new-mail hook, if any, for the messages
-   * trackNewMessages() decided are genuinely new. This pool has no idea
+   * Invokes the injected new-mail hook, if any, for the INBOX messages
+   * NewMailMarks.track() decided are genuinely new. This pool has no idea
    * what the hook does — Task 7 wires it to push/dispatch.ts's
    * `notifyNewMail`, but nothing here imports push/ or knows a
    * notification is involved — and a failure in it must never be mistaken
@@ -718,7 +735,7 @@ export class ConnectionPool {
    * what makes calling this without `await` at the syncOnce() call site
    * safe.
    *
-   * This makes the new-mail path AT-MOST-ONCE: a message trackNewMessages()
+   * This makes the new-mail path AT-MOST-ONCE: a message the marks
    * already decided was "new" and then failed to dispatch for (the hook
    * threw, or its own network call failed) is never retried — the
    * high-water mark has already moved past its UID by the time this
@@ -743,8 +760,22 @@ export class ConnectionPool {
     }
   }
 
+  /**
+   * Called AFTER the message's own row: `attachments` has a foreign key
+   * onto messages(account_id, folder, uid), so the reverse order fails
+   * outright on a message a cycle is seeing for the first time. (F5:
+   * dropping result.attachments instead of writing it left the table
+   * permanently empty, made lookupAttachmentMeta a guaranteed miss — every
+   * attachment served as application/octet-stream with no filename — and
+   * left a client no way to discover a partId at all.)
+   *
+   * `folder` is a parameter rather than the old hardcoded INBOX constant
+   * because of that same FK: a Sent message's attachment rows written
+   * under 'INBOX' would violate it outright.
+   */
   private async persistAttachments(
     accountId: string,
+    folder: string,
     uid: number,
     parts: readonly AttachmentMeta[] | undefined,
   ): Promise<void> {
@@ -752,7 +783,7 @@ export class ConnectionPool {
     for (const part of parts) {
       await this.db.upsertAttachment({
         accountId,
-        folder: SYNCED_FOLDER,
+        folder,
         uid,
         partId: part.partId,
         filename: part.filename,

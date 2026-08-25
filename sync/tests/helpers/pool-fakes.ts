@@ -34,16 +34,56 @@ export interface FakeFetchMessage {
   readonly bodyStructure?: unknown;
 }
 
+/**
+ * One mailbox on the fake server.
+ *
+ * `specialUse` carries imapflow's REAL shape: a single backslash-prefixed
+ * string (`'\\Sent'`, `'\\Junk'`, `'\\Trash'`, and the non-standard
+ * `'\\Inbox'`), present only on the one entry imapflow picked as that
+ * type's winner, and `undefined` — not `''`, not `[]` — on every ordinary
+ * folder. A fake that modelled this as an array, or as the mailbox's whole
+ * flag set, would let a discovery implementation pass here that cannot
+ * read a real Gmail listing.
+ *
+ * `messages` is read-only TO THIS FAKE and never copied by it: the test
+ * keeps the mutable reference and pushes into it to simulate mail arriving
+ * in that specific folder between cycles.
+ */
+export interface FakeFolder {
+  readonly path: string;
+  readonly specialUse?: string;
+  readonly messages?: readonly FakeFetchMessage[];
+  readonly uidValidity?: bigint;
+  /** When set, getMailboxLock(path) rejects with it — a mailbox that
+   *  fails to SELECT (Trash disabled by policy, folder deleted between
+   *  LIST and SELECT), which is how a real per-folder failure presents. */
+  readonly openError?: Error;
+}
+
 export interface FakeClientOptions {
   readonly connectBehavior?: () => Promise<void>;
   /** If true, every idle() call rejects on the next microtask instead of
    *  hanging — simulates a connection that dies while idling. */
   readonly idleRejectsImmediately?: boolean;
   readonly noopBehavior?: () => Promise<void>;
-  /** Messages client.fetch() yields. Supplying these also raises the
-   *  reported uidNext so resolveUidSpan produces a non-empty span; without
-   *  them the mailbox looks empty and fetchHeaders short-circuits. */
+  /** Messages client.fetch() yields for INBOX. Supplying these also raises
+   *  the reported uidNext so resolveUidSpan produces a non-empty span;
+   *  without them the mailbox looks empty and fetchHeaders short-circuits.
+   *
+   *  Shorthand for a single-INBOX server — see `folders` for the
+   *  multi-folder form. The two are mutually exclusive; `folders` wins. */
   readonly messages?: readonly FakeFetchMessage[];
+  /**
+   * The whole mailbox list this fake server reports, for multi-folder
+   * tests. Defaults to INBOX alone (carrying `messages`/`uidValidity`
+   * above), which is what keeps every pre-Plan-5 test in these suites
+   * describing exactly the server it always described: one folder, one
+   * fetch per cycle, one budget record per cycle.
+   */
+  readonly folders?: readonly FakeFolder[];
+  /** When set, list() rejects with it — a LIST that fails on an otherwise
+   *  authenticated connection. */
+  readonly listError?: Error;
   /** Injected between the download starting and its first chunk, so a test
    *  can hold an on-demand fetch open while it observes what else runs. */
   readonly downloadGate?: Promise<void>;
@@ -115,13 +155,94 @@ export function createFakeClient(options: FakeClientOptions = {}) {
     if (options.noopBehavior) await options.noopBehavior();
   });
 
-  const getMailboxLock = vi.fn(async () => ({ release: () => {} }));
+  // One INBOX by default, so a test that says nothing about folders gets
+  // exactly the single-folder server these suites have always assumed.
+  const folders: readonly FakeFolder[] = options.folders ?? [
+    {
+      path: 'INBOX',
+      specialUse: '\\Inbox',
+      // NOT copied — the SAME array the caller passed. Several suites
+      // simulate later cycles by pushing into their own reference to it
+      // (see the `mailbox` getter's comment); a defensive copy here would
+      // silently sever that and make every "a new message arrives" test
+      // observe an inbox frozen at its first cycle.
+      messages: options.messages ?? [],
+      uidValidity: options.uidValidity ?? 1n,
+    },
+  ];
 
-  const messages = options.messages ?? [];
-  let uidValidity = options.uidValidity ?? 1n;
+  interface FolderState {
+    readonly path: string;
+    readonly specialUse: string | undefined;
+    // readonly to this fake, which only ever reads it; the TEST keeps the
+    // mutable reference and is what pushes new mail into it.
+    readonly messages: readonly FakeFetchMessage[];
+    uidValidity: bigint;
+    readonly openError: Error | undefined;
+  }
+
+  const states = new Map<string, FolderState>(
+    folders.map((folder) => [
+      folder.path,
+      {
+        path: folder.path,
+        specialUse: folder.specialUse,
+        messages: folder.messages ?? [],
+        uidValidity: folder.uidValidity ?? 1n,
+        openError: folder.openError,
+      },
+    ]),
+  );
+
+  /** Mirrors imapflow: the last SELECTed mailbox stays selected after the
+   *  lock is released, and `mailbox` is `false` until one is opened. */
+  let selectedPath: string | null = null;
+  const openedMailboxes: string[] = [];
+
+  /**
+   * Entries in imapflow's real ListResponse shape, not a two-field
+   * convenience object. Everything here is a field imapflow genuinely
+   * populates, so ImapConnection.listMailboxes() has to pick the right two
+   * out of a realistic record rather than out of one built to suit it.
+   */
+  const list = vi.fn(async () => {
+    if (options.listError) throw options.listError;
+    return [...states.values()].map((state) => {
+      const segments = state.path.split('/');
+      return {
+        path: state.path,
+        pathAsListed: state.path,
+        name: segments[segments.length - 1] ?? state.path,
+        delimiter: '/',
+        parent: segments.slice(0, -1),
+        parentPath: segments.slice(0, -1).join('/'),
+        flags: new Set<string>(state.specialUse ? [state.specialUse] : []),
+        // Absent, not empty-string, on an ordinary folder — exactly as
+        // imapflow reports it.
+        ...(state.specialUse ? { specialUse: state.specialUse, specialUseSource: 'extension' } : {}),
+        listed: true,
+        subscribed: true,
+      };
+    });
+  });
+
+  const getMailboxLock = vi.fn(async (path: string) => {
+    const state = states.get(path);
+    if (!state) throw new Error(`fake imap: no such mailbox "${path}"`);
+    if (state.openError) throw state.openError;
+    openedMailboxes.push(path);
+    selectedPath = path;
+    return { path, release: () => {} };
+  });
+
+  const selectedState = (): FolderState | null =>
+    selectedPath === null ? null : states.get(selectedPath) ?? null;
 
   const fetch = vi.fn(function* fetchImpl() {
-    for (const message of messages) yield message;
+    // Yields the SELECTED folder's messages: a cycle that opened Spam must
+    // not be handed INBOX's mail, or every per-folder assertion in these
+    // suites would be measuring the same array four times.
+    for (const message of selectedState()?.messages ?? []) yield message;
   });
 
   const download = vi.fn(async (uid: string, partId: string | undefined) => {
@@ -142,6 +263,7 @@ export function createFakeClient(options: FakeClientOptions = {}) {
     logout,
     idle,
     noop,
+    list,
     getMailboxLock,
     fetch,
     download,
@@ -157,13 +279,24 @@ export function createFakeClient(options: FakeClientOptions = {}) {
       return usable;
     },
     get mailbox() {
+      // `false` until something is SELECTed, exactly like imapflow's own
+      // `mailbox: MailboxObject | false` — fetch.ts and openMailbox() both
+      // branch on that, so a fake that always returned an object would
+      // hide a real "opened nothing" bug.
+      const state = selectedState();
+      if (!state) return false;
       // Recomputed on every access, not snapshotted at creation: a test
       // that pushes a new entry into the SAME `messages` array (to
       // simulate a later cycle seeing genuinely new mail) needs uidNext to
       // reflect it, or resolveUidSpan() would keep computing a span from
       // the stale original highest UID and never fetch the new message.
-      const highestUid = messages.reduce((max, m) => Math.max(max, m.uid), 0);
-      return { path: 'INBOX', uidValidity, uidNext: highestUid + 1, exists: messages.length };
+      const highestUid = state.messages.reduce((max, m) => Math.max(max, m.uid), 0);
+      return {
+        path: state.path,
+        uidValidity: state.uidValidity,
+        uidNext: highestUid + 1,
+        exists: state.messages.length,
+      };
     },
   };
 
@@ -173,14 +306,24 @@ export function createFakeClient(options: FakeClientOptions = {}) {
     logout,
     idle,
     noop,
+    list,
     download,
     downloadCalls,
+    /** Every getMailboxLock path, in order — the record of which mailboxes
+     *  a cycle actually opened and in what sequence. */
+    openedMailboxes,
+    /** The mailbox left SELECTed right now. Proves where IDLE re-arms
+     *  after a multi-folder cycle. */
+    selectedMailbox: () => selectedPath,
     triggerExists: () => {
       for (const handler of existsListeners) handler({});
     },
     existsListenerCount: () => existsListeners.size,
-    setUidValidity: (value: bigint) => {
-      uidValidity = value;
+    /** Defaults to INBOX so existing single-folder callers are unchanged. */
+    setUidValidity: (value: bigint, path = 'INBOX') => {
+      const state = states.get(path);
+      if (!state) throw new Error(`fake imap: no such mailbox "${path}"`);
+      state.uidValidity = value;
     },
   };
 }

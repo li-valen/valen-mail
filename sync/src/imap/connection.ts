@@ -1,5 +1,6 @@
 import { ImapFlow } from 'imapflow';
 import type { AccountConfig } from '../config';
+import type { MailboxListing } from './folders';
 import { withTimeout } from '../timeout.ts';
 
 /** Gmail's IMAP endpoint. There is exactly one supported host/port pair, so
@@ -26,11 +27,11 @@ const GMAIL_IMAP_PORT = 993;
 export const LOGOUT_TIMEOUT_MS = 5_000;
 
 /**
- * NOT YET WIRED: no production caller. Only openMailbox() below returns
- * this shape, and openMailbox() itself has no production caller — the sync
- * path opens mailboxes through fetchHeaders()'s own getMailboxLock. Kept
- * for a future task that needs uidValidity/uidNext (a UID-cursor backfill,
- * spec 9 / L9).
+ * Returned by openMailbox() below. The pool calls that method at the end
+ * of every multi-folder sync cycle to put INBOX back in front of IDLE, and
+ * ignores these fields; they are read by tests/connection.test.ts (live,
+ * opt-in) and are what a future UID-cursor backfill (spec 9 / L9) would
+ * resume from.
  */
 export interface MailboxInfo {
   readonly path: string;
@@ -168,21 +169,33 @@ export class ImapConnection {
   }
 
   /**
-   * NOT YET WIRED: no production caller. The service syncs exactly one
-   * folder (INBOX, see SYNCED_FOLDER in imap/pool.ts), so nothing needs to
-   * enumerate mailboxes yet. Retained for multi-folder sync.
+   * One IMAP LIST round trip, narrowed to the two fields folder discovery
+   * reads: the mailbox path and its special-use attribute.
+   *
+   * `specialUse` — not the path — is what imap/folders.ts matches on, and
+   * dropping it here (as this method used to, returning bare paths) would
+   * leave a caller no option but to match localised folder NAMES, which is
+   * exactly the bug that module exists to prevent. See its header for why
+   * Gmail's localisation makes names unusable.
    */
-  async listMailboxes(): Promise<readonly string[]> {
+  async listMailboxes(): Promise<readonly MailboxListing[]> {
     const list = await this.getClient().list();
-    return list.map((box) => box.path);
+    return list.map((box) => ({ path: box.path, specialUse: box.specialUse }));
   }
 
   /**
-   * NOT YET WIRED: no production caller. fetchHeaders() takes its own
-   * mailbox lock and reads client.mailbox directly, so this wrapper is
-   * exercised only by tests/connection.test.ts (live, opt-in). Retained
-   * because a UID-cursor backfill needs uidValidity, which is exactly what
-   * this returns.
+   * Opens (SELECTs) a mailbox and reports its state.
+   *
+   * The sync path's own header fetches take their mailbox locks inside
+   * fetchHeaders(), so this is not how folders get opened for fetching.
+   * Its production caller is ConnectionPool's folder loop, which calls it
+   * once at the END of every cycle to put INBOX back in front: imapflow
+   * leaves the last-locked mailbox selected after release(), so a cycle
+   * ending on Trash would otherwise arm IDLE against Trash and stop the
+   * account from ever waking on new INBOX mail.
+   *
+   * Cheap when INBOX is already selected: imapflow's getMailboxLock has a
+   * fast path for an already-open mailbox that issues no SELECT at all.
    */
   async openMailbox(path: string): Promise<MailboxInfo> {
     const client = this.getClient();

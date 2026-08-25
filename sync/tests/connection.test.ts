@@ -18,7 +18,20 @@ maybe('ImapConnection (live Gmail)', () => {
 
   it('lists mailboxes including INBOX', async () => {
     const boxes = await connection.listMailboxes();
-    expect(boxes.some((b) => b.toUpperCase() === 'INBOX')).toBe(true);
+    expect(boxes.some((b) => b.path.toUpperCase() === 'INBOX')).toBe(true);
+  }, 30_000);
+
+  it('reports special-use attributes, which is what folder discovery matches on', async () => {
+    // The one assertion in this file that cannot be made against a fixture:
+    // that a REAL Gmail account actually reports \Sent/\Junk/\Trash through
+    // imapflow's `specialUse`. tests/folders.test.ts proves discovery reads
+    // that field correctly; this proves the field is really there to read.
+    const boxes = await connection.listMailboxes();
+    const attributes = boxes.map((b) => b.specialUse);
+
+    expect(attributes).toContain('\\Sent');
+    expect(attributes).toContain('\\Junk');
+    expect(attributes).toContain('\\Trash');
   }, 30_000);
 
   it('opens INBOX and reports uidValidity and uidNext', async () => {
