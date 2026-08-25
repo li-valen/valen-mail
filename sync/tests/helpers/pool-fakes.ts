@@ -105,7 +105,6 @@ export function createFakeClient(options: FakeClientOptions = {}) {
   const getMailboxLock = vi.fn(async () => ({ release: () => {} }));
 
   const messages = options.messages ?? [];
-  const highestUid = messages.reduce((max, m) => Math.max(max, m.uid), 0);
 
   const fetch = vi.fn(function* fetchImpl() {
     for (const message of messages) yield message;
@@ -144,6 +143,12 @@ export function createFakeClient(options: FakeClientOptions = {}) {
       return usable;
     },
     get mailbox() {
+      // Recomputed on every access, not snapshotted at creation: a test
+      // that pushes a new entry into the SAME `messages` array (to
+      // simulate a later cycle seeing genuinely new mail) needs uidNext to
+      // reflect it, or resolveUidSpan() would keep computing a span from
+      // the stale original highest UID and never fetch the new message.
+      const highestUid = messages.reduce((max, m) => Math.max(max, m.uid), 0);
       return { path: 'INBOX', uidValidity: 1, uidNext: highestUid + 1, exists: messages.length };
     },
   };

@@ -1,6 +1,6 @@
 import type { ImapFlow } from 'imapflow';
 import type { AccountConfig } from '../config';
-import type { Db } from '../db';
+import type { Db, MessageInput } from '../db';
 import type { AttachmentMeta } from '../attachments';
 import { ImapConnection } from './connection.ts';
 import { fetchHeaders, ESTIMATED_BYTES_PER_HEADER_FETCH } from './fetch.ts';
@@ -182,6 +182,24 @@ export class KeyedMutex {
 }
 
 /**
+ * Injected hook for genuinely new mail (Task 7 / Amendment 3). The pool
+ * calls this with the messages `trackNewMessages` decided are new since
+ * the account's own previous cycle — never on an account's first cycle,
+ * no matter how many messages that cycle fetches (see trackNewMessages's
+ * own comment for why).
+ *
+ * This type is the ENTIRE surface the pool knows about push: a function
+ * from (accountId, messages) to void or a promise of void. server.ts
+ * wires this to push/dispatch.ts's `notifyNewMail`; this module never
+ * imports anything from push/ and has no idea what the hook does with
+ * what it's given.
+ */
+export type OnNewMessagesHandler = (
+  accountId: string,
+  messages: readonly MessageInput[],
+) => void | Promise<void>;
+
+/**
  * One long-lived IMAP connection per configured account: connects, runs a
  * bounded header sync, then sits in IDLE — waking on new mail, waking on a
  * bounded timeout to prove the connection is still alive (Amendment 1), and
@@ -194,11 +212,20 @@ export class ConnectionPool {
   private readonly accounts: readonly AccountConfig[];
   private readonly db: Db;
   private readonly createConnection: (account: AccountConfig) => ImapConnection;
+  private readonly onNewMessages: OnNewMessagesHandler | undefined;
   private readonly budget: ByteBudget;
   private readonly mutex = new KeyedMutex();
   private readonly connections = new Map<string, ImapConnection>();
   private readonly statuses = new Map<string, AccountStatus>();
   private running = false;
+
+  // Amendment 3's backfill guard state, per account. Deliberately
+  // in-memory, not persisted: that is exactly what makes "a fresh service
+  // start against an existing mailbox produces zero new-mail
+  // notifications" hold on every restart, not just the very first one —
+  // see trackNewMessages().
+  private readonly firstCycleDone = new Set<string>();
+  private readonly maxSeenUid = new Map<string, number>();
 
   // Lets a backoff sleep (up to MAX_BACKOFF_MS) be cut short the instant
   // stop() is called, instead of stop() having to wait out whatever delay
@@ -213,15 +240,22 @@ export class ConnectionPool {
    *   from Task 5) so the pool's backoff, status, serialisation and
    *   stop-safety behaviour can be driven deterministically without a
    *   socket or a live Gmail account.
+   * @param onNewMessages Optional (Task 7). When absent, this pool's
+   *   behaviour is byte-identical to before this parameter existed —
+   *   trackNewMessages() still runs every cycle to keep its bookkeeping
+   *   current, but dispatchNewMessages() no-ops immediately without a
+   *   handler to call.
    */
   constructor(
     accounts: readonly AccountConfig[],
     db: Db,
     createConnection: (account: AccountConfig) => ImapConnection = (account) => new ImapConnection(account),
+    onNewMessages?: OnNewMessagesHandler,
   ) {
     this.accounts = accounts;
     this.db = db;
     this.createConnection = createConnection;
+    this.onNewMessages = onNewMessages;
     this.budget = new ByteBudget(db);
     this.stopRequested = new Promise((resolve) => {
       this.resolveStopRequested = resolve;
@@ -450,7 +484,7 @@ export class ConnectionPool {
     // two overlapping cycles can never both reserve against the same
     // stale budget snapshot. Different accounts use different keys, so
     // this never serialises across accounts.
-    await this.mutex.run(accountId, async () => {
+    const newMessages = await this.mutex.run(accountId, async (): Promise<readonly MessageInput[]> => {
       const decision = await this.budget.reserve(accountId, RESERVE_BYTES_PER_SYNC);
       if (!decision.allowed) {
         // Amendment 4: a refused reservation skips the fetch entirely
@@ -460,7 +494,7 @@ export class ConnectionPool {
           `account "${accountId}": daily byte budget exhausted, skipping sync ` +
             `(requested ${RESERVE_BYTES_PER_SYNC}, remaining ${decision.remaining})`,
         );
-        return;
+        return [];
       }
 
       const result = await fetchHeaders(connection, SYNCED_FOLDER, { limit: HEADER_FETCH_LIMIT });
@@ -480,7 +514,95 @@ export class ConnectionPool {
         await this.persistAttachments(accountId, message.uid, result.attachments.get(message.uid));
       }
       await this.budget.record(accountId, result.bytesDownloaded);
+
+      return this.trackNewMessages(accountId, result.messages);
     });
+
+    // Deliberately outside the mutex.run() above: dispatchNewMessages()
+    // may call a hook that reaches a push service over the network, and
+    // holding the same per-account key syncOnce()/withAccountLock()/the
+    // liveness probe all share for that long would delay an on-demand API
+    // fetch or the next liveness probe behind a slow or hung push send,
+    // for a reason unrelated to any of them.
+    await this.dispatchNewMessages(accountId, newMessages);
+  }
+
+  /**
+   * Amendment 3 (backfill guard). Decides which of this cycle's fetched
+   * messages are genuinely new — arrived since the last cycle THIS PROCESS
+   * observed for this account — and returns only those. An account's
+   * first cycle always returns an empty array, no matter how many
+   * messages it fetched: that cycle only establishes the high-water mark,
+   * it never reports anything as new. This is what makes "a fresh service
+   * start against an existing mailbox produces zero new-mail
+   * notifications" true — the ~50 newest messages a brand-new process
+   * finds already in the mailbox are indistinguishable at this layer from
+   * "have always been there" (which, restart after restart, they are).
+   *
+   * `firstCycleDone`/`maxSeenUid` are in-memory and reset on every process
+   * restart BY DESIGN — this pool has no durable resume point today (spec
+   * 9 / L9's known limitation: the newest-50 poll, not a backfill), so
+   * there is no reliable persisted watermark to compare against anyway.
+   * The in-memory guard turns that same limitation into the correct
+   * behaviour for notifications specifically: every restart re-earns "new"
+   * from a clean baseline instead of trusting stale state.
+   *
+   * On a LATER cycle, only messages whose UID exceeds the account's
+   * previous high-water mark count as new. This is also what stops the
+   * same ~50-newest poll from re-notifying every cycle: a liveness-probe
+   * -triggered re-poll (every IDLE_LIVENESS_CHECK_INTERVAL_MS at most) or
+   * a flag change re-fetches UIDs already at or below the mark, and they
+   * are filtered out here rather than by whatever the hook does with them.
+   *
+   * Runs unconditionally, whether or not a hook is configured — the
+   * bookkeeping itself must stay correct so that installing a hook later
+   * in the process's life (there is no such caller today, but nothing
+   * here assumes there won't be) sees an accurate baseline rather than one
+   * that stopped updating.
+   */
+  private trackNewMessages(
+    accountId: string,
+    messages: readonly MessageInput[],
+  ): readonly MessageInput[] {
+    const isFirstCycle = !this.firstCycleDone.has(accountId);
+    this.firstCycleDone.add(accountId);
+
+    const previousMax = this.maxSeenUid.get(accountId) ?? -Infinity;
+    const currentMax = messages.reduce((max, message) => Math.max(max, message.uid), previousMax);
+    this.maxSeenUid.set(accountId, currentMax);
+
+    if (isFirstCycle) return [];
+    return messages.filter((message) => message.uid > previousMax);
+  }
+
+  /**
+   * Invokes the injected new-mail hook, if any, for the messages
+   * trackNewMessages() decided are genuinely new. This pool has no idea
+   * what the hook does — Task 7 wires it to push/dispatch.ts's
+   * `notifyNewMail`, but nothing here imports push/ or knows a
+   * notification is involved — and a failure in it must never be mistaken
+   * for a sync failure.
+   *
+   * This is the sanctioned use of catch-and-continue: the error IS
+   * handled — logged with the account id, with the sync work for this
+   * cycle already fully committed before this method is even called — not
+   * silently discarded. Letting it reject uncaught would surface as
+   * syncOnce() rejecting, and runAccount()'s outer catch would then treat
+   * a dead push subscription (or any other hook failure) exactly like a
+   * dead IMAP connection: mark the account 'reconnecting' and corrupt the
+   * backoff ladder F1 exists to protect, over a fault that has nothing to
+   * do with IMAP at all.
+   */
+  private async dispatchNewMessages(
+    accountId: string,
+    messages: readonly MessageInput[],
+  ): Promise<void> {
+    if (!this.onNewMessages || messages.length === 0) return;
+    try {
+      await this.onNewMessages(accountId, messages);
+    } catch (error) {
+      console.error(`account "${accountId}": new-mail notification hook failed`, error);
+    }
   }
 
   private async persistAttachments(

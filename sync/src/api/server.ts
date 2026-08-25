@@ -8,7 +8,12 @@ import type { AccountConfig, SyncConfig } from '../config';
 import { openDb } from '../db.ts';
 import type { Db } from '../db';
 import { ConnectionPool } from '../imap/pool.ts';
+import type { OnNewMessagesHandler } from '../imap/pool';
 import { createRouter } from './routes.ts';
+import { notifyNewMail } from '../push/dispatch.ts';
+import { createOpensPoll } from '../push/opens-poll.ts';
+import type { OpensPoll } from '../push/opens-poll';
+import type { VapidConfig } from '../push/vapid';
 
 /** Amendment 4: a missing or short token must fail the whole startup, not
  *  silently degrade to "no auth required" — that would publish four (soon
@@ -334,17 +339,37 @@ export function registerShutdownHandlers(
  * server.close() stops new connections and resolves once the in-flight
  * ones have finished, so by the time the pool and the database go away
  * nothing is still using them.
+ *
+ * `opensPoll` (Task 7) is optional — null when VAPID or tracking config is
+ * absent, in which case startServer() never created one and there is
+ * nothing to stop. When present, it is stopped ALONGSIDE the IMAP pool
+ * rather than before or after it: the two are independent background
+ * loops (the poll touches no IMAP state, the pool touches no push state),
+ * so their relative order carries no correctness meaning, and running
+ * them concurrently rather than sequentially is strictly faster to reach
+ * a clean shutdown. What DOES matter is that both are fully stopped
+ * before `db.close()` — the poll's own tick() reads/writes `sync_state`
+ * and reads `push_subscriptions` through the same `db` the pool's sync
+ * cycles use, so it needs the identical "stop background work before the
+ * thing it depends on goes away" guarantee the pool already had. It is
+ * ordered after `server.close()` for the same reason the pool is: nothing
+ * new should start once the server has begun refusing new requests, even
+ * though the poll's own timer is not itself request-triggered — one
+ * simple invariant ("nothing new begins once server.close() starts
+ * draining") is easier to reason about than a special case for the one
+ * background loop that happens not to need it.
  */
 export function createShutdown(
   server: Server,
   pool: ConnectionPool,
   db: Db,
+  opensPoll: OpensPoll | null = null,
 ): () => Promise<void> {
   return onceOnly(async () => {
     await new Promise<void>((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
     });
-    await pool.stop();
+    await Promise.all([pool.stop(), opensPoll ? opensPoll.stop() : Promise.resolve()]);
     await db.close();
   });
 }
@@ -385,6 +410,76 @@ export function createRouterFromConfig(
   );
 }
 
+/**
+ * Builds the `onNewMessages` hook wired to push/dispatch.ts's
+ * `notifyNewMail`, or `undefined` when no VAPID keypair is configured.
+ * Pulled out of `createPoolFromConfig` below as its own function
+ * specifically so it can be tested WITHOUT a live `ConnectionPool` or a
+ * real IMAP connection: constructing the real pool always defaults its
+ * `createConnection` parameter to a real `ImapConnection` (there is no
+ * seam for a fake socket at the `createPoolFromConfig` level — that
+ * would only make sense in a test, and startServer() never needs one),
+ * so the only way to prove "vapidConfig actually reaches notifyNewMail"
+ * without a live Gmail account is to test the closure directly.
+ */
+export function buildNewMessagesHandler(
+  db: Db,
+  vapidConfig: VapidConfig | null,
+): OnNewMessagesHandler | undefined {
+  if (!vapidConfig) return undefined;
+  return (_accountId, messages) => notifyNewMail(db, vapidConfig, messages);
+}
+
+/**
+ * Builds the ConnectionPool from a loaded SyncConfig, wiring Task 7's
+ * new-mail hook (imap/pool.ts's injected `onNewMessages`) to
+ * push/dispatch.ts's `notifyNewMail` ONLY when `config.vapidConfig` is
+ * present. Extracted for the exact reason `createRouterFromConfig` above
+ * was (fix round 1 on Task 6): this is the wire between two pieces that
+ * are each well-tested in isolation — the pool's callback contract
+ * (tests/pool-notify.test.ts) and `notifyNewMail` itself
+ * (tests/dispatch.test.ts) — and nothing would otherwise test the ARGUMENT
+ * LIST joining them. Deleting this wiring would leave the whole suite
+ * green while production never sent a single new-mail push.
+ *
+ * The pool itself does not know push exists: this function (with
+ * buildNewMessagesHandler above) is the ONLY place that imports both
+ * `ConnectionPool` and `notifyNewMail`.
+ */
+export function createPoolFromConfig(db: Db, config: SyncConfig): ConnectionPool {
+  return new ConnectionPool(
+    config.accounts,
+    db,
+    undefined,
+    buildNewMessagesHandler(db, config.vapidConfig),
+  );
+}
+
+/**
+ * Builds the opens poll from a loaded SyncConfig, or null when it cannot
+ * run at all. Mirrors createRouterFromConfig/createPoolFromConfig's own
+ * reasoning: the WIRING (both `vapidConfig` AND `trackingConfig` present)
+ * is exactly the kind of argument-list plumbing that has silently broken
+ * before in this project, so it gets its own testable seam rather than
+ * living inline in startServer().
+ *
+ * Degrades LOUDLY (one log line) rather than silently when either config
+ * is missing — matching every other optional-feature degradation in this
+ * service (parseVapidConfig, parseTrackingConfig): a reader of the
+ * service's own startup log should never have to guess why notifications
+ * for opens aren't arriving.
+ */
+export function createOpensPollFromConfig(db: Db, config: SyncConfig): OpensPoll | null {
+  if (!config.vapidConfig || !config.trackingConfig) {
+    console.error(
+      'api: opens poll disabled — needs both VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY and ' +
+        'TRACKING_BASE_URL/TRACKING_READ_TOKEN configured',
+    );
+    return null;
+  }
+  return createOpensPoll(db, config.vapidConfig, config.trackingConfig);
+}
+
 export async function startServer(): Promise<{ close(): Promise<void> }> {
   const apiToken = requireApiToken(process.env);
 
@@ -398,13 +493,18 @@ export async function startServer(): Promise<{ close(): Promise<void> }> {
   await db.applySchema();
   await registerAccounts(db, config.accounts);
 
-  const pool = new ConnectionPool(config.accounts, db);
+  const pool = createPoolFromConfig(db, config);
   // Not awaited: start() runs each account's connect/sync/IDLE loop for the
   // life of the process (Task 7). The HTTP server must come up and start
   // serving /api/health immediately, not block on ten IMAP handshakes.
   void pool.start().catch((error) => {
     console.error('api: connection pool stopped unexpectedly', error);
   });
+
+  // Task 7: only starts when both VAPID and tracking config are present —
+  // see createOpensPollFromConfig's own doc comment for the degradation.
+  const opensPoll = createOpensPollFromConfig(db, config);
+  opensPoll?.start();
 
   const router = createRouterFromConfig(db, pool, apiToken, config);
   const server = createServer((nodeRequest, nodeResponse) => {
@@ -416,7 +516,7 @@ export async function startServer(): Promise<{ close(): Promise<void> }> {
     `api: postbox-sync listening on ${BIND_HOST}:${config.port}, ${config.accounts.length} accounts`,
   );
 
-  const close = createShutdown(server, pool, db);
+  const close = createShutdown(server, pool, db, opensPoll);
   registerShutdownHandlers(close);
 
   return { close };

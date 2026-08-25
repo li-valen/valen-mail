@@ -9,9 +9,15 @@ import {
   onceOnly,
   createShutdown,
   registerShutdownHandlers,
+  createPoolFromConfig,
+  createOpensPollFromConfig,
+  buildNewMessagesHandler,
 } from '../src/api/server';
 import type { ConnectionPool } from '../src/imap/pool';
-import type { Db } from '../src/db';
+import type { Db, MessageInput } from '../src/db';
+import type { SyncConfig } from '../src/config';
+import { makeFakeDb } from './helpers/api-fakes.ts';
+import { ACCOUNT_A } from './helpers/pool-fakes.ts';
 
 /**
  * No Postgres, no IMAP, no live Gmail. The API_TOKEN cases below throw on
@@ -360,5 +366,172 @@ describe('writeWebResponse', () => {
     await writeWebResponse(new Response(null, { status: 204 }), fake.nodeResponse);
     expect(fake.status()).toBe(204);
     expect((await fake.collected).length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 7 — the seams between loadConfig and the push wiring
+//
+// Task 6's own review found the causally-inert shape this project has
+// shipped more than once: a piece well-tested in isolation, wired into
+// startServer() through a positional argument list NOTHING tests, so
+// dropping or transposing an argument leaves the whole suite green while
+// production silently loses the feature. createRouterFromConfig above was
+// extracted and tested for exactly that reason; createPoolFromConfig and
+// createOpensPollFromConfig get the same treatment here.
+// ---------------------------------------------------------------------------
+
+const VAPID = { publicKey: 'pub', privateKey: 'priv', subject: 'https://postbox.example' };
+
+const BASE_SYNC_CONFIG: SyncConfig = {
+  accounts: [ACCOUNT_A],
+  databaseUrl: 'postgresql://localhost/x',
+  port: 8080,
+  trackingConfig: null,
+  vapidConfig: null,
+};
+
+describe('buildNewMessagesHandler — the push new-mail wiring', () => {
+  it('is undefined when vapidConfig is absent, so the pool gets no callback at all', () => {
+    const db = makeFakeDb();
+    expect(buildNewMessagesHandler(db as unknown as Db, null)).toBeUndefined();
+  });
+
+  it('delegates to notifyNewMail with the SAME db and vapidConfig when present', async () => {
+    // The pool has no idea what notifyNewMail does with the messages it
+    // hands over, and this test doesn't need to re-prove notifyNewMail's
+    // own behaviour (tests/dispatch.test.ts already does that
+    // exhaustively). It only needs to prove the WIRE: that the handler
+    // this function builds is really notifyNewMail, called with the
+    // exact db/vapidConfig it was given — not a stub, not a dropped
+    // argument. notifyNewMail's very first move is reading
+    // push_subscriptions, so observing that query (with no rows, so it
+    // returns before ever touching the network) is proof the real
+    // function ran.
+    const queries: string[] = [];
+    const db = makeFakeDb({
+      query: async (text: string) => {
+        queries.push(text);
+        return [];
+      },
+    });
+
+    const message: MessageInput = {
+      accountId: 'a',
+      uid: 1,
+      folder: 'INBOX',
+      messageId: '<m1@x>',
+      threadId: 't1',
+      subject: 'hi',
+      fromName: 'A',
+      fromEmail: 'a@b.com',
+      toEmails: [],
+      ccEmails: [],
+      date: new Date(),
+      snippet: null,
+      flags: [],
+      labels: [],
+      hasAttach: false,
+      sizeBytes: null,
+    };
+
+    const handler = buildNewMessagesHandler(db as unknown as Db, VAPID);
+    expect(handler).toBeDefined();
+    await handler!('a', [message]);
+
+    expect(queries.some((text) => text.includes('select endpoint'))).toBe(true);
+  });
+});
+
+describe('createPoolFromConfig', () => {
+  it('constructs without throwing, whether or not vapidConfig is present', () => {
+    const db = makeFakeDb();
+    expect(() => createPoolFromConfig(db as unknown as Db, { ...BASE_SYNC_CONFIG, vapidConfig: VAPID })).not.toThrow();
+    expect(() => createPoolFromConfig(db as unknown as Db, { ...BASE_SYNC_CONFIG, vapidConfig: null })).not.toThrow();
+  });
+});
+
+describe('createOpensPollFromConfig — the wiring', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('returns null and logs when vapidConfig is missing', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const db = makeFakeDb();
+    const config: SyncConfig = {
+      ...BASE_SYNC_CONFIG,
+      vapidConfig: null,
+      trackingConfig: { baseUrl: 'https://t.example', readToken: 'r'.repeat(32) },
+    };
+    const poll = createOpensPollFromConfig(db as unknown as Db, config);
+    expect(poll).toBeNull();
+    expect(errorSpy).toHaveBeenCalled();
+  });
+
+  it('returns null and logs when trackingConfig is missing', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const db = makeFakeDb();
+    const config: SyncConfig = { ...BASE_SYNC_CONFIG, vapidConfig: VAPID, trackingConfig: null };
+    const poll = createOpensPollFromConfig(db as unknown as Db, config);
+    expect(poll).toBeNull();
+    expect(errorSpy).toHaveBeenCalled();
+  });
+
+  it('returns a poll wired to the given trackingConfig', async () => {
+    // Same DNS-avoiding trick push.test.ts's "still passes trackingConfig
+    // through" test uses: a malformed baseUrl makes fetchOpens throw
+    // inside its own `new URL(...)` and log 'tracking service
+    // unreachable' without ever touching the network. Only a poll truly
+    // wired to THIS trackingConfig would produce that exact log line —
+    // dropping or transposing the argument would either not compile
+    // (caught elsewhere) or reach a different, unrelated code path.
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const db = makeFakeDb();
+    const config: SyncConfig = {
+      ...BASE_SYNC_CONFIG,
+      vapidConfig: VAPID,
+      trackingConfig: { baseUrl: 'not a url', readToken: 'r'.repeat(32) },
+    };
+    const poll = createOpensPollFromConfig(db as unknown as Db, config);
+    expect(poll).not.toBeNull();
+
+    await poll!.tick();
+    await poll!.stop();
+
+    expect(
+      errorSpy.mock.calls.some((call) =>
+        call.some((arg) => typeof arg === 'string' && arg.includes('tracking service unreachable')),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe('createShutdown — stopping the opens poll', () => {
+  it('stops the opens poll before db.close(), alongside the IMAP pool', async () => {
+    const parts = makeShutdownParts();
+    const stopCalls: string[] = [];
+    const opensPoll = {
+      start() {},
+      async stop() {
+        stopCalls.push('opensPoll');
+      },
+      async tick() {},
+    };
+
+    await createShutdown(parts.server, parts.pool, parts.db, opensPoll)();
+
+    // 'pool' and 'opensPoll' both happen before 'db' — their relative
+    // order to each other is not asserted (see createShutdown's own doc
+    // comment: they are independent and run concurrently).
+    expect(parts.order).toContain('pool');
+    expect(stopCalls).toEqual(['opensPoll']);
+    expect(parts.order.indexOf('db')).toBeGreaterThan(parts.order.indexOf('pool'));
+  });
+
+  it('is a no-op for the opens poll when none was configured', async () => {
+    const parts = makeShutdownParts();
+    await expect(createShutdown(parts.server, parts.pool, parts.db, null)()).resolves.toBeUndefined();
+    expect(parts.order).toEqual(['server', 'pool', 'db']);
   });
 });
