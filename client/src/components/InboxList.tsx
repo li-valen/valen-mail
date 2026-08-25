@@ -10,6 +10,7 @@ import { EmptyState } from '../ui/EmptyState';
 import { Skeleton } from '../ui/Skeleton';
 import MessageRow from './MessageRow';
 import { groupByDay } from './inboxDates';
+import { messageKey } from './messageBody';
 
 // Re-exported so `InboxList.tsx` stays the one public entry point for both
 // the component and the pure logic it renders with — tests import
@@ -67,6 +68,11 @@ export interface InboxListProps {
    *  Must be referentially stable (the caller wraps it in `useCallback`),
    *  because it is an effect dependency. */
   readonly onAccountsChange?: (accounts: readonly AccountSummary[]) => void;
+  /** Opens one row in the reader. Required, not optional: as of Plan 6
+   *  a row IS a control, and a list rendered with nowhere for it to go
+   *  is exactly the defect that task exists to fix. Handed straight to
+   *  MessageRow. */
+  readonly onOpenMessage: (message: InboxMessage) => void;
 }
 
 /**
@@ -87,7 +93,7 @@ export interface InboxListProps {
  * `rounded-lg border … divide-y divide-neutral-100` row list of
  * `apps/web/src/pages/contacts/index.tsx`, wrapped in the `Card` atom.
  */
-export default function InboxList({ onAccountsChange }: InboxListProps) {
+export default function InboxList({ onAccountsChange, onOpenMessage }: InboxListProps) {
   const [messages, setMessages] = useState<readonly InboxMessage[]>([]);
   const [cursor, setCursor] = useState<InboxCursor | null>(null);
   const [load, setLoad] = useState<LoadState>({ status: 'loading' });
@@ -209,7 +215,12 @@ export default function InboxList({ onAccountsChange }: InboxListProps) {
           <Card>
             <ul className="divide-y divide-neutral-100 dark:divide-border">
               {group.messages.map((message) => (
-                <MessageRow key={`${message.account_id}:${message.uid}`} message={message} now={now} />
+                <MessageRow
+                  key={messageKey(message)}
+                  message={message}
+                  now={now}
+                  onOpen={onOpenMessage}
+                />
               ))}
             </ul>
           </Card>

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { ReactNode } from 'react';
+import type { ReactNode, Ref } from 'react';
 import { Activity, Inbox, Mailbox, Menu, X } from 'lucide-react';
 
 import { cn } from './ui/cn';
@@ -146,6 +146,18 @@ export interface AppShellProps {
   /** Marks the content column busy while the session is still being
    *  established, so assistive tech knows the emptiness is temporary. */
   readonly isBusy?: boolean;
+  /**
+   * A ref onto the ONE scrolling element in this layout — the `<main>`
+   * below. `<main>` scrolls, not the document (`h-dvh` + `flex-1
+   * overflow-y-auto`), so `window.scrollY` is always 0 here and any
+   * caller wanting to save or restore where the reader was in the list
+   * has to reach this element specifically.
+   *
+   * Exposed rather than managed here because the SHELL has no idea what
+   * a scroll position means — App.tsx owns the list/reader transition
+   * that gives it meaning, and the shell stays a layout.
+   */
+  readonly contentRef?: Ref<HTMLElement>;
   readonly children: ReactNode;
 }
 
@@ -155,6 +167,7 @@ export default function AppShell({
   accounts,
   sidebarFooter,
   isBusy = false,
+  contentRef,
   children,
 }: AppShellProps) {
   const [isMobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -249,7 +262,7 @@ export default function AppShell({
           </div>
         </div>
 
-        <main className="flex-1 overflow-y-auto" aria-busy={isBusy}>
+        <main ref={contentRef} className="flex-1 overflow-y-auto" aria-busy={isBusy}>
           <div className="max-w-5xl mx-auto px-4 py-4 sm:px-6 sm:py-6 lg:px-8 lg:py-8">
             {/* Visually hidden, not absent: the inbox's day rules are
                 `<h2>`s and the opens feed's section heading is an `<h2>`,

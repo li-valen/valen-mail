@@ -314,3 +314,209 @@ function isOpenEvent(value: unknown): value is OpenEvent {
   if (!isRecord(value)) return false;
   return typeof value.token === 'string' && typeof value.occurredAt === 'number';
 }
+
+/**
+ * One mailbox from a parsed message's address headers
+ * (sync/src/api/message.ts `ParsedAddress`). `address` is always a
+ * non-empty string on the wire — the server drops group entries and
+ * address-less mailboxes rather than emitting a `mailto:` to nowhere —
+ * and `parseAddress` below re-checks that here.
+ */
+export interface ParsedAddress {
+  readonly name: string | null;
+  readonly address: string;
+}
+
+/**
+ * Attachment metadata on a PARSED message (GET /api/message/…), which is
+ * a different shape from `InboxAttachment` above and must not be confused
+ * with it:
+ *
+ *  - **`sizeBytes` here is the DECODED byte length** — the size of the
+ *    saved file, a `number`. `InboxAttachment.sizeBytes` is the ENCODED
+ *    size from BODYSTRUCTURE, as a `string`, roughly 4/3 larger for
+ *    base64. Same field name, ~33% apart. This is the one to display;
+ *    never cross-reference the other.
+ *  - **`partId` may be the empty string**, meaning the server could not
+ *    establish an IMAP part number for it and refused to guess one. That
+ *    is "not addressable", not "part zero": see
+ *    components/messageBody.ts's `isDownloadable`, which is the only
+ *    thing that should decide whether a download link exists.
+ *  - `contentId` is already bracket-stripped, so it matches a
+ *    `src="cid:…"` in `html` exactly.
+ */
+export interface MessageAttachment {
+  readonly partId: string;
+  readonly filename: string | null;
+  readonly mimeType: string;
+  readonly sizeBytes: number | null;
+  readonly isInline: boolean;
+  readonly contentId: string | null;
+}
+
+/**
+ * A parsed message, as returned by GET /api/message/{accountId}/{folder}/
+ * {uid} (sync/src/api/message.ts). camelCase here, unlike `InboxMessage`
+ * above, because this shape is the sync service's own JSON rather than a
+ * verbatim mirror of Postgres columns — the difference is deliberate on
+ * both sides.
+ *
+ * **`html` is UNSANITISED and that is by design.** The server returns the
+ * sender's markup byte for byte so that the sandboxed iframe stays the
+ * one visible security boundary (see sync/src/api/message.ts's header,
+ * and components/messageBody.ts's). Nothing in this client may render it
+ * except through `srcDocFor`, and nothing may put it near
+ * `dangerouslySetInnerHTML`.
+ *
+ * `date` is epoch milliseconds — this API's convention for a timestamp
+ * (as on `OpenEvent`), not the ISO string an `InboxMessage` row carries.
+ */
+export interface ParsedMessage {
+  readonly html: string | null;
+  readonly text: string | null;
+  readonly subject: string | null;
+  readonly from: ParsedAddress | null;
+  readonly to: readonly ParsedAddress[];
+  readonly cc: readonly ParsedAddress[];
+  readonly date: number | null;
+  readonly attachments: readonly MessageAttachment[];
+}
+
+/** A field the wire shape declares as `string | null`, narrowed to a
+ *  string or `null`; anything else (a number, an object) is absence. */
+function stringOrNull(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+/** A message whose body could not be read from the response at all. Not
+ *  an error state: `bodyKind` reads it as `'empty'`, which the reader
+ *  renders as an empty state rather than a failure — the same treatment a
+ *  genuinely attachment-only message gets. */
+const UNREADABLE_MESSAGE: ParsedMessage = {
+  html: null,
+  text: null,
+  subject: null,
+  from: null,
+  to: [],
+  cc: [],
+  date: null,
+  attachments: [],
+};
+
+function parseAddress(value: unknown): ParsedAddress | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.address !== 'string' || value.address === '') return null;
+  return { name: stringOrNull(value.name), address: value.address };
+}
+
+/** Drops entries with no usable address rather than rendering a header
+ *  line with a blank recipient in it. */
+function parseAddressList(value: unknown): readonly ParsedAddress[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map(parseAddress)
+    .filter((address): address is ParsedAddress => address !== null);
+}
+
+/**
+ * Normalises one attachment. Deliberately total rather than a drop-it
+ * predicate: an attachment whose metadata is partly unusable is still an
+ * attachment the user should be told about.
+ *
+ * A `partId` that is not a string becomes `''` — which is the server's
+ * own "not addressable" sentinel, so an unusable value lands in exactly
+ * the same honest, non-downloadable row as a missing one instead of
+ * being interpolated into a URL as `undefined`.
+ */
+function parseAttachment(value: Record<string, unknown>): MessageAttachment {
+  const sizeBytes = value.sizeBytes;
+  const mimeType = value.mimeType;
+  return {
+    partId: typeof value.partId === 'string' ? value.partId : '',
+    filename: stringOrNull(value.filename),
+    mimeType: typeof mimeType === 'string' && mimeType !== '' ? mimeType : 'application/octet-stream',
+    sizeBytes: typeof sizeBytes === 'number' && Number.isFinite(sizeBytes) ? sizeBytes : null,
+    isInline: value.isInline === true,
+    contentId: stringOrNull(value.contentId),
+  };
+}
+
+function parseAttachments(value: unknown): readonly MessageAttachment[] {
+  if (!Array.isArray(value)) return [];
+  return keepValid(value, isRecord, 'attachment(s)').map(parseAttachment);
+}
+
+/**
+ * Turns the response body into a `ParsedMessage`, field by field, and
+ * never throws.
+ *
+ * The same boundary discipline `keepValid` applies to list endpoints,
+ * applied to a single object: a field of the wrong type is absence, not a
+ * reason to blank the whole message. A reader that refuses to open a
+ * message because its `cc` came back as a string would be strictly worse
+ * than one that shows the body and no cc line.
+ */
+function parseMessage(value: unknown): ParsedMessage {
+  if (!isRecord(value)) {
+    console.error('api: the message response was not an object — nothing to render');
+    return UNREADABLE_MESSAGE;
+  }
+  const date = value.date;
+  return {
+    html: stringOrNull(value.html),
+    text: stringOrNull(value.text),
+    subject: stringOrNull(value.subject),
+    from: parseAddress(value.from),
+    to: parseAddressList(value.to),
+    cc: parseAddressList(value.cc),
+    date: typeof date === 'number' && Number.isFinite(date) ? date : null,
+    attachments: parseAttachments(value.attachments),
+  };
+}
+
+/**
+ * Fetches one parsed message for the reader.
+ *
+ * Path shape mirrors sync/src/api/routes.ts's `parsedMessageMatch`:
+ * `/api/message/{accountId}/{folder}/{uid}`, three `([^/]+)` segments, no
+ * `/body` suffix — that sibling route still exists and still returns raw
+ * RFC822, and this one does not replace it. Every segment is
+ * percent-encoded for the same reason `attachmentUrl` encodes its own: a
+ * Gmail folder name can contain a literal `/`.
+ *
+ * Throws ApiError on any non-2xx so the reader can tell a 401 (session
+ * gone) from a 502 (IMAP unreachable) and say so; a malformed 200 body
+ * degrades field-wise through `parseMessage` instead.
+ */
+export async function getMessage(
+  accountId: string,
+  folder: string,
+  uid: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ParsedMessage> {
+  const segments = [accountId, folder, uid].map(encodeURIComponent);
+  const body = await getJson(`/api/message/${segments.join('/')}`, fetchImpl);
+  return parseMessage(body);
+}
+
+/**
+ * Fetches every message in one thread, for the reader's thread context.
+ *
+ * GET /api/thread/{threadId} answers `{messages:[…]}` with the SAME row
+ * shape as GET /api/inbox, so this reuses `isInboxMessage` rather than
+ * introducing a second, drifting definition of a row — and so the thread
+ * list can render with the very same `MessageRow` the inbox uses.
+ *
+ * An unknown thread id is not distinguishable from an empty one: the
+ * server answers 200 with an empty array either way, on purpose (it
+ * refuses to leak which thread ids exist). An empty result here therefore
+ * means "no thread context to show", never "not found".
+ */
+export async function getThread(
+  threadId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<readonly InboxMessage[]> {
+  const body = await getJson(`/api/thread/${encodeURIComponent(threadId)}`, fetchImpl);
+  const messages = isRecord(body) && Array.isArray(body.messages) ? body.messages : [];
+  return keepValid(messages, isInboxMessage, 'thread message(s)');
+}

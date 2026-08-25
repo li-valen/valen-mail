@@ -152,3 +152,36 @@ export function groupByDay(messages: readonly InboxMessage[], now: Date): readon
   if (dateless.length === 0) return dayGroups;
   return [...dayGroups, { day: NO_DATE_GROUP_LABEL, messages: dateless }];
 }
+
+/**
+ * The full timestamp for the reader's message header (components/
+ * MessageView.tsx) — `Mon, Aug 24, 2026, 2:32 PM`.
+ *
+ * Deliberately NOT `formatWhen`'s output. A row is scanned in a list of
+ * fifty, where `2:32 PM` is enough and a full date is noise; an OPEN
+ * message is one thing being read on its own, where "Mon" alone is
+ * ambiguous and the year matters for anything more than a week old. Two
+ * jobs, two formatters, one shared parse.
+ *
+ * Same defensive contract as every other function in this file: a null,
+ * empty, or unparseable timestamp is expected input and returns an em
+ * dash. The explicit `'en-US'` locale matches `formatWhen`/
+ * `formatDayLabel` and keeps the output independent of the machine's own
+ * locale, which is what makes it testable at all.
+ */
+export function formatReceived(iso: string | null): string {
+  try {
+    const date = parseDate(iso);
+    if (!date) return EM_DASH;
+    return date.toLocaleString('en-US', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  } catch {
+    return EM_DASH;
+  }
+}
