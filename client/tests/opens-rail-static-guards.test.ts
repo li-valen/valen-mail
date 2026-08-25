@@ -2,9 +2,17 @@ import { describe, it, expect } from 'vitest';
 import readStateSource from '../src/components/ReadState.tsx?raw';
 import openEventsSource from '../src/components/openEvents.ts?raw';
 // Task 7.6 renamed OpensRail.tsx -> OpensView.tsx when the opens rail
-// became a page the sidebar navigates to. The scanned surface is the same
-// three files; the forbidden-pattern list below is untouched.
+// became a page the sidebar navigates to. Task V1 then restored an
+// OpensRail.tsx (a distinct file, beside the Inbox at desktop widths) and
+// extracted the markup both it and OpensView.tsx render into
+// OpensFeed.tsx — that extraction is why OpensFeed.tsx joins the scanned
+// surface below and OpensRail.tsx does not: OpensView.tsx and
+// OpensRail.tsx are now thin wrappers that never touch an event field or
+// import an icon directly, so scanning their source would be vacuous;
+// OpensFeed.tsx is the one file that actually renders open events now.
+// The forbidden-pattern list itself is untouched.
 import opensViewSource from '../src/components/OpensView.tsx?raw';
+import opensFeedSource from '../src/components/OpensFeed.tsx?raw';
 
 /**
  * Static guards on the two hard bans client/DESIGN.md §5.1 states for
@@ -25,13 +33,13 @@ import opensViewSource from '../src/components/OpensView.tsx?raw';
  * actually catch the bug it exists to catch, not just always pass.
  */
 
-const SOURCE = `${readStateSource}\n${openEventsSource}\n${opensViewSource}`;
+const SOURCE = `${readStateSource}\n${openEventsSource}\n${opensViewSource}\n${opensFeedSource}`;
 
 const DEVICE_CLASS_ACCESS = /\.deviceClass\b/;
 const OS_FIELD_ACCESS = /\.os\b/;
 const CHECKMARK_ICON_IMPORT = /\bCheck(Circle2?|Square)?\b|\bBadgeCheck\b/;
 
-describe('OpensView/ReadState source — read-state hard bans', () => {
+describe('OpensView/OpensFeed/ReadState source — read-state hard bans', () => {
   it('never reads event.deviceClass', () => {
     expect(SOURCE).not.toMatch(DEVICE_CLASS_ACCESS);
   });

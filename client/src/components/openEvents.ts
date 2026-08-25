@@ -2,17 +2,27 @@ import type { OpenEvent, OpensResponse } from '../api';
 import { boundedToken, isDisplayable, readStateFor } from './ReadState';
 
 /**
- * Pure formatting and derivation logic for OpensView.tsx (named
- * OpensRail.tsx before task 7.6 turned the rail into a page), split out the
- * same way client/src/components/inboxDates.ts is split out of
+ * Pure formatting and derivation logic for the opens feed (rendered by
+ * components/OpensFeed.tsx, shared since task V1 by OpensView.tsx — the
+ * sidebar's Opens page — and OpensRail.tsx — the Inbox-adjacent rail;
+ * named OpensRail.tsx before task 7.6 turned the rail into a page, then
+ * OpensView.tsx before task V1 restored the rail alongside it), split out
+ * the same way client/src/components/inboxDates.ts is split out of
  * InboxList.tsx — so it never imports React, which is what keeps it
  * testable at all (client/CLAUDE.md's standing constraint: no test in
  * this plan renders a component).
  *
+ * `advanceOpensPoll` (bottom of this file) is the odd one out by subject
+ * matter — poll-tick orchestration rather than display formatting — but
+ * it earns its place here rather than a new file because it is a thin
+ * wrapper around `deriveRailView`, already below, and keeping every pure
+ * "given raw opens data, decide X" function in one cohesive module beats
+ * splitting a single small function into its own file prematurely.
+ *
  * Every function here is total: a malformed or out-of-range input
  * degrades to a safe value rather than throwing, the same discipline
  * client/src/components/inboxDates.ts applies to inbox timestamps — one
- * bad open event must not blank the whole rail.
+ * bad open event must not blank the whole feed.
  */
 
 const MS_PER_SECOND = 1000;
@@ -185,4 +195,61 @@ export function deriveRailView(response: OpensResponse): RailView {
   if (!response.available) return { kind: 'unavailable' };
   const { displayable, selfCount } = partitionOpens(response.opens);
   return { kind: 'ready', displayable, selfCount };
+}
+
+/**
+ * Result of one poll tick: the derived view, the live-region announcement
+ * to fire (if any), and whether another retry should be scheduled.
+ *
+ * `liveMessage` is non-null on exactly the tick that FLIPS availability —
+ * unavailable -> the "can't reach" sentence, or unavailable -> ready ->
+ * the "reconnected" sentence — never on a tick that repeats the same
+ * `kind` as the tick before it. That is what keeps a still-down tracking
+ * service from re-announcing itself to a screen reader on every retry.
+ */
+export interface OpensPollTick {
+  readonly view: RailView;
+  readonly liveMessage: string | null;
+  readonly shouldRetry: boolean;
+}
+
+/**
+ * The pure state transition behind ONE poll tick — extracted (task V1,
+ * the opens-rail-on-Inbox restore) out of the `useEffect` that used to
+ * own this inline in OpensView.tsx, so useOpensFeed.ts's hook can be a
+ * thin React wrapper around a framework-free function this file tests
+ * directly, the same split every other pure derivation here already gets.
+ *
+ * `previousKind` is the LAST tick's `view.kind`, or `null` before the
+ * first tick has ever run — matching the real hook's `useRef<RailView
+ * ['kind'] | null>(null)` initial value, so the very first poll DOES
+ * announce "can't reach the tracking service" if the service is already
+ * down on first load (there is no earlier `kind` to compare against, so
+ * `previousKind !== 'unavailable'` is true for `null` too). It is the
+ * caller's job to thread this value across ticks — this function itself
+ * is stateless and never mutates anything it is given.
+ *
+ * This is also the seam a "two pollers" regression would show up in: two
+ * independent callers each starting from `previousKind: null` and
+ * observing the SAME response will each independently decide to announce
+ * the same transition — see tests/opens-poll.test.ts's single-poller
+ * property test, which asserts that directly. Hoisting `useOpensFeed` to
+ * App.tsx (one call site, shared by OpensView and OpensRail) rather than
+ * letting each surface run its own poll loop is what keeps exactly one
+ * `previousKind` thread alive for the process.
+ */
+export function advanceOpensPoll(
+  previousKind: RailView['kind'] | null,
+  response: OpensResponse,
+): OpensPollTick {
+  const view = deriveRailView(response);
+
+  let liveMessage: string | null = null;
+  if (view.kind === 'unavailable' && previousKind !== 'unavailable') {
+    liveMessage = "Postbox can't reach the tracking service.";
+  } else if (view.kind === 'ready' && previousKind === 'unavailable') {
+    liveMessage = 'Tracking reconnected.';
+  }
+
+  return { view, liveMessage, shouldRetry: view.kind === 'unavailable' };
 }

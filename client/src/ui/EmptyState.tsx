@@ -7,11 +7,12 @@ import { cn } from './cn';
  * Ported verbatim from Plunk (AGPL-3.0),
  * `packages/ui/src/components/molecules/EmptyState.tsx`.
  *
- * Postbox renders TWO different EmptyStates in the opens view, and keeping
+ * Postbox renders TWO different EmptyStates in the opens feed, and keeping
  * them distinguishable is a product requirement, not a style choice: "the
  * tracking service answered and nothing has come back" and "the tracking
  * service could not be reached" are different facts, so they get different
- * icons and different copy (see components/OpensView.tsx).
+ * icons and different copy (see components/OpensFeed.tsx, shared since
+ * task V1 by components/OpensView.tsx and components/OpensRail.tsx).
  */
 export interface EmptyStateProps {
   readonly icon: LucideIcon;

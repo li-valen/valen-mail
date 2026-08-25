@@ -8,9 +8,9 @@ import { Badge } from '../ui/Badge';
  * invented yet — degrades to `unknown`.
  *
  * There is no third tone exported from here. `unavailable` ("the tracking
- * service cannot be reached") describes the VIEW's load state, not one
- * event's classification, and is handled by OpensView/openEvents.ts's
- * `deriveRailView`, not by this file.
+ * service cannot be reached") describes the FEED's load state, not one
+ * event's classification, and is handled by useOpensFeed.ts/openEvents.ts's
+ * `deriveRailView` (via `advanceOpensPoll`), not by this file.
  *
  * NOTHING BELOW THE PRESENTATION LAYER CHANGED IN THE PLUNK RESTYLE.
  * `readStateFor`, `isDisplayable` and `boundedToken` keep the exact

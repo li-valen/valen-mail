@@ -3,6 +3,7 @@ import LoginView from './LoginView';
 import AppShell from './AppShell';
 import type { AccountSummary, ViewId } from './AppShell';
 import InboxList from './components/InboxList';
+import OpensRail from './components/OpensRail';
 import OpensView from './components/OpensView';
 import PushToggle from './components/PushToggle';
 import { Alert, AlertDescription } from './ui/Alert';
@@ -10,6 +11,7 @@ import { Button } from './ui/Button';
 import { Card } from './ui/Card';
 import { Skeleton } from './ui/Skeleton';
 import { initialViewFromSearch } from './initialView';
+import { useOpensFeed } from './useOpensFeed';
 import { useSessionGate } from './useSessionGate';
 
 /**
@@ -23,6 +25,15 @@ import { useSessionGate } from './useSessionGate';
  * prompt — that would teach the user to type their token at anything that
  * asks (the rule itself lives in useSessionGate.ts/session.ts; this file
  * only renders its three outcomes).
+ *
+ * Also owns the ONE opens poller (`useOpensFeed`, task V1) for the whole
+ * authorized session, called unconditionally alongside the other hooks
+ * above and gated internally on `isAuthorized` — never per-view. The
+ * Inbox view renders it as a rail beside the message list (OpensRail.tsx)
+ * and the Opens nav destination renders it as a page (OpensView.tsx);
+ * both read the SAME `feed` value, so there is exactly one fetch/poll
+ * cycle regardless of which view is showing. See useOpensFeed.ts for why
+ * this used to live inside OpensView.tsx and no longer does.
  */
 
 const SKELETON_ROW_COUNT = 6;
@@ -80,6 +91,12 @@ function ShellSkeleton() {
 
 export default function App() {
   const { gate, signIn, retry } = useSessionGate();
+  // Computed before the `login` early return below (rather than after,
+  // where the pre-V1 code had it) because useOpensFeed must be called
+  // unconditionally on every render — rules of hooks — and it needs this
+  // value to know whether to poll.
+  const isAuthorized = gate.status === 'authorized';
+  const feed = useOpensFeed(isAuthorized);
   // Lazy initializer: seeds the view from a push notification's deep link
   // (`?rail=opens`, sync/src/push/dispatch.ts's OPENS_URL) on first mount,
   // without re-reading location.search on every render.
@@ -102,8 +119,6 @@ export default function App() {
   if (gate.status === 'login') {
     return <LoginView onSubmit={signIn} />;
   }
-
-  const isAuthorized = gate.status === 'authorized';
 
   return (
     <AppShell
@@ -130,9 +145,20 @@ export default function App() {
 
       {isAuthorized &&
         (view === 'inbox' ? (
-          <InboxList onAccountsChange={handleAccountsChange} />
+          // Two columns at desktop (the shell's own `lg:` breakpoint):
+          // the message list (flex, shrinks first) plus OpensRail, which
+          // is `hidden` below `lg:` and simply occupies no space there —
+          // this row does not need its own responsive direction change.
+          // Below `lg:` the Opens nav item is the only way to reach the
+          // feed; the old collapsed bottom strip is not coming back.
+          <div className="flex gap-6">
+            <div className="min-w-0 flex-1">
+              <InboxList onAccountsChange={handleAccountsChange} />
+            </div>
+            <OpensRail feed={feed} />
+          </div>
         ) : (
-          <OpensView />
+          <OpensView feed={feed} />
         ))}
     </AppShell>
   );
