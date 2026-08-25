@@ -14,51 +14,9 @@ import {
 } from './session.ts';
 import { createFixedWindowLimiter } from './rate-limit.ts';
 import type { RateLimiter } from './rate-limit';
-
-function json(
-  body: unknown,
-  status = 200,
-  extraHeaders: Readonly<Record<string, string>> = {},
-): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': 'application/json', ...extraHeaders },
-  });
-}
-
-/** Session responses must never be cached: one carries a `Set-Cookie` that
- *  establishes a credential, another one that revokes it, and a shared or
- *  browser cache replaying either is a correctness bug. */
-const NO_STORE: Readonly<Record<string, string>> = { 'cache-control': 'no-store' };
-
-/**
- * Freshness directives for every route that returns mailbox data.
- *
- * This became necessary the moment the session cookie shipped, and it is
- * easy to miss why. When the only credential was an `Authorization`
- * header, no cache anywhere treats the response as shareable — the header
- * is not a cache key and its presence suppresses storage by default. An
- * ambient cookie now authorises the same responses, and they were going
- * out with no freshness directives at all.
- *
- * Exposure today is close to nil: Caddy's bare `reverse_proxy` does not
- * cache, and these responses carry no validators. But Task 6 adds a
- * service worker and Task 8 puts a static file server on this same origin,
- * and a naive `caches.put('/api/inbox', response)` would write four
- * mailboxes to the device's disk where nothing ever evicts them. Two
- * words now; awkward to retrofit after either lands.
- *
- * `private` bars a shared cache from storing it at all; `no-store` bars
- * every cache, private ones included. Both are stated because they fail
- * differently on the intermediaries that only understand one of them.
- */
-const PRIVATE_NO_STORE: Readonly<Record<string, string>> = {
-  'cache-control': 'private, no-store',
-};
-
-function noContent(headers: Readonly<Record<string, string>> = {}): Response {
-  return new Response(null, { status: 204, headers });
-}
+import { json, noContent, NO_STORE, PRIVATE_NO_STORE } from './http.ts';
+import { handlePushKey, handlePushSubscribe, handlePushUnsubscribe } from './push.ts';
+import type { VapidConfig } from '../push/vapid';
 
 /**
  * Constant-time comparison. A plain `===` short-circuits on the first
@@ -620,6 +578,7 @@ export function createRouter(
   apiToken: string,
   trackingConfig: TrackingConfig | null = null,
   fetchImpl?: typeof fetch,
+  vapidConfig: VapidConfig | null = null,
 ): (request: Request) => Promise<Response> {
   // One counter per router, created here rather than taken as a parameter:
   // production builds exactly one router, and giving each call its own
@@ -651,6 +610,18 @@ export function createRouter(
       return handleDeleteSession();
     }
 
+    // Task 6's two writes, for the same reason and in the same place: a
+    // browser subscribing to push and unsubscribing from it. Both must be
+    // matched before the GET-only check below, or they fall through to the
+    // 404 it returns.
+    if (path === '/api/push/subscribe' && request.method === 'POST') {
+      return handlePushSubscribe(db, request, vapidConfig);
+    }
+
+    if (path === '/api/push/subscribe' && request.method === 'DELETE') {
+      return handlePushUnsubscribe(db, request);
+    }
+
     if (request.method !== 'GET') {
       return json({ error: 'not found' }, 404);
     }
@@ -668,6 +639,10 @@ export function createRouter(
 
     if (path === '/api/opens') {
       return handleOpens(url, trackingConfig, fetchImpl);
+    }
+
+    if (path === '/api/push/key') {
+      return handlePushKey(vapidConfig);
     }
 
     const threadMatch = path.match(/^\/api\/thread\/([^/]+)$/);

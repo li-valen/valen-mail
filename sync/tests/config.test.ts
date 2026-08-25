@@ -178,11 +178,24 @@ describe('loadConfig trackingConfig', () => {
   const withTracking = (overrides: Record<string, string>): NodeJS.ProcessEnv =>
     ({ ...ENV, ...overrides } as NodeJS.ProcessEnv);
 
+  /**
+   * Only the warnings THIS block is about.
+   *
+   * loadConfig now has two independently-degrading optional configs —
+   * TRACKING_* and, since Task 6, VAPID_* — so a bare
+   * `toHaveBeenCalledTimes(1)` counts the other feature's warning too and
+   * fails for a reason that has nothing to do with tracking. Filtering by
+   * the variable name makes the assertion say what it always meant, and
+   * keeps it true when a third optional config appears.
+   */
+  const trackingWarnings = (spy: { mock: { calls: unknown[][] } }): unknown[][] =>
+    spy.mock.calls.filter((call) => JSON.stringify(call).includes('TRACKING_'));
+
   it('is null and warns once when both TRACKING_* vars are absent', () => {
     const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const config = loadConfig(ONE, ENV);
     expect(config.trackingConfig).toBeNull();
-    expect(spy).toHaveBeenCalledTimes(1);
+    expect(trackingWarnings(spy)).toHaveLength(1);
     spy.mockRestore();
   });
 
@@ -220,7 +233,7 @@ describe('loadConfig trackingConfig', () => {
       withTracking({ TRACKING_BASE_URL: 'https://t.example', TRACKING_READ_TOKEN: 'r'.repeat(32) }),
     );
     expect(config.trackingConfig).toEqual({ baseUrl: 'https://t.example', readToken: 'r'.repeat(32) });
-    expect(spy).not.toHaveBeenCalled();
+    expect(trackingWarnings(spy)).toHaveLength(0);
     spy.mockRestore();
   });
 

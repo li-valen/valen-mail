@@ -630,6 +630,153 @@ Step 3 writes `$API_TOKEN` into the shell's history if it is typed
 literally — read it from the `.env` on the VM into a variable instead, and
 delete the cookie jar afterwards as shown.
 
+## 14. Web Push — what the VM still needs (Task 6)
+
+Task 6 adds `POST /api/push/subscribe`, `DELETE /api/push/subscribe` and
+`GET /api/push/key`, a `push_subscriptions` table (created automatically by
+`applySchema()` on the next start), a service worker at `/sw.js`, and one
+new runtime dependency, `web-push`. **No new GCP resource, no third-party
+account, no bill.** Apple and Google operate the push endpoints the browser
+hands us, but nothing registers with either of them: the VAPID keypair is
+generated locally and lives only in a `.env`. Still $0.
+
+### THE THING THAT WILL BITE YOU: the VM's `.env` is not a copy of the repo's
+
+**Do not `scp` `sync/.env` up.** `/opt/postbox/sync/.env` already diverges
+from the developer machine's copy — §8 above generated a *fresh*
+`API_TOKEN` for the VM and points `DATABASE_URL` at the VM's own
+`postbox`/`postbox_sync`. Overwriting it would rotate the VM's API token
+out from under every signed-in browser and point the service at a database
+that does not exist there.
+
+The VAPID keys therefore have to be **appended deliberately**, not copied.
+
+### Generating and installing the pair
+
+Generate **one** pair and use it in both places. The public key is what
+each browser subscribes with, and rotating it invalidates every stored
+subscription — every device then has to be toggled off and on again.
+
+```bash
+# On the Mac, in sync/ — writes to a chmod 600 file, never to the terminal.
+# `npx web-push generate-vapid-keys --json` prints both keys to stdout;
+# this pipes them straight into a file instead of letting them land in
+# scrollback and the shell history.
+umask 077
+npx web-push generate-vapid-keys --json > /tmp/vapid.json
+```
+
+Append them to the VM's existing `.env` — note `>>`, and note that the
+whole thing runs on the VM so the private key never appears in a local
+argument list (visible to any user via `ps`):
+
+```bash
+gcloud compute scp /tmp/vapid.json postbox:/tmp/vapid.json \
+  --zone=us-central1-a --quiet
+
+gcloud compute ssh postbox --zone=us-central1-a --quiet --command='
+  set -e
+  sudo chmod 600 /tmp/vapid.json
+  PUB=$(sudo node -e "console.log(require(\"/tmp/vapid.json\").publicKey)")
+  PRIV=$(sudo node -e "console.log(require(\"/tmp/vapid.json\").privateKey)")
+  printf "VAPID_PUBLIC_KEY=%s\nVAPID_PRIVATE_KEY=%s\nVAPID_SUBJECT=%s\n" \
+    "$PUB" "$PRIV" "https://postbox-valen.duckdns.org" \
+    | sudo tee -a /opt/postbox/sync/.env > /dev/null
+  sudo chown postbox:postbox /opt/postbox/sync/.env
+  sudo chmod 600 /opt/postbox/sync/.env
+  sudo shred -u /tmp/vapid.json
+'
+
+shred -u /tmp/vapid.json    # and on the Mac
+sudo systemctl restart postbox-sync
+```
+
+Then put the **same** pair into the Mac's `sync/.env` (gitignored) so local
+development is not silently running with push disabled.
+
+`VAPID_SUBJECT` is the JWT's `sub` claim (RFC 8292 §2.1) — a `mailto:` or
+`https:` URI a push service operator could use to reach whoever runs this
+deployment. An https: URL is used rather than a mailto: so no personal
+address is embedded in every JWT sent to Apple and Google. It is optional
+and defaults to the deployment's own hostname.
+
+### Installing the dependency on the VM
+
+`web-push` is a runtime dependency, so §7's install command has to run
+again after the next code upload:
+
+```bash
+sudo -u postbox bash -c "cd /opt/postbox/sync && HOME=/opt/postbox \
+  npm install --omit=dev --no-audit --no-fund"
+```
+
+### It degrades rather than failing to start
+
+Deliberately unlike `API_TOKEN`, and for the same reason `TRACKING_*` does:
+email sync is this service's primary job. With either key missing the
+service **still starts**, logs one loud warning at startup, and:
+
+- `GET /api/push/key` answers `200 {"available": false, "publicKey": null}`
+- `POST /api/push/subscribe` answers `503`
+- `DELETE /api/push/subscribe` still works, so a device that subscribed
+  before the keys were removed can still be turned off
+
+The client renders the toggle as unavailable rather than as broken. If push
+appears not to work, `journalctl -u postbox-sync | grep VAPID` is the first
+thing to read.
+
+### Things that will actually bite you
+
+- **iOS requires a Home Screen install.** Safari only permits
+  `PushManager.subscribe()` from a web app installed via Share → Add to
+  Home Screen. In a Safari tab the toggle renders that instruction instead
+  of a switch; this is expected, not a bug.
+- **The service worker caches nothing, on purpose.** `/sw.js` handles
+  `push` and `notificationclick` and registers no `fetch` handler. Mailbox
+  responses are authorised by an ambient cookie, so a worker that stored
+  one would write four real mailboxes to the device's disk. Do not add
+  offline support to it without a deliberate decision about what may be
+  persisted. `client/tests/push-toggle.test.ts` fails if a `fetch` handler
+  or any Cache Storage use appears in that file.
+- **The worker is registered only when someone turns notifications on**,
+  never at app start — a worker is hard to evict from an installed PWA.
+- **Endpoints are credentials.** A `push_subscriptions.endpoint` is a
+  capability URL: whoever holds one can push to that device. Nothing in
+  this service logs, echoes or returns one, and neither should any
+  debugging you add. Do not `select endpoint from push_subscriptions` into
+  a shared terminal.
+- **404/410 are the only statuses that prune a subscription.** They mean
+  the browser permanently discarded it. A 429 or a 5xx is transient, and
+  pruning on one would silently unsubscribe a phone with nothing to notice
+  it by.
+- **Nothing sends a push yet.** Task 6 built the subscription path and the
+  `sendPush` function; Task 7 is what dispatches on new mail and on open
+  events.
+
+### Verifying it, once the service is restarted
+
+```bash
+# Expect {"available":true,"publicKey":"B..."}. The PUBLIC key is safe to
+# see — the browser sends it to Apple/Google on every subscribe.
+curl -s -H "Authorization: Bearer $API_TOKEN" \
+  https://<duckdns-host>/api/push/key | jq
+
+# Expect 400 — a malformed subscription is refused, and nothing is stored.
+curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+  -H "Authorization: Bearer $API_TOKEN" -H 'content-type: application/json' \
+  -d '{"endpoint":"http://not-https.example/x"}' \
+  https://<duckdns-host>/api/push/subscribe
+
+# Expect the table to exist and be empty until a real browser subscribes.
+sudo -u postgres psql postbox_sync -c \
+  'select count(*), max(created_at) from push_subscriptions;'
+
+# Expect 200 and a JavaScript content-type (Task 8 serves static files;
+# before that lands this 404s, which is expected).
+curl -s -o /dev/null -w '%{http_code} %{content_type}\n' \
+  https://<duckdns-host>/sw.js
+```
+
 ## Summary of what's running right now
 
 | Component     | State                                             |
@@ -643,3 +790,5 @@ delete the cookie jar afterwards as shown.
 | Caddy          | installed, running, staged (no TLS site yet)        |
 | postbox-sync   | **NOT started** — left to the controller (A5)       |
 | Browser auth   | bearer **or** `__Host-` session cookie; needs TLS live (§13) |
+| Web Push       | routes + table shipped; **VAPID keys NOT yet on the VM** (§14) |
+| `web-push` dep | **not yet installed on the VM** — rerun §7's npm install (§14) |

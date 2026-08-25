@@ -1,3 +1,6 @@
+import { parseVapidConfig } from './push/vapid.ts';
+import type { VapidConfig } from './push/vapid';
+
 /** Gmail permits ~15 concurrent IMAP connections per account; one IDLE
  *  connection each keeps ten accounts comfortably inside that. The cap
  *  exists to stop a config typo from opening an unbounded number. */
@@ -30,6 +33,15 @@ export interface SyncConfig {
   readonly databaseUrl: string;
   readonly port: number;
   readonly trackingConfig: TrackingConfig | null;
+  /**
+   * The Web Push keypair (Task 6), or null when it was not configured.
+   *
+   * Null is a supported startup state, not an error, for exactly the same
+   * reason `trackingConfig` is: email sync is this service's primary job
+   * and must not be held hostage to a secondary feature. parseVapidConfig
+   * has already warned loudly once by the time this is null.
+   */
+  readonly vapidConfig: VapidConfig | null;
 }
 
 function parseAccount(raw: unknown, index: number): AccountConfig {
@@ -166,6 +178,7 @@ export function loadConfig(raw: unknown, env: NodeJS.ProcessEnv): SyncConfig {
 
   const port = parsePort(env.PORT);
   const trackingConfig = parseTrackingConfig(env);
+  const vapidConfig = parseVapidConfig(env);
 
-  return { accounts, databaseUrl, port, trackingConfig };
+  return { accounts, databaseUrl, port, trackingConfig, vapidConfig };
 }

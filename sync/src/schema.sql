@@ -121,3 +121,32 @@ create table if not exists byte_budget (
   bytes_used  bigint not null default 0,
   primary key (account_id, day)
 );
+
+-- One row per browser that has opted into Web Push (Task 6). Written by
+-- POST /api/push/subscribe, removed by DELETE /api/push/subscribe, and
+-- pruned by the dispatcher when a push service answers 404/410 — the two
+-- statuses that mean the browser permanently discarded the subscription
+-- (src/push/vapid.ts shouldPruneOnStatus).
+--
+-- `endpoint` is the primary key AND a capability URL: whoever holds one
+-- can push to that device. It is never logged, never echoed in an error,
+-- and never returned by any route. Bounded at the write path
+-- (MAX_ENDPOINT_LENGTH = 2048) rather than by a CHECK, for the same reason
+-- `snippet` is: a constraint rejects the whole insert on a caller bug,
+-- whereas refusing the row at validation gives the client a 400 it can act
+-- on. 2048 also keeps this inside Postgres's btree index row limit, which
+-- a primary key on a text column really does hit.
+--
+-- `p256dh` and `auth` are the browser's public key and auth secret from
+-- RFC 8291; they are what the payload is encrypted to, so a row missing
+-- either could never receive anything.
+--
+-- `label` is an optional operator-facing device name ("iPhone"), nothing
+-- more — it is never shown to a push service and never used as a key.
+create table if not exists push_subscriptions (
+  endpoint    text primary key,
+  p256dh      text not null,
+  auth        text not null,
+  label       text,
+  created_at  timestamptz not null default now()
+);

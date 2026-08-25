@@ -370,7 +370,16 @@ export async function startServer(): Promise<{ close(): Promise<void> }> {
     console.error('api: connection pool stopped unexpectedly', error);
   });
 
-  const router = createRouter(db, pool, apiToken, config.trackingConfig);
+  const router = createRouter(
+    db,
+    pool,
+    apiToken,
+    config.trackingConfig,
+    // Production always uses the real global fetch; the parameter
+    // exists so tests can stub the /api/opens proxy (see routes.ts).
+    undefined,
+    config.vapidConfig,
+  );
   const server = createServer((nodeRequest, nodeResponse) => {
     void handleRequest(router, nodeRequest, nodeResponse);
   });

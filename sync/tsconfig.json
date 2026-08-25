@@ -18,5 +18,10 @@
     "allowImportingTsExtensions": true,
     "types": ["vitest/globals", "node"]
   },
-  "include": ["src", "tests"]
+  // "types" holds the hand-written ambient declaration for `web-push`,
+  // which ships none of its own. It lives OUTSIDE src/ deliberately:
+  // scripts/check-runtime.ts imports every src/**/*.ts under
+  // --experimental-strip-types, and a declaration-only file is not a
+  // module that runtime should be asked to load.
+  "include": ["src", "tests", "types"]
 }

@@ -1,0 +1,131 @@
+/**
+ * PushToggle (Task 6). Layout and component-local state only — every
+ * colour, space, radius and duration is a token from client/src/theme.css.
+ *
+ * Achromatic throughout, deliberately. client/DESIGN.md §2.2 and §6:
+ * colour in Postbox means a read-state and nothing else, so a chrome
+ * control that painted itself green when "on" would spend the product's
+ * entire colour vocabulary on a settings switch.
+ *
+ * The focus ring is NOT defined here. theme.css states it once for every
+ * interactive element in the product; a second definition scoped to this
+ * component is how one control ends up disagreeing with the rest.
+ */
+
+.push-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  /* Or a long failure sentence blows the toolbar grid out sideways. */
+  min-width: 0;
+}
+
+.push-toggle__switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  /* The iOS touch-target floor, applied to a control that lives in a
+     56px toolbar on a phone (DESIGN.md §2.4 --hit-min). */
+  min-height: var(--hit-min);
+  padding-inline: var(--s-2);
+  font-family: var(--font-ui);
+  font-size: var(--t-base);
+  letter-spacing: -0.006em;
+  color: var(--fg-primary);
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  /* Removes the 300ms tap delay and the grey flash on iOS, matching
+     .shell__retry — without it this control feels different from every
+     other tappable thing in the product. */
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.push-toggle__switch:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.push-toggle__switch:active:not(:disabled) {
+  background: var(--bg-active);
+}
+
+/* A control mid-request is not a broken one: it stays legible rather than
+   fading to an unreadable grey, and only stops accepting input. */
+.push-toggle__switch:disabled {
+  cursor: default;
+  color: var(--fg-secondary);
+}
+
+.push-toggle__label {
+  white-space: nowrap;
+}
+
+/* The track and knob are decoration; `role="switch"` + `aria-checked` on
+   the button is what carries the state to assistive tech. Sized off the
+   spacing scale rather than invented numbers. */
+.push-toggle__track {
+  position: relative;
+  flex: none;
+  inline-size: var(--s-8);
+  block-size: var(--s-5);
+  background: var(--bg-active);
+  border: 1px solid var(--line-border);
+  border-radius: var(--r-full);
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.push-toggle__knob {
+  position: absolute;
+  inset-block-start: 2px;
+  inset-inline-start: 2px;
+  inline-size: var(--s-3);
+  block-size: var(--s-3);
+  background: var(--fg-secondary);
+  border-radius: var(--r-full);
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
+}
+
+.push-toggle__switch[aria-checked='true'] .push-toggle__track {
+  background: var(--fg-primary);
+  border-color: var(--fg-primary);
+}
+
+.push-toggle__switch[aria-checked='true'] .push-toggle__knob {
+  background: var(--fg-on-accent);
+  /* track 32 - knob 12 - inset 2 - inset 2 - borders 2 = 14 */
+  transform: translateX(14px);
+}
+
+/**
+ * theme.css already collapses every transition in the product under
+ * `prefers-reduced-motion: reduce`. This block is stated again, scoped,
+ * because the knob is the one place in Postbox where motion carries
+ * meaning rather than polish — and DESIGN.md §6's rule is that the end
+ * state must be identical with and without motion. Removing the transition
+ * (rather than shortening it) makes the "on" position instantaneous and
+ * still exactly where it would have landed.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .push-toggle__track,
+  .push-toggle__knob {
+    transition: none;
+  }
+}
+
+/* One short sentence: the iOS install instruction, the unsupported note,
+   or a failure. Achromatic — DESIGN.md §7.4 forbids the red banner, and
+   this is the same class of message. Wraps to at most two lines at this
+   size, which keeps it inside the 56px toolbar. */
+.push-toggle__note {
+  margin: 0;
+  min-width: 0;
+  max-width: 40ch;
+  font-family: var(--font-ui);
+  font-size: var(--t-xs);
+  line-height: 1.3;
+  color: var(--fg-secondary);
+}

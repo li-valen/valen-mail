@@ -1,6 +1,7 @@
 import LoginView from './LoginView';
 import InboxList from './components/InboxList';
 import OpensRail from './components/OpensRail';
+import PushToggle from './components/PushToggle';
 import { useSessionGate } from './useSessionGate';
 import './shell.css';
 
@@ -58,6 +59,13 @@ export default function App() {
       <header className="toolbar" aria-label="Toolbar">
         {/* Task 4+: AccountFilter, ThemeToggle, rail toggle
             (client/DESIGN.md §6, component #2 Toolbar). */}
+        {/* Task 6. Gated on `authorized` like InboxList and OpensRail,
+            not merely on the shell rendering: every call it makes
+            (/api/push/key, /api/push/subscribe) needs the session cookie,
+            so a toggle offered while the session is still being checked —
+            or after it failed — is a control whose only possible outcome
+            is a 401 rendered as "could not subscribe". */}
+        {gate.status === 'authorized' && <PushToggle />}
       </header>
 
       <main className="inbox" aria-label="Inbox" aria-busy={gate.status === 'checking'}>
