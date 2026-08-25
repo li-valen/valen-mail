@@ -107,7 +107,17 @@ describe('mintTokens — request', () => {
     expect(init.headers.authorization).toBe(`Bearer ${MINT_BASE.token}`);
   });
 
-  it('keeps a path prefix on the tracking base url', async () => {
+  it('tolerates a trailing slash on the tracking base url', async () => {
+    // Named for what it actually exercises (fix round 1). `mintTokens`
+    // builds its URL with `new URL('/api/tokens', base)`, following
+    // ../src/api/opens.ts's convention — which means it DISCARDS any path
+    // prefix on the base rather than keeping one. ../src/send/build.ts
+    // deliberately does the opposite for the pixel (string-joins so
+    // `https://host/px/` stays intact), because a 404 on a pixel is
+    // invisible while a 404 on the mint is loud. The divergence is
+    // intentional; this comment is here so it stays recorded rather than
+    // latent.
+
     const fetchImpl = vi.fn().mockResolvedValue(
       jsonResponse({ tokens: [{ token: TOKEN_A, recipientEmail: 'one@example.com' }] }),
     );
@@ -423,6 +433,15 @@ describe('sendTracked — headers vs envelope (spec §5.3)', () => {
     await sendTracked({ transport }, sendRequest({ fromName: 'Valen Li' }));
 
     expect(calls[0]!.options.from).toBe('"Valen Li" <primary@example.com>');
+  });
+
+  it('sanitises the envelope MAIL FROM as well as the From header', async () => {
+    const { transport, calls } = makeFakeTransport();
+
+    await sendTracked({ transport }, sendRequest({ fromEmail: 'primary@example.com\r\n' }));
+
+    expect(calls[0]!.options.envelope.from).toBe('primary@example.com');
+    expect(calls[0]!.options.from).toBe('primary@example.com');
   });
 
   it('omits Cc entirely when there are no cc recipients', async () => {

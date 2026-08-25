@@ -45,7 +45,16 @@ export interface RateLimiter {
   /** Whether another attempt may be made at `nowMs`. Does not consume
    *  budget — `recordFailure` does. */
   readonly check: (nowMs: number) => RateLimitDecision;
-  /** Charges one failed attempt against the current window. */
+  /**
+   * Spends one unit of the current window's budget.
+   *
+   * The name is POST /api/session's, which was the only caller when this
+   * was written and charges FAILED attempts only — successful sign-ins
+   * never spend budget there. POST /api/send (Plan 4 Task 3) is a second
+   * caller with its own instance, and charges EVERY attempt, successes
+   * included (see SEND_RATE_LIMIT_MAX_ATTEMPTS in ./send.ts). What the
+   * method does is unchanged either way: spend one unit.
+   */
   readonly recordFailure: (nowMs: number) => void;
 }
 

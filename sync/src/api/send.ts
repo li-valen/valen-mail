@@ -38,9 +38,45 @@ export const MAX_TEXT_BODY_BYTES = 100 * 1024;
 export const MAX_RECIPIENTS = 25;
 /** Matches the bound tracking's mint route puts on `accountId`, so an id
  *  that would be refused there is refused here with a clearer status. */
-const MAX_IDENTITY_ID_CHARS = 64;
+export const MAX_IDENTITY_ID_CHARS = 64;
 /** RFC 5321's maximum forward-path length. */
-const MAX_RECIPIENT_CHARS = 254;
+export const MAX_RECIPIENT_CHARS = 254;
+
+/**
+ * The largest raw HTTP body ../api/server.ts will buffer for THIS route
+ * (fix round 1) — 768 KiB.
+ *
+ * The caps above bound the message; this bounds the bytes on the wire, and
+ * the two are not the same number. `MAX_TEXT_BODY_BYTES` is measured on
+ * the DECODED string, while the transport sees the JSON encoding of it,
+ * and JSON escaping expands a C0 control character to `\u00XX` — six
+ * bytes for one. A body at exactly the decoded cap can therefore arrive as
+ * six times its measured size, and a transport cap set to the decoded
+ * number would refuse a perfectly valid message with an opaque 413 before
+ * the route ever ran. That is precisely the defect this constant fixes.
+ *
+ * Worst case, all fields maximal and every escapable byte escaped:
+ *
+ *   textBody     102,400 x 6            = 614,400
+ *   subject          500 x 6            =   3,000
+ *   recipients        25 x (254 x 4 + 3) =  25,475
+ *   identityId        64 x 4            =     256
+ *   field names, braces, colons          ~    100
+ *                                        ---------
+ *                                          643,231  ->  768 KiB reserved
+ *
+ * tests/send-route.test.ts recomputes that sum from the constants above
+ * and asserts it fits, so raising any component cap without raising this
+ * one fails a test rather than silently making it unreachable again.
+ *
+ * Deliberately a PER-ROUTE cap rather than a global raise: server.ts's
+ * default 8 KiB was chosen for POST /api/session, which is
+ * unauthenticated, and a tight ceiling there is real protection against an
+ * anonymous caller spending this 955 MB box's memory. This route sits
+ * behind the auth gate, so the same ceiling buys nothing and costs the
+ * user their long emails.
+ */
+export const MAX_SEND_REQUEST_BODY_BYTES = 768 * 1024;
 
 /**
  * The global send budget: 30 sends per hour, in memory, counting EVERY
@@ -49,11 +85,24 @@ const MAX_RECIPIENT_CHARS = 254;
  * This is a runaway-script brake, not a security control — unlike the
  * session limiter in ./rate-limit.ts, this route is authenticated, so
  * anyone who can spend the budget already holds the credential and could
- * do far worse than send mail. What it actually bounds is the blast radius
- * of a loop bug in a client: 30 sends is more than a human composing by
- * hand will ever reach in an hour, and few enough that a script stuck in a
- * retry loop cannot burn the sending account's Gmail reputation before
- * someone notices.
+ * do far worse than send mail. What it bounds is the blast radius of a
+ * loop bug in a client: 30 requests is far more than a human composing by
+ * hand will reach in an hour, and few enough that a stuck retry loop stops
+ * early instead of running all night.
+ *
+ * It bounds REQUESTS, not messages, and the difference matters (fix round
+ * 1). At the 25-recipient cap, 30 requests is 750 SMTP messages inside one
+ * window — against Gmail's ~500-per-DAY limit (spec 5.3), so a single hour
+ * at this cap is 1.5x the daily quota. This therefore must NOT be read as
+ * protecting the sending account's quota or reputation: Gmail's own limit
+ * is the backstop for that, and it is what will actually refuse.
+ *
+ * A second counter over recipients-per-window was considered and NOT
+ * added. It would duplicate a limit the provider already enforces
+ * authoritatively and per-account, while this process only ever sees its
+ * own in-memory tally — cleared by a restart, and blind to anything the
+ * same account sent through Gmail's web UI or another client. Requests are
+ * what this process can honestly count, so requests are what it counts.
  *
  * Its own instance and its own two constants, deliberately sharing only
  * the fixed-window MECHANISM with the session limiter. Sharing a counter

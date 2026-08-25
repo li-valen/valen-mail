@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { SendMailOptions, Transport } from 'nodemailer';
-import { buildTrackedMessage, formatFrom } from './build.ts';
+import { buildTrackedMessage, formatFrom, sanitizeAddress } from './build.ts';
 import type { TrackedMessage } from './build';
 import { REQUEST_TIMEOUT_MS } from '../api/opens.ts';
+import { errorCode } from './error-code.ts';
 
 /**
  * Plan 4 Task 3 — the dispatch half of the send path: mint N tokens, then
@@ -241,18 +242,6 @@ export interface SendTrackedDeps {
   readonly transport: Transport;
 }
 
-/** Nodemailer's own error objects carry a `code` (EAUTH, EENVELOPE,
- *  ESOCKET, ...). It is the one diagnostic detail that is safe to log:
- *  the `message` frequently quotes the server's reply, which quotes the
- *  recipient address. */
-function errorCode(error: unknown): string {
-  if (typeof error === 'object' && error !== null && 'code' in error) {
-    const code = (error as { code: unknown }).code;
-    if (typeof code === 'string') return code;
-  }
-  return error instanceof Error ? error.name : 'unknown';
-}
-
 /**
  * Sends one copy per recipient, each carrying that recipient's own pixel.
  *
@@ -275,6 +264,9 @@ export async function sendTracked(
   request: SendTrackedRequest,
 ): Promise<readonly SendResult[]> {
   const from = formatFrom(request.fromName, request.fromEmail);
+  // The envelope MAIL FROM is held to the same standard as the header the
+  // line above builds — one sender address, sanitised once, used in both.
+  const envelopeFrom = sanitizeAddress(request.fromEmail);
   const results: SendResult[] = [];
   let failures = 0;
 
@@ -307,7 +299,7 @@ export async function sendTracked(
       messageId: request.messageId,
       // Envelope: exactly one RCPT TO. This is what makes the copy
       // private to this recipient despite the group headers above.
-      envelope: { from: request.fromEmail, to: [recipient.recipientEmail] },
+      envelope: { from: envelopeFrom, to: [recipient.recipientEmail] },
     };
 
     try {

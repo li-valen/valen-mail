@@ -1,6 +1,7 @@
 import nodemailer from 'nodemailer';
 import type { SmtpTransportOptions, Transport } from 'nodemailer';
 import type { AccountConfig } from '../config';
+import { errorCode } from './error-code.ts';
 
 /**
  * Plan 4 Task 2 — one lazy, per-account SMTP transport.
@@ -109,10 +110,14 @@ export function createTransports(
       try {
         transport.close();
       } catch (error) {
-        // Account id only — never the account's credential. Closing a
-        // socket that the far end already dropped is the ordinary case
-        // here, and it is not worth failing a shutdown over.
-        console.error(`send: transport close failed for account ${accountId}`, error);
+        // Account id and an error CODE — never the raw error object, which
+        // is the discipline ./send.ts's own failure path follows and the
+        // only place in this module that could break it (see
+        // ./error-code.ts). Closing a socket the far end already dropped
+        // is the ordinary case here, and not worth failing a shutdown over.
+        console.error(
+          `send: transport close failed for account ${accountId} (code=${errorCode(error)})`,
+        );
       }
     }
   }

@@ -89,6 +89,17 @@ describe('formatFrom', () => {
   it('falls back to the bare address when the display name is only whitespace', () => {
     expect(formatFrom('   ', 'primary@example.com')).toBe('primary@example.com');
   });
+
+  it('holds the ADDRESS to the same standard as the name (fix round 1)', () => {
+    // The name was stripped of quotes/backslashes/CR-LF with an explicit
+    // "does not depend on nodemailer doing it" posture while the address
+    // went through untouched. Not exploitable — the address is operator
+    // config and nodemailer strips C0 itself — but the module cannot
+    // declare a standard and then apply it to one of its two inputs.
+    expect(formatFrom(undefined, 'pri mary@example.com\r\n')).toBe('primary@example.com');
+    expect(formatFrom('Valen', '<primary@example.com>')).toBe('"Valen" <primary@example.com>');
+    expect(formatFrom(undefined, 'a"b\\c@example.com')).toBe('abc@example.com');
+  });
 });
 
 describe('buildTrackedMessage — text alternative', () => {

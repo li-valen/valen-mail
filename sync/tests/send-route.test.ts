@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { PassThrough } from 'node:stream';
+import type { IncomingMessage } from 'node:http';
 import {
   handleSend,
+  MAX_IDENTITY_ID_CHARS,
+  MAX_RECIPIENT_CHARS,
   MAX_RECIPIENTS,
+  MAX_SEND_REQUEST_BODY_BYTES,
   MAX_SUBJECT_CHARS,
   MAX_TEXT_BODY_BYTES,
   SEND_RATE_LIMIT_MAX_ATTEMPTS,
@@ -9,7 +14,11 @@ import {
 } from '../src/api/send.ts';
 import type { SendRouteDeps } from '../src/api/send';
 import { createRouter } from '../src/api/routes.ts';
-import { createRouterFromConfig } from '../src/api/server.ts';
+import {
+  createRouterFromConfig,
+  toWebRequest,
+  MAX_REQUEST_BODY_BYTES,
+} from '../src/api/server.ts';
 import { createFixedWindowLimiter } from '../src/api/rate-limit.ts';
 import { createTransports } from '../src/send/transports.ts';
 import type { Transports } from '../src/send/transports';
@@ -687,5 +696,159 @@ describe('createRouterFromConfig — the transports wire', () => {
     expect(response.status).toBe(200);
     expect(calls).toHaveLength(1);
     expect(calls[0]!.envelope.to).toEqual(['one@example.com']);
+  });
+});
+
+/**
+ * Fix round 1, Fix 1 — the transport seam.
+ *
+ * `MAX_TEXT_BODY_BYTES` is enforced by handleSend, but the body has to
+ * survive `toWebRequest` first, and that ran a flat 8 KiB cap chosen when
+ * POST /api/session was the only route reading a body. Nothing crossed the
+ * seam: server-request.test.ts proved the 8 KiB refusal in isolation and
+ * every test above builds a Web `Request` directly. The result was that a
+ * ~1,300-word email came back 413 with an opaque error and the 100 KiB cap
+ * could never bind. These tests cross it.
+ */
+function fakeIncoming(options: {
+  method: string;
+  url: string;
+  body: string;
+  headers?: Record<string, string>;
+}): IncomingMessage {
+  const stream = new PassThrough();
+  stream.end(options.body);
+  return Object.assign(stream, {
+    method: options.method,
+    url: options.url,
+    headers: options.headers ?? {},
+  }) as unknown as IncomingMessage;
+}
+
+describe('POST /api/send — the request body cap at the transport seam', () => {
+  it('carries a near-cap compose body through toWebRequest to a 200', async () => {
+    // End to end through the adapter the real HTTP server uses, not a
+    // hand-built Request: ~100 KiB of body, which the old flat 8 KiB cap
+    // refused before auth, before the limiter, before handleSend.
+    const textBody = 'x'.repeat(MAX_TEXT_BODY_BYTES - 1024);
+    const router = routerWith();
+
+    const request = await toWebRequest(
+      fakeIncoming({
+        method: 'POST',
+        url: '/api/send',
+        body: JSON.stringify(validBody({ textBody })),
+        headers: { ...AUTH, 'content-type': 'application/json' },
+      }),
+    );
+
+    expect(request).not.toBeNull();
+    const response = await router(request!);
+    expect(response.status).toBe(200);
+    expect((await readJson<SendBody>(response)).results).toEqual([
+      { recipientEmail: 'one@example.com', ok: true },
+    ]);
+  });
+
+  it(`accepts a textBody of EXACTLY ${MAX_TEXT_BODY_BYTES} bytes`, async () => {
+    // The accept side of the one cap that had only a refuse side.
+    const textBody = 'x'.repeat(MAX_TEXT_BODY_BYTES);
+    expect(Buffer.byteLength(textBody, 'utf8')).toBe(MAX_TEXT_BODY_BYTES);
+
+    const response = await handleSend(sendRequest(validBody({ textBody })), makeDeps());
+
+    expect(response.status).toBe(200);
+  });
+
+  it('carries an exactly-at-cap textBody through the seam too', async () => {
+    const textBody = 'x'.repeat(MAX_TEXT_BODY_BYTES);
+    const router = routerWith();
+
+    const request = await toWebRequest(
+      fakeIncoming({
+        method: 'POST',
+        url: '/api/send',
+        body: JSON.stringify(validBody({ textBody })),
+        headers: { ...AUTH, 'content-type': 'application/json' },
+      }),
+    );
+
+    expect(request).not.toBeNull();
+    expect((await router(request!)).status).toBe(200);
+  });
+
+  it('still refuses at the transport once the send route cap is crossed', async () => {
+    const request = await toWebRequest(
+      fakeIncoming({
+        method: 'POST',
+        url: '/api/send',
+        body: 'x'.repeat(MAX_SEND_REQUEST_BODY_BYTES + 1),
+        headers: AUTH,
+      }),
+    );
+
+    expect(request).toBeNull();
+  });
+
+  it('leaves the UNAUTHENTICATED session route on the small default cap', async () => {
+    // The 8 KiB number is real DoS protection exactly where it was chosen
+    // for: a route anyone can reach without a credential. Raising it
+    // globally to serve /api/send would have thrown that away.
+    const request = await toWebRequest(
+      fakeIncoming({
+        method: 'POST',
+        url: '/api/session',
+        body: 'x'.repeat(MAX_REQUEST_BODY_BYTES + 1),
+        headers: {},
+      }),
+    );
+
+    expect(request).toBeNull();
+  });
+
+  it('does not raise the cap for a GET, or for another POST route', async () => {
+    const push = await toWebRequest(
+      fakeIncoming({
+        method: 'POST',
+        url: '/api/push/subscribe',
+        body: 'x'.repeat(MAX_REQUEST_BODY_BYTES + 1),
+        headers: AUTH,
+      }),
+    );
+
+    expect(push).toBeNull();
+  });
+
+  it('applies the send cap regardless of a query string on the path', async () => {
+    const request = await toWebRequest(
+      fakeIncoming({
+        method: 'POST',
+        url: '/api/send?trace=1',
+        body: 'x'.repeat(MAX_REQUEST_BODY_BYTES + 1),
+        headers: AUTH,
+      }),
+    );
+
+    expect(request).not.toBeNull();
+  });
+
+  it('reserves enough transport budget for the worst-case JSON encoding of a maximal body', () => {
+    // The arithmetic, asserted rather than asserted-in-a-comment: JSON
+    // escaping expands a C0 control character to \u00XX — six bytes for
+    // one — so a maximal body of them is 6x its measured size on the wire.
+    // Every other field is bounded the same way. If any component cap
+    // grows past what the transport reserves, this fails rather than
+    // reintroducing an unreachable cap.
+    const JSON_WORST_CASE_EXPANSION = 6;
+    const worstCase =
+      MAX_TEXT_BODY_BYTES * JSON_WORST_CASE_EXPANSION +
+      MAX_SUBJECT_CHARS * JSON_WORST_CASE_EXPANSION +
+      // 4 bytes per character at most in UTF-8, plus quotes and a comma.
+      MAX_RECIPIENTS * (MAX_RECIPIENT_CHARS * 4 + 3) +
+      MAX_IDENTITY_ID_CHARS * 4 +
+      // field names, braces, colons
+      100;
+
+    expect(worstCase).toBeLessThanOrEqual(MAX_SEND_REQUEST_BODY_BYTES);
   });
 });

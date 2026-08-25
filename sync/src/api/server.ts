@@ -10,6 +10,7 @@ import type { Db } from '../db';
 import { ConnectionPool } from '../imap/pool.ts';
 import type { OnNewMessagesHandler } from '../imap/pool';
 import { createRouter } from './routes.ts';
+import { MAX_SEND_REQUEST_BODY_BYTES } from './send.ts';
 import { notifyNewMail } from '../push/dispatch.ts';
 import { createOpensPoll } from '../push/opens-poll.ts';
 import type { OpensPoll } from '../push/opens-poll';
@@ -91,17 +92,67 @@ function toWebHeaders(nodeHeaders: IncomingMessage['headers']): Headers {
 }
 
 /**
- * Hard ceiling on a request body this service will buffer.
+ * DEFAULT ceiling on a request body this service will buffer — the one
+ * every body-reading route gets unless ./send.ts's route is the target.
  *
- * POST /api/session (Task 3.5) is the only route that reads one, and its
- * body is a single JSON object holding a token — hundreds of bytes. 8 KB
- * leaves generous room for that while making it impossible for an
- * unauthenticated caller to spend this 955 MB box's memory by opening a
- * connection and streaming forever: the read stops the moment the cap is
- * crossed, not after the whole body has landed, and the request is
- * answered 413 without ever reaching the router.
+ * Sized for POST /api/session (Task 3.5), which is the route this number
+ * was chosen for and the one that makes it load-bearing: it is the only
+ * UNAUTHENTICATED route that reads a body, and its body is a single JSON
+ * object holding a token — hundreds of bytes. 8 KB leaves generous room
+ * for that while making it impossible for an unauthenticated caller to
+ * spend this 955 MB box's memory by opening a connection and streaming
+ * forever: the read stops the moment the cap is crossed, not after the
+ * whole body has landed, and the request is answered 413 without ever
+ * reaching the router.
+ *
+ * Fix round 1: this used to be the ONLY ceiling, applied flat to every
+ * route, and POST /api/send (Plan 4 Task 3) accepts a 100 KiB message
+ * body. A compose over ~8,100 characters — roughly 1,300 words — was
+ * refused here with an opaque 413 before auth, before the send limiter and
+ * before any of the route's own validation, which made its documented
+ * `MAX_TEXT_BODY_BYTES` unreachable. See `requestBodyLimit` below.
  */
 export const MAX_REQUEST_BODY_BYTES = 8 * 1024;
+
+/**
+ * The path each per-route body cap applies to, resolved the same way
+ * `toWebRequest` resolves the request URL itself.
+ *
+ * An unparseable URL yields '' and therefore the DEFAULT cap — failing
+ * closed to the tighter of the two, never to the looser one.
+ */
+function requestPath(rawUrl: string): string {
+  try {
+    return new URL(`http://localhost${rawUrl}`).pathname;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The body ceiling for one request, chosen from its method and path alone.
+ *
+ * Deliberately decided BEFORE the router runs and without consulting it:
+ * the whole point of this cap is that an oversized body is refused while
+ * it is still arriving, so it cannot depend on anything the router would
+ * have to buffer the body to learn. It is also not a parameter callers
+ * pass in — `toWebRequest` consults it itself, so there is no way to adapt
+ * a request and forget to apply the right limit.
+ *
+ * Per-route rather than a global raise. Every route keeps the tight
+ * default; POST /api/send gets exactly the ceiling its own documented caps
+ * require (see MAX_SEND_REQUEST_BODY_BYTES in ./send.ts for the
+ * arithmetic), because it sits behind the auth gate where an 8 KiB
+ * ceiling protects nothing and only truncates the user's email.
+ *
+ * Exported for the 413 log line below and for tests.
+ */
+export function requestBodyLimit(method: string, rawUrl: string): number {
+  if (method.toUpperCase() !== 'POST') return MAX_REQUEST_BODY_BYTES;
+  return requestPath(rawUrl) === '/api/send'
+    ? MAX_SEND_REQUEST_BODY_BYTES
+    : MAX_REQUEST_BODY_BYTES;
+}
 
 /** GET and HEAD are the only methods this service serves that must not
  *  carry a body — and constructing a Web `Request` with a body on either
@@ -126,17 +177,20 @@ function methodMayHaveBody(method: string): boolean {
  * still a refusal, just a blunter one, and it is the right side of the
  * trade against buffering the body to be polite about it.
  *
- * Never logs or returns any part of the body: on the one route that has
- * one, the body is a credential.
+ * Never logs or returns any part of the body: on one route that has one
+ * the body is a credential, and on another it is the user's mail.
  */
-async function readRequestBody(nodeRequest: IncomingMessage): Promise<Buffer | null> {
+async function readRequestBody(
+  nodeRequest: IncomingMessage,
+  limitBytes: number,
+): Promise<Buffer | null> {
   const chunks: Buffer[] = [];
   let total = 0;
 
   for await (const chunk of nodeRequest) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
     total += buffer.length;
-    if (total > MAX_REQUEST_BODY_BYTES) return null;
+    if (total > limitBytes) return null;
     chunks.push(buffer);
   }
 
@@ -145,7 +199,8 @@ async function readRequestBody(nodeRequest: IncomingMessage): Promise<Buffer | n
 
 /**
  * Adapts Node's IncomingMessage to a Web Request, body included. Returns
- * null when the body exceeded MAX_REQUEST_BODY_BYTES.
+ * null when the body exceeded the ceiling `requestBodyLimit` picked for
+ * this method and path.
  *
  * The body forwarding is the load-bearing part and is why this is
  * exported: before Task 3.5 nothing in this service read a request body,
@@ -164,7 +219,7 @@ export async function toWebRequest(nodeRequest: IncomingMessage): Promise<Reques
     return new Request(url, { method, headers });
   }
 
-  const body = await readRequestBody(nodeRequest);
+  const body = await readRequestBody(nodeRequest, requestBodyLimit(method, nodeRequest.url ?? '/'));
   if (body === null) return null;
   return new Request(url, { method, headers, body: body.length > 0 ? body : null });
 }
@@ -225,7 +280,7 @@ async function handleRequest(
       // The method and URL are safe to log; the body never is.
       console.error(
         `api: refusing ${nodeRequest.method} ${nodeRequest.url} — request body exceeds ` +
-          `${MAX_REQUEST_BODY_BYTES} bytes`,
+          `${requestBodyLimit(nodeRequest.method ?? 'GET', nodeRequest.url ?? '/')} bytes`,
       );
       nodeResponse.writeHead(413, {
         'content-type': 'application/json',

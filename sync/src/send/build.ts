@@ -43,6 +43,31 @@ export function escapeHtml(value: string): string {
 }
 
 /**
+ * Characters an email ADDRESS may never carry into a header or an SMTP
+ * envelope: C0 controls and DEL (CR/LF being the injection vector), all
+ * whitespace including the space itself, and the three delimiters that
+ * would otherwise close the address and open something else.
+ *
+ * Applies to the SENDER address only, which comes from operator config.
+ * Recipient addresses are validated — not rewritten — at the route
+ * boundary (`isUsableRecipient` in ../api/send.ts), because silently
+ * altering an address the user typed would send their mail somewhere they
+ * did not ask for; a refusal is the honest answer there.
+ */
+const UNSAFE_ADDRESS_CHARACTERS = /[\u0000-\u0020"\\<>\u007F]/g;
+
+/**
+ * Strips anything from a sending address that could break out of a header
+ * or an envelope. Fix round 1: `formatFrom` used to hold the display NAME
+ * to this standard while passing the ADDRESS through untouched, which is
+ * an asymmetry a module cannot justify while explicitly declining to
+ * depend on nodemailer's own sanitising.
+ */
+export function sanitizeAddress(address: string): string {
+  return address.replace(UNSAFE_ADDRESS_CHARACTERS, '');
+}
+
+/**
  * The `From` header value for a sending identity.
  *
  * No account carries a display name today (see AccountConfig in
@@ -52,12 +77,14 @@ export function escapeHtml(value: string): string {
  * would land the day one is configured, and because a caller passing one
  * must not be able to inject a header: quotes, backslashes and CR/LF are
  * removed rather than escaped. Nodemailer would encode them itself; this
- * function does not depend on that.
+ * function does not depend on that — and, since fix round 1, neither
+ * input relies on it.
  */
 export function formatFrom(fromName: string | undefined, fromEmail: string): string {
+  const address = sanitizeAddress(fromEmail);
   const cleaned = (fromName ?? '').replace(/["\\\r\n]/g, '').trim();
-  if (!cleaned) return fromEmail;
-  return `"${cleaned}" <${fromEmail}>`;
+  if (!cleaned) return address;
+  return `"${cleaned}" <${address}>`;
 }
 
 /**
