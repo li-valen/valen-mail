@@ -5,6 +5,7 @@ import type { AttachmentMeta } from '../attachments';
 import { ImapConnection } from './connection.ts';
 import { fetchHeaders, ESTIMATED_BYTES_PER_HEADER_FETCH } from './fetch.ts';
 import { collectPreviews } from './previews.ts';
+import { runBackfillCycle } from './backfill.ts';
 import { applySnippet } from '../normalize.ts';
 import { folderSyncOrder, type DiscoveredFolders, type FolderKind } from './folders.ts';
 import { FolderCache } from './folder-cache.ts';
@@ -28,12 +29,14 @@ export type AccountStatus = 'connected' | 'reconnecting' | 'stopped';
  *  relies on repeated bounded polls of the newest messages plus
  *  `upsertMessage`'s idempotent (account, folder, uid) upsert.
  *
- *  KNOWN LIMITATION (spec 9 / L9): this is a poll of the newest 50, not a
- *  backfill. If more than 50 messages arrive at an account while the
- *  service is down, everything older than the newest 50 is never fetched
- *  and never appears in the unified inbox — and nothing detects the gap.
- *  The `sync_state` table exists for the resume point a real backfill
- *  would need, but nothing reads or writes it today. */
+ *  This poll deliberately remains a poll of the newest 50 and nothing
+ *  more. Reaching further back is Plan 8 Task 1's ./backfill.ts, which
+ *  runs AFTER this loop in the same cycle, on the same connection, and
+ *  walks backwards from the oldest UID this poll has reached — with its
+ *  own budget share, its own resume point in `sync_state`, and no path to
+ *  the new-mail hook. Widening this constant instead would have made
+ *  every cycle pay for history forever and handed months of old mail to
+ *  the dispatcher as "new". */
 const HEADER_FETCH_LIMIT = 50;
 
 /** Pre-fetch reservation charged against the daily byte budget before each
@@ -539,6 +542,19 @@ export class ConnectionPool {
           );
         }
       }
+
+      // HISTORICAL BACKFILL (Plan 8 Task 1) — after live sync, inside this
+      // same critical section, on this same connection, and before the
+      // INBOX re-select below (it opens other mailboxes).
+      //
+      // SUPPRESSION, at the one place a reader would look for it: this is
+      // awaited for its side effects and returns nothing that can feed
+      // `newByFolder`. Backfilled messages are written to Postgres and go
+      // no further — never through marks.track(), never into the map the
+      // INBOX-only dispatch guard below reads. Backfilling a year of mail
+      // must not produce a year of buzzes; backfill.ts's own SUPPRESSION
+      // note explains why that is structural, not conditional.
+      await runBackfillCycle({ db: this.db, budget: this.budget, accountId, connection }, folders);
 
       // The cycle must END with INBOX selected: imapflow leaves the last
       // locked mailbox selected after release(), so a cycle ending on

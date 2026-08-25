@@ -1,7 +1,7 @@
 import { vi } from 'vitest';
 import type { ImapFlow } from 'imapflow';
 import { ConnectionPool } from '../../src/imap/pool.ts';
-import type { AttachmentInput, Db, MessageInput } from '../../src/db';
+import type { AttachmentInput, Db, MessageInput, SyncStateInput } from '../../src/db';
 import type { AccountConfig } from '../../src/config';
 
 /**
@@ -284,10 +284,21 @@ export function createFakeClient(options: FakeClientOptions = {}) {
       return;
     }
 
-    // Yields the SELECTED folder's messages: a cycle that opened Spam must
-    // not be handed INBOX's mail, or every per-folder assertion in these
-    // suites would be measuring the same array four times.
-    for (const message of messages) yield message;
+    // Yields the SELECTED folder's messages that fall inside the REQUESTED
+    // UID RANGE — both halves matter. A cycle that opened Spam must not be
+    // handed INBOX's mail, or every per-folder assertion in these suites
+    // would be measuring the same array four times; and a fetch that
+    // ignored `UID lo:hi` would hand a backfill page of low UIDs the
+    // newest messages instead, making every backfill assertion here true
+    // for the wrong reason. Live sync's own spans are unaffected: it
+    // always asks for the newest HEADER_FETCH_LIMIT, which is a superset
+    // of what any of these fakes contain.
+    const [lowestUid, highestUid] = String(range).split(':').map(Number);
+    for (const message of messages) {
+      if (lowestUid !== undefined && message.uid < lowestUid) continue;
+      if (highestUid !== undefined && message.uid > highestUid) continue;
+      yield message;
+    }
   });
 
   const download = vi.fn(async (uid: string, partId: string | undefined) => {
@@ -391,6 +402,17 @@ export interface FakeDb extends Db {
   /** Marks a (accountId, folder, uid) as already having a preview stored,
    *  which is what a second sync cycle over the same UIDs sees. */
   seedSnippet(accountId: string, folder: string, uid: number): void;
+  /**
+   * Turns the historical backfill ON for one (account, folder) by clearing
+   * this fake's default "already finished" sync-state row — see
+   * createFakeDb's own comment for why that is the default.
+   */
+  seedBackfillPending(accountId: string, folder: string): void;
+  /** Writes a sync_state row directly, as a restart would find one. */
+  seedSyncState(accountId: string, folder: string, state: SyncStateInput): void;
+  /** The sync_state row for one (account, folder) as it stands now — the
+   *  backfill watermark and its terminal flag. */
+  syncState(accountId: string, folder: string): SyncStateInput | undefined;
 }
 
 /**
@@ -407,6 +429,27 @@ export function createFakeDb(): FakeDb {
   const budgetRecordCalls: number[] = [];
   const snippetLookups: Array<{ accountId: string; folder: string; uids: readonly number[] }> = [];
   const storedSnippets = new Set<string>();
+  const syncStates = new Map<string, SyncStateInput>();
+  const backfillPending = new Set<string>();
+
+  /**
+   * What getSyncState answers for a (account, folder) no test has said
+   * anything about: a folder whose historical backfill (Plan 8 Task 1) is
+   * already FINISHED, so runBackfillPage returns immediately without
+   * fetching, opening a mailbox or charging a byte.
+   *
+   * That default is what keeps every pre-Plan-8 suite in this directory
+   * describing exactly the server it always described — same fetch counts,
+   * same budget records, same openedMailboxes sequence — for the same
+   * reason `folders` defaults to a single INBOX. "Fully backfilled" is
+   * also the real steady state of a deployed account, not a fiction.
+   * tests/pool-backfill.test.ts opts in with seedBackfillPending().
+   */
+  const BACKFILL_ALREADY_DONE: SyncStateInput = {
+    uidValidity: null,
+    lastSeenUid: 1n,
+    backfillDone: true,
+  };
 
   const today = (): string => new Date().toISOString().slice(0, 10);
 
@@ -420,6 +463,17 @@ export function createFakeDb(): FakeDb {
     },
     seedSnippet(accountId, folder, uid) {
       storedSnippets.add(`${accountId}|${folder}|${uid}`);
+    },
+    seedBackfillPending(accountId, folder) {
+      backfillPending.add(`${accountId}|${folder}`);
+      syncStates.delete(`${accountId}|${folder}`);
+    },
+    seedSyncState(accountId, folder, state) {
+      backfillPending.add(`${accountId}|${folder}`);
+      syncStates.set(`${accountId}|${folder}`, state);
+    },
+    syncState(accountId, folder) {
+      return syncStates.get(`${accountId}|${folder}`);
     },
     async findUidsWithSnippet(accountId, folder, uids) {
       snippetLookups.push({ accountId, folder, uids });
@@ -452,10 +506,22 @@ export function createFakeDb(): FakeDb {
     async getThread() {
       return [];
     },
-    async getSyncState() {
-      return null;
+    async getOldestSyncedUid(accountId, folder) {
+      // min(uid) over the rows this fake has actually stored, which is
+      // what Postgres answers too — including `null` for a folder nothing
+      // has synced yet.
+      const uids = upserts
+        .filter((message) => message.accountId === accountId && message.folder === folder)
+        .map((message) => message.uid);
+      return uids.length === 0 ? null : Math.min(...uids);
     },
-    async setSyncState() {},
+    async getSyncState(accountId, folder) {
+      const key = `${accountId}|${folder}`;
+      return syncStates.get(key) ?? (backfillPending.has(key) ? null : BACKFILL_ALREADY_DONE);
+    },
+    async setSyncState(accountId, folder, state) {
+      syncStates.set(`${accountId}|${folder}`, state);
+    },
     async close() {},
   };
 }

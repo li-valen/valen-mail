@@ -91,17 +91,29 @@ create table if not exists attachments (
 -- Resume point per account+folder so a restart does not re-download a
 -- mailbox.
 --
--- NOT YET WIRED. Nothing in the shipped service writes or reads this
--- table: Db.getSyncState/setSyncState have no production callers, and
--- `backfill_done` implies a backfill that does not exist. ConnectionPool
--- .syncOnce polls the newest HEADER_FETCH_LIMIT (50) UIDs on every cycle
--- with no cursor at all, relying on upsertMessage's idempotent
--- (account_id, folder, uid) upsert instead of a resume point.
+-- LIVE as of Plan 8 Task 1, which is the backfill this table was retained
+-- for. src/imap/backfill.ts walks each folder BACKWARDS from the oldest
+-- UID live sync has reached, one bounded page per cycle, and writes its
+-- progress here after every page:
 --
--- The consequence is a real, accepted limitation (spec 9, L9): if more
--- than 50 messages arrive while the service is down, everything older
--- than the newest 50 is never fetched. The table and its accessors are
--- retained as the storage a later backfill task will use.
+--   last_seen_uid  the lowest UID that walk has covered. Everything at or
+--                  above it is synced; the next page is the span
+--                  immediately below it. Written after the page's rows,
+--                  never before, so a crash re-fetches a page rather than
+--                  skipping one.
+--   backfill_done  set once the walk reaches UID 1. Terminal — a folder
+--                  marked done is never paged again.
+--
+-- ConnectionPool.syncOnce still polls the newest HEADER_FETCH_LIMIT (50)
+-- UIDs per folder with no cursor, unchanged; the backfill runs after it,
+-- on the same connection, and the two meet in the middle. Overlap between
+-- them is harmless because every write goes through upsertMessage, which
+-- is idempotent on (account_id, folder, uid).
+--
+-- One row here is NOT a mail folder at all: src/push/opens-poll.ts
+-- reserves (`__opens_poll__`, `__opens_poll__`) and stores a millisecond
+-- timestamp in last_seen_uid. See that module; no configured account can
+-- collide with it.
 create table if not exists sync_state (
   account_id     text not null,
   folder         text not null,

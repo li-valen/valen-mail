@@ -83,6 +83,33 @@ maybe('db', () => {
     expect(await db.getSyncState('test-a', 'NOPE')).toBeNull();
   });
 
+  it('reports the oldest synced UID per (account, folder), and null when there is none', async () => {
+    // The backfill's first-page anchor (Plan 8 Task 1). min() over zero
+    // rows is SQL NULL, and the driver hands bigint back as a string —
+    // both are only observable against a real Postgres, which is exactly
+    // what this suite is for.
+    expect(await db.getOldestSyncedUid('test-a', 'NO-SUCH-FOLDER')).toBeNull();
+
+    const base = {
+      accountId: 'test-a', folder: 'BACKFILL-PROBE', messageId: null, threadId: null,
+      subject: 'probe', fromName: null, fromEmail: null, toEmails: [], ccEmails: [],
+      date: null, snippet: null, flags: [], labels: [], hasAttach: false, sizeBytes: null,
+    };
+    await db.upsertMessage({ ...base, uid: 900 });
+    await db.upsertMessage({ ...base, uid: 400 });
+    await db.upsertMessage({ ...base, uid: 650 });
+
+    const oldest = await db.getOldestSyncedUid('test-a', 'BACKFILL-PROBE');
+    expect(oldest).toBe(400);
+    // A number, not the string pg returns for a bigint column — the whole
+    // point of the conversion at this boundary.
+    expect(typeof oldest).toBe('number');
+    // Scoped to the folder, not the account: another folder's lower UID
+    // must not drag this answer down and make backfill re-page a span it
+    // has already covered.
+    expect(await db.getOldestSyncedUid('test-b', 'BACKFILL-PROBE')).toBeNull();
+  });
+
   it('truncates an oversized snippet to 500 characters rather than storing it in full', async () => {
     const oversizedSnippet = 'x'.repeat(2000);
     await db.upsertMessage({

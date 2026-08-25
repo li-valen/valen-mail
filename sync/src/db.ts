@@ -83,7 +83,27 @@ export interface InboxCursor {
 
 export interface SyncStateInput {
   readonly uidValidity: bigint | null;
+  /**
+   * A watermark whose MEANING belongs to whichever subsystem owns the row,
+   * not to this type — the column is one bigint and two callers use it
+   * differently, so pinning a single meaning in the name would make one of
+   * them a lie:
+   *
+   *  - imap/backfill.ts (a real account + folder) stores the lowest UID
+   *    its backwards walk has covered. Everything at or above it is
+   *    synced; the next page is the span immediately below it.
+   *  - push/opens-poll.ts (its own reserved `__opens_poll__` pseudo-row)
+   *    stores a millisecond timestamp instead, and says so.
+   *
+   * The two never collide: an account id is a configured mail account, and
+   * `__opens_poll__` is not one.
+   */
   readonly lastSeenUid: bigint;
+  /**
+   * True once imap/backfill.ts has walked this folder down to UID 1 and
+   * there is no history left below it. Terminal: a folder marked done is
+   * never paged again.
+   */
   readonly backfillDone: boolean;
 }
 
@@ -167,13 +187,28 @@ export interface Db {
   }): Promise<any[]>;
   getThread(threadId: string): Promise<any[]>;
   /**
-   * NOT YET WIRED: no production caller. `sync_state` exists as the
-   * storage a future backfill will resume from; ConnectionPool.syncOnce
-   * polls the newest 50 UIDs with no cursor instead (see schema.sql's
-   * comment on the table, and spec 9 / L9).
+   * The lowest UID currently stored for one (account, folder), or null
+   * when nothing has been synced there yet.
+   *
+   * This is where the historical backfill starts its FIRST page (Plan 8
+   * Task 1): live sync's newest-50 poll has already covered
+   * [oldest, newest], so the walk backwards begins immediately below the
+   * oldest row and leaves no gap. Every later page uses the persisted
+   * watermark instead — see imap/backfill.ts's backfillFloor.
+   *
+   * A `min()` on the primary key's own (account_id, folder, uid) prefix,
+   * so it is an index probe rather than a scan however deep the mailbox
+   * eventually gets.
+   */
+  getOldestSyncedUid(accountId: string, folder: string): Promise<number | null>;
+  /**
+   * The per-(account, folder) resume point. LIVE as of Plan 8 Task 1,
+   * which finally reads and writes it: imap/backfill.ts persists a
+   * watermark after every page so a restart resumes the walk instead of
+   * restarting it, and flips `backfillDone` when the walk reaches UID 1.
    */
   getSyncState(accountId: string, folder: string): Promise<SyncStateInput | null>;
-  /** NOT YET WIRED: no production caller. See getSyncState above. */
+  /** See getSyncState above. */
   setSyncState(accountId: string, folder: string, state: SyncStateInput): Promise<void>;
   close(): Promise<void>;
 }
@@ -503,6 +538,18 @@ export function openDb(databaseUrl: string): Db {
         [threadId],
       );
       return result.rows;
+    },
+
+    async getOldestSyncedUid(accountId, folder) {
+      const result = await pool.query(
+        'select min(uid) as oldest from messages where account_id = $1 and folder = $2',
+        [accountId, folder],
+      );
+      const oldest = result.rows[0]?.oldest;
+      // min() over zero rows is SQL NULL, which is the "nothing synced
+      // here yet" answer rather than an error. pg hands bigint back as a
+      // string; UIDs are uint32 by RFC 3501, so Number() is lossless.
+      return oldest === null || oldest === undefined ? null : Number(oldest);
     },
 
     async getSyncState(accountId, folder) {

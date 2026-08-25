@@ -12,10 +12,13 @@ export const DAILY_BYTE_LIMIT = 2 * 1024 * 1024 * 1024;
  * remainder for live sync. Without this, a backfill exhausts the day's
  * allowance and new mail stops arriving until midnight.
  *
- * NOT YET WIRED: no production caller. There is no backfill in the shipped
- * service (spec 9 / L9) — ConnectionPool.syncOnce polls the newest 50 UIDs
- * with no cursor. This constant is the budget split a future backfill task
- * must apply; it currently constrains nothing.
+ * LIVE as of Plan 8 Task 1. imap/backfill.ts derives BACKFILL_BYTE_LIMIT
+ * from this (0.7 x 2 GiB = ~1.4 GiB) and passes it as `reserve`'s `limit`
+ * for every backfill header and preview fetch, while live sync keeps
+ * reserving against the full DAILY_BYTE_LIMIT. Because both spend the same
+ * per-account counter, what that actually enforces is "backfill stops
+ * asking once the account has spent 70% of its day" — the remaining 30%
+ * belongs to new mail, and backfill can never reach it.
  */
 export const BACKFILL_SHARE = 0.7;
 
