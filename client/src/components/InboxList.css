@@ -1,0 +1,137 @@
+/**
+ * client/src/components/InboxList.css
+ *
+ * Layout only — every value is a token from client/src/theme.css.
+ * client/DESIGN.md §3.1/§4.2 (day rule), §6 (component #5 InboxList, #16
+ * Skeleton, #17 EmptyState), §7 (loading / empty / error) are the sources.
+ */
+
+.inbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+/* The day rule (DESIGN.md §3.1, §4.2): Bricolage Grotesque, condensed —
+   the ONLY element in the product that uses the display face. --s-10
+   above / --s-4 below, per §4.2 ("more space above a heading than
+   below it"), except the very first one, which needs no lead-in. */
+.day-rule__label {
+  margin: 0;
+  margin-block-start: var(--s-10);
+  margin-block-end: var(--s-4);
+  font-family: var(--font-display);
+  font-variation-settings: 'wdth' 85, 'opsz' 24;
+  font-size: var(--t-xl);
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  color: var(--fg-primary);
+}
+
+.inbox-list__day:first-child .day-rule__label {
+  margin-block-start: 0;
+}
+
+.inbox-list__rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Loading — shaped blocks matching real row geometry, never a spinner in
+   the middle of the region (DESIGN.md §7.1). */
+.inbox-list__skeleton-row {
+  height: var(--row-min-h);
+  border-radius: var(--r-sm);
+  background: var(--bg-skeleton);
+  margin-block-end: var(--s-2);
+}
+
+/* Empty — service healthy, nothing has come back. The copy itself is set
+   in InboxList.tsx (task-4-brief.md's own instruction, not DESIGN.md
+   §7.2's rail text, which does not apply to a first-time inbox). */
+.inbox-list__empty {
+  padding-block-start: var(--s-10);
+}
+
+.inbox-list__empty-copy {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--t-md);
+  line-height: 1.6;
+  letter-spacing: -0.008em;
+  color: var(--fg-secondary);
+}
+
+/* Error — in place, one retry control, never a modal or a banner that
+   pushes content down and disappears (DESIGN.md §7.4). Achromatic, and
+   deliberately matching App.tsx's shell-level SessionError's classes so
+   the two read as the same kind of message. */
+.inbox-list__error {
+  margin: 0;
+  margin-block-start: var(--s-6);
+  padding: var(--s-3) var(--s-4);
+  font-family: var(--font-ui);
+  font-size: var(--t-base);
+  line-height: 1.4;
+  letter-spacing: -0.006em;
+  color: var(--fg-primary);
+  background: var(--bg-hover);
+  border-radius: var(--r-sm);
+}
+
+.inbox-list__retry {
+  min-height: var(--hit-min);
+  padding: 0;
+  font: inherit;
+  font-weight: 500;
+  color: var(--fg-primary);
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.inbox-list__retry:active {
+  color: var(--fg-secondary);
+}
+
+.inbox-list__load-more {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-2);
+  padding-block: var(--s-6);
+}
+
+.inbox-list__load-more-button {
+  min-height: var(--hit-min);
+  padding-inline: var(--s-4);
+  font-family: var(--font-ui);
+  font-size: var(--t-base);
+  font-weight: 500;
+  color: var(--fg-primary);
+  background: var(--bg-hover);
+  border: 0;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.inbox-list__load-more-button:hover:not(:disabled) {
+  background: var(--bg-active);
+}
+
+.inbox-list__load-more-button:disabled {
+  color: var(--fg-secondary);
+  cursor: default;
+}

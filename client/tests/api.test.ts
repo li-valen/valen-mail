@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { getInbox, getOpens, ApiError } from '../src/api';
+import type { InboxCursor } from '../src/api';
 
 describe('api wrapper', () => {
   it('throws ApiError with the status on a non-200', async () => {
@@ -22,18 +23,51 @@ describe('api wrapper', () => {
     expect(init.credentials).toBe('same-origin');
   });
 
-  it('forwards the before cursor when given one', async () => {
+  /**
+   * Amendment 1 (task-4-brief.md): `getInbox`'s second parameter widened
+   * from a bare `before` string to the full compound keyset cursor
+   * (`{ before, beforeAccount, beforeUid }`), which is what
+   * sync/src/api/routes.ts's `nextCursor` actually returns and what a
+   * client must send back verbatim to page losslessly through messages
+   * that share a timestamp. This test — and the two below it — replace
+   * the task-3-brief.md-era "forwards the before cursor" test, which
+   * passed a bare string.
+   */
+  it('forwards the full cursor — before, beforeAccount, and beforeUid — when given one', async () => {
     const f = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ messages: [] }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       }),
     );
-    await getInbox(25, '2026-08-24T00:00:00Z', f);
-    expect(String(f.mock.calls[0]?.[0])).toContain('before=2026-08-24T00%3A00%3A00Z');
+    const cursor: InboxCursor = {
+      before: '2026-08-24T00:00:00Z',
+      beforeAccount: 'primary',
+      beforeUid: '33097',
+    };
+    await getInbox(25, cursor, f);
+    const url = String(f.mock.calls[0]?.[0]);
+    expect(url).toContain('before=2026-08-24T00%3A00%3A00Z');
+    expect(url).toContain('beforeAccount=primary');
+    expect(url).toContain('beforeUid=33097');
   });
 
-  it('omits the before param when none is given', async () => {
+  it('forwards a NULL-date-tail cursor (beforeAccount/beforeUid with no before) unchanged', async () => {
+    const f = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ messages: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const cursor: InboxCursor = { before: null, beforeAccount: 'work', beforeUid: '9' };
+    await getInbox(25, cursor, f);
+    const url = String(f.mock.calls[0]?.[0]);
+    expect(url).not.toContain('before=');
+    expect(url).toContain('beforeAccount=work');
+    expect(url).toContain('beforeUid=9');
+  });
+
+  it('omits every cursor param when none is given', async () => {
     const f = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ messages: [] }), {
         status: 200,
@@ -41,10 +75,13 @@ describe('api wrapper', () => {
       }),
     );
     await getInbox(50, null, f);
-    expect(String(f.mock.calls[0]?.[0])).not.toContain('before=');
+    const url = String(f.mock.calls[0]?.[0]);
+    expect(url).not.toContain('before=');
+    expect(url).not.toContain('beforeAccount=');
+    expect(url).not.toContain('beforeUid=');
   });
 
-  it('resolves the messages array on success', async () => {
+  it('resolves the page — messages plus nextCursor — on success', async () => {
     const message = { account_id: 'a', uid: '1', folder: 'INBOX' };
     const f = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ messages: [message] }), {
@@ -52,7 +89,39 @@ describe('api wrapper', () => {
         headers: { 'content-type': 'application/json' },
       }),
     );
-    await expect(getInbox(50, null, f)).resolves.toEqual([message]);
+    await expect(getInbox(50, null, f)).resolves.toEqual({ messages: [message], nextCursor: null });
+  });
+
+  it('carries a well-formed nextCursor through verbatim', async () => {
+    const nextCursor = { before: '2026-08-01T00:00:00.000Z', beforeAccount: 'primary', beforeUid: '10' };
+    const f = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ messages: [], nextCursor }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    await expect(getInbox(50, null, f)).resolves.toEqual({ messages: [], nextCursor });
+  });
+
+  it('carries the NULL-date-tail nextCursor shape (before: null, both ids set) through verbatim', async () => {
+    const nextCursor = { before: null, beforeAccount: 'primary', beforeUid: '5' };
+    const f = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ messages: [], nextCursor }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    await expect(getInbox(50, null, f)).resolves.toEqual({ messages: [], nextCursor });
+  });
+
+  it('degrades a malformed nextCursor to null rather than forwarding a value it cannot trust', async () => {
+    const f = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ messages: [], nextCursor: { before: '2026-08-01T00:00:00Z' } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    await expect(getInbox(50, null, f)).resolves.toEqual({ messages: [], nextCursor: null });
   });
 
   /**
@@ -140,7 +209,7 @@ describe('api response validation', () => {
     const f = vi.fn().mockResolvedValue(
       jsonResponse({ messages: [VALID_MESSAGE, { subject: 'no identity at all' }, null, 7] }),
     );
-    await expect(getInbox(50, null, f)).resolves.toEqual([VALID_MESSAGE]);
+    await expect(getInbox(50, null, f)).resolves.toEqual({ messages: [VALID_MESSAGE], nextCursor: null });
   });
 
   it('drops an inbox row whose date is the wrong type rather than rendering Invalid Date', async () => {
@@ -148,13 +217,13 @@ describe('api response validation', () => {
     const f = vi.fn().mockResolvedValue(
       jsonResponse({ messages: [{ ...VALID_MESSAGE, date: 1_700_000_000_000 }] }),
     );
-    await expect(getInbox(50, null, f)).resolves.toEqual([]);
+    await expect(getInbox(50, null, f)).resolves.toEqual({ messages: [], nextCursor: null });
   });
 
   it('keeps an inbox row with a null date, which is a legitimate value', async () => {
     const row = { ...VALID_MESSAGE, date: null };
     const f = vi.fn().mockResolvedValue(jsonResponse({ messages: [row] }));
-    await expect(getInbox(50, null, f)).resolves.toEqual([row]);
+    await expect(getInbox(50, null, f)).resolves.toEqual({ messages: [row], nextCursor: null });
   });
 
   it('logs once per response, not once per dropped row', async () => {

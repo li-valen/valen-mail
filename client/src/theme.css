@@ -325,3 +325,22 @@ body {
     scroll-behavior: auto !important;
   }
 }
+
+/* A screen-reader-only utility for live-region announcements and for text
+   alternatives beside a decorative icon (DESIGN.md §7.1's "single
+   visually-hidden … live-region announcement"; component #20's icons are
+   `aria-hidden`, so anything they convey needs a paired text label like
+   this one). Clipped, not `display: none`, so assistive tech still reads
+   it — this is the standard accessible-hiding pattern, not a Postbox
+   invention. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

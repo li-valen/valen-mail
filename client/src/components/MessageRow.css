@@ -1,0 +1,84 @@
+/**
+ * One row of the unified inbox (client/DESIGN.md §6, component #7:
+ * "grid 1fr auto; sender (500 if unread) · subject · snippet (1-line
+ * clamp) · receiving-account stub (mono --t-xs) · timestamp (mono,
+ * tabular)"). Every value is a token from client/src/theme.css.
+ *
+ * `snippet` is always null today (task-4-brief.md ground truth) so it has
+ * no column here — see MessageRow.tsx's doc comment for why nothing fills
+ * that space as a placeholder.
+ *
+ * Ordering follows DESIGN.md's anatomy list, which places the account
+ * stub next to the timestamp as secondary meta, not ahead of the sender —
+ * that reading is more specific than, and takes precedence over,
+ * task-4-brief.md's own looser prose ("account label, sender, subject,
+ * time"), per this task's instruction that the DESIGN.md anatomy section
+ * is binding.
+ *
+ * "unread" (sender at weight 500) is deliberately NOT implemented here —
+ * see MessageRow.tsx's doc comment.
+ */
+
+.row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  column-gap: var(--s-4);
+  align-items: baseline;
+  min-height: var(--row-min-h);
+  padding-block: var(--s-2);
+}
+
+.row__primary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  min-width: 0; /* required for text-overflow: ellipsis inside a flex item */
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.row__sender {
+  flex-shrink: 0;
+  font-family: var(--font-ui);
+  font-size: var(--t-base);
+  font-weight: 400;
+  letter-spacing: -0.006em;
+  color: var(--fg-primary);
+}
+
+.row__subject {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-ui);
+  font-size: var(--t-base);
+  letter-spacing: -0.006em;
+  color: var(--fg-secondary);
+}
+
+.row__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-shrink: 0;
+  color: var(--fg-secondary);
+}
+
+.row__account {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  white-space: nowrap;
+}
+
+.row__attach-icon {
+  flex-shrink: 0;
+}
+
+.row__time {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

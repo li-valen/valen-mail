@@ -1,16 +1,18 @@
 import LoginView from './LoginView';
+import InboxList from './components/InboxList';
 import { useSessionGate } from './useSessionGate';
 import './shell.css';
 
 /**
  * The app shell: an inbox region and a rail region, per client/DESIGN.md
- * §4.1's grid ("toolbar rail" / "inbox rail"). Renders no real content —
- * Task 4 fills the inbox with InboxList, Task 5 fills the rail with
- * OpensRail.
+ * §4.1's grid ("toolbar rail" / "inbox rail"). Task 4 fills the inbox with
+ * InboxList; Task 5 fills the rail with OpensRail.
  *
- * The toolbar is an empty landmark for the same reason: DESIGN.md §6
- * component #2 specs an account filter, theme toggle, and rail toggle for
- * it, none of which this task builds.
+ * The toolbar is still an empty landmark: DESIGN.md §6 component #2 specs
+ * an account filter, theme toggle, and rail toggle for it, none of which
+ * this task builds — the account is shown per-row as a label, not as a
+ * toolbar filter control (task-4-brief.md: "all four accounts are always
+ * merged").
  *
  * Task 3.5 adds the auth gate in front of it. Three things it must keep
  * apart, because collapsing any two is a defect: a browser with no session
@@ -60,7 +62,7 @@ export default function App() {
       <main className="inbox" aria-label="Inbox" aria-busy={gate.status === 'checking'}>
         <div className="inbox__inner">
           {gate.status === 'error' && <SessionError message={gate.message} onRetry={retry} />}
-          {/* Task 4: InboxList */}
+          {gate.status === 'authorized' && <InboxList />}
         </div>
       </main>
 

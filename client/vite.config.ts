@@ -14,5 +14,13 @@ export default defineConfig({
   // import to an empty module, which silently defeats
   // tests/theme-tokens.test.ts's `theme.css?raw` import (see
   // task-3-report.md, "Font subsetting" sibling note on this fix).
-  test: { environment: 'node', css: true },
+  //
+  // env.TZ pins the test run to UTC (task-4-brief.md Amendment 2).
+  // tests/inbox.test.ts's groupByDay fixtures (Aug 24 10:00Z / 08:00Z vs
+  // Aug 23 22:00Z) group as 2+1 in UTC and US Eastern, but collapse into a
+  // single group at UTC+3 and eastward — a suite that is green here and
+  // red on another machine, or in CI, for a reason nobody would think to
+  // look for. Pinning the zone (rather than trusting whatever machine runs
+  // `npm test`) is what makes local-calendar-day grouping deterministic.
+  test: { environment: 'node', css: true, env: { TZ: 'UTC' } },
 });

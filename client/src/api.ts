@@ -137,12 +137,47 @@ export interface InboxMessage {
 }
 
 /**
+ * The keyset cursor GET /api/inbox speaks on both sides of the wire
+ * (sync/src/api/routes.ts `parseInboxCursor` / `nextCursorFrom`): as
+ * `?before=&beforeAccount=&beforeUid=` on a request, and as `nextCursor`
+ * on a response. The shape is deliberately identical in both directions —
+ * pass a page's `nextCursor` straight back as the next request's cursor,
+ * never reconstruct one from a row (task-4-brief.md Amendment 1).
+ *
+ * `beforeAccount`/`beforeUid` are `null` in the legacy "bare timestamp"
+ * request shape; a `nextCursor` this client receives never has either
+ * null when `before` is non-null, and can have `before: null` with both
+ * set for the NULL-date tail (rows with no timestamp, which sort last).
+ */
+export interface InboxCursor {
+  readonly before: string | null;
+  readonly beforeAccount: string | null;
+  readonly beforeUid: string | null;
+}
+
+/** One page of the unified inbox: the messages, plus the cursor that
+ *  reaches the next page, or `null` when this was the last page (a short
+ *  page — sync/src/api/routes.ts `nextCursorFrom` never emits a cursor
+ *  past the end). */
+export interface InboxPage {
+  readonly messages: readonly InboxMessage[];
+  readonly nextCursor: InboxCursor | null;
+}
+
+/**
  * Fetches a page of the unified inbox, newest first.
  *
- * `before` is the bare-timestamp cursor sync/src/api/routes.ts still
- * supports for backward tolerance (an ISO date string) — this client does
- * not use the compound account+uid cursor, which trades tie-loss on shared
- * timestamps for a one-argument pagination interface.
+ * `cursor` is the SAME compound keyset cursor described above — pass
+ * `null`/`undefined` for the first page, and a previous page's
+ * `nextCursor` for the next one. This is deliberate, not a convenience:
+ * with four accounts merged into one timeline, two messages landing on
+ * the same second is ordinary (batch sends, newsletters), and a
+ * `before`-only cursor skips or duplicates every row sharing that
+ * boundary timestamp. `beforeAccount`/`beforeUid` also address the
+ * NULL-date tail — rows with no timestamp, which sort last — with no
+ * `before` at all, a cursor a bare-timestamp client could never
+ * construct, which otherwise makes those rows permanently unreachable by
+ * paging.
  *
  * Throws ApiError on any non-2xx response (so callers can distinguish 401
  * from 500) and rejects with the raw fetch error on a network failure —
@@ -151,16 +186,40 @@ export interface InboxMessage {
  */
 export async function getInbox(
   limit: number,
-  before?: string | null,
+  cursor?: InboxCursor | null,
   fetchImpl: typeof fetch = fetch,
-): Promise<readonly InboxMessage[]> {
+): Promise<InboxPage> {
   const path = buildPath('/api/inbox', {
     limit: String(limit),
-    before: before ?? undefined,
+    before: cursor?.before ?? undefined,
+    beforeAccount: cursor?.beforeAccount ?? undefined,
+    beforeUid: cursor?.beforeUid ?? undefined,
   });
   const body = await getJson(path, fetchImpl);
   const messages = isRecord(body) && Array.isArray(body.messages) ? body.messages : [];
-  return keepValid(messages, isInboxMessage, 'inbox message(s)');
+  return {
+    messages: keepValid(messages, isInboxMessage, 'inbox message(s)'),
+    nextCursor: isRecord(body) ? parseNextCursor(body.nextCursor) : null,
+  };
+}
+
+/**
+ * Boundary check on the response half of the cursor, same discipline as
+ * `isInboxMessage` below: a malformed or missing `nextCursor` degrades to
+ * `null` (read as "no next page") rather than handing a caller a value it
+ * would send back uncritically — sending a half-formed cursor to the
+ * server is exactly the tie-loss/skip bug Amendment 1 exists to prevent,
+ * so a cursor this client cannot verify is treated as no cursor at all.
+ */
+function parseNextCursor(value: unknown): InboxCursor | null {
+  if (!isRecord(value)) return null;
+  if (!isNullableString(value.before)) return null;
+  if (typeof value.beforeAccount !== 'string' || typeof value.beforeUid !== 'string') return null;
+  return {
+    before: (value.before as string | null | undefined) ?? null,
+    beforeAccount: value.beforeAccount,
+    beforeUid: value.beforeUid,
+  };
 }
 
 /**
