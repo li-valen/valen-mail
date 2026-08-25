@@ -20,6 +20,9 @@
  * a retry. Nothing in this file holds, stores, or logs a credential.
  */
 
+import { buildInboxParams } from './inboxFilters';
+import type { FolderId } from './inboxFilters';
+
 const REQUEST_INIT: RequestInit = { credentials: 'same-origin' };
 
 export class ApiError extends Error {
@@ -165,10 +168,36 @@ export interface InboxPage {
 }
 
 /**
+ * One request for a page of the unified inbox: how many rows, which
+ * folder, which account, and where to resume.
+ *
+ * **ONE object rather than four positional parameters, on purpose.** The
+ * server derives `nextCursor` purely from the last returned ROW, so it
+ * carries no memory of the folder or account the page was drawn from
+ * (sync/src/api/inbox.ts's `nextCursorFrom` documents this). A paged
+ * request that forwards the cursor but drops the filter therefore pages
+ * into a DIFFERENT result set — `folder` silently reverts to `inbox`, the
+ * server answers 200, and nothing anywhere reports a problem. Bundling
+ * the cursor with the filter it belongs to is what makes that mistake
+ * unavailable at a call site instead of merely discouraged; see
+ * ./inboxFilters.ts's header and tests/inbox-filters.test.ts.
+ */
+export interface InboxRequest {
+  readonly limit: number;
+  /** Defaults to `'inbox'`, which is also the server's default and is
+   *  therefore omitted from the query string entirely. */
+  readonly folder?: FolderId;
+  /** `null`/omitted = all accounts merged. NEVER `''` — see
+   *  ./inboxFilters.ts, that value is a 400. */
+  readonly account?: string | null;
+  readonly cursor?: InboxCursor | null;
+}
+
+/**
  * Fetches a page of the unified inbox, newest first.
  *
- * `cursor` is the SAME compound keyset cursor described above — pass
- * `null`/`undefined` for the first page, and a previous page's
+ * `cursor` is the SAME compound keyset cursor described above — omit it
+ * (or pass `null`) for the first page, and pass a previous page's
  * `nextCursor` for the next one. This is deliberate, not a convenience:
  * with four accounts merged into one timeline, two messages landing on
  * the same second is ordinary (batch sends, newsletters), and a
@@ -185,16 +214,14 @@ export interface InboxPage {
  * failure here is the caller's to handle, not to hide behind a fallback.
  */
 export async function getInbox(
-  limit: number,
-  cursor?: InboxCursor | null,
+  request: InboxRequest,
   fetchImpl: typeof fetch = fetch,
 ): Promise<InboxPage> {
-  const path = buildPath('/api/inbox', {
-    limit: String(limit),
-    before: cursor?.before ?? undefined,
-    beforeAccount: cursor?.beforeAccount ?? undefined,
-    beforeUid: cursor?.beforeUid ?? undefined,
-  });
+  // The query string is built in exactly one place for every inbox
+  // request this client makes — first page and paged alike — so folder
+  // and account cannot be present on one and missing from the other.
+  const query = buildInboxParams(request);
+  const path = query === '' ? '/api/inbox' : `/api/inbox?${query}`;
   const body = await getJson(path, fetchImpl);
   const messages = isRecord(body) && Array.isArray(body.messages) ? body.messages : [];
   return {

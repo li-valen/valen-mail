@@ -5,8 +5,8 @@ import type { InboxCursor } from '../src/api';
 describe('api wrapper', () => {
   it('throws ApiError with the status on a non-200', async () => {
     const f = vi.fn().mockResolvedValue(new Response('nope', { status: 401 }));
-    await expect(getInbox(50, null, f)).rejects.toBeInstanceOf(ApiError);
-    await expect(getInbox(50, null, f)).rejects.toMatchObject({ status: 401 });
+    await expect(getInbox({ limit: 50 }, f)).rejects.toBeInstanceOf(ApiError);
+    await expect(getInbox({ limit: 50 }, f)).rejects.toMatchObject({ status: 401 });
   });
 
   it('never sends a bearer token from the browser', async () => {
@@ -16,7 +16,7 @@ describe('api wrapper', () => {
         headers: { 'content-type': 'application/json' },
       }),
     );
-    await getInbox(50, null, f);
+    await getInbox({ limit: 50 }, f);
     const init = f.mock.calls[0]?.[1] ?? {};
     const headers = new Headers(init.headers ?? {});
     expect(headers.get('authorization')).toBeNull();
@@ -45,7 +45,7 @@ describe('api wrapper', () => {
       beforeAccount: 'primary',
       beforeUid: '33097',
     };
-    await getInbox(25, cursor, f);
+    await getInbox({ limit: 25, cursor }, f);
     const url = String(f.mock.calls[0]?.[0]);
     expect(url).toContain('before=2026-08-24T00%3A00%3A00Z');
     expect(url).toContain('beforeAccount=primary');
@@ -60,7 +60,7 @@ describe('api wrapper', () => {
       }),
     );
     const cursor: InboxCursor = { before: null, beforeAccount: 'work', beforeUid: '9' };
-    await getInbox(25, cursor, f);
+    await getInbox({ limit: 25, cursor }, f);
     const url = String(f.mock.calls[0]?.[0]);
     expect(url).not.toContain('before=');
     expect(url).toContain('beforeAccount=work');
@@ -74,11 +74,63 @@ describe('api wrapper', () => {
         headers: { 'content-type': 'application/json' },
       }),
     );
-    await getInbox(50, null, f);
+    await getInbox({ limit: 50 }, f);
     const url = String(f.mock.calls[0]?.[0]);
     expect(url).not.toContain('before=');
     expect(url).not.toContain('beforeAccount=');
     expect(url).not.toContain('beforeUid=');
+  });
+
+  /**
+   * Plan 5 Task 3, TRAP 1 at the transport layer. `buildInboxParams` is
+   * unit-tested on its own in tests/inbox-filters.test.ts; these two prove
+   * `getInbox` actually routes through it, so a paged request under a
+   * filter reaches the wire with the filter still attached. Without this,
+   * page 2 of Sent is page 2 of Inbox with a 200 and no error anywhere.
+   */
+  it('sends folder and account on a first-page request', async () => {
+    const f = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ messages: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    await getInbox({ limit: 50, folder: 'sent', account: 'harvard' }, f);
+    const url = String(f.mock.calls[0]?.[0]);
+    expect(url).toContain('folder=sent');
+    expect(url).toContain('account=harvard');
+  });
+
+  it('keeps folder and account attached to a PAGED request, beside the cursor', async () => {
+    const f = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ messages: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const cursor: InboxCursor = {
+      before: '2026-08-24T00:00:00Z',
+      beforeAccount: 'harvard',
+      beforeUid: '33097',
+    };
+    await getInbox({ limit: 50, folder: 'sent', account: 'harvard', cursor }, f);
+    const url = String(f.mock.calls[0]?.[0]);
+    expect(url).toContain('folder=sent');
+    expect(url).toContain('account=harvard');
+    expect(url).toContain('beforeUid=33097');
+  });
+
+  // TRAP 2: the default view must send NO account param at all — `?account=`
+  // is a 400 from sync/src/api/inbox.ts's parseAccountParam.
+  it('sends no account param at all for the default all-accounts view', async () => {
+    const f = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ messages: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    await getInbox({ limit: 50, account: null }, f);
+    expect(String(f.mock.calls[0]?.[0])).not.toContain('account');
   });
 
   it('resolves the page — messages plus nextCursor — on success', async () => {
@@ -89,7 +141,7 @@ describe('api wrapper', () => {
         headers: { 'content-type': 'application/json' },
       }),
     );
-    await expect(getInbox(50, null, f)).resolves.toEqual({ messages: [message], nextCursor: null });
+    await expect(getInbox({ limit: 50 }, f)).resolves.toEqual({ messages: [message], nextCursor: null });
   });
 
   it('carries a well-formed nextCursor through verbatim', async () => {
@@ -100,7 +152,7 @@ describe('api wrapper', () => {
         headers: { 'content-type': 'application/json' },
       }),
     );
-    await expect(getInbox(50, null, f)).resolves.toEqual({ messages: [], nextCursor });
+    await expect(getInbox({ limit: 50 }, f)).resolves.toEqual({ messages: [], nextCursor });
   });
 
   it('carries the NULL-date-tail nextCursor shape (before: null, both ids set) through verbatim', async () => {
@@ -111,7 +163,7 @@ describe('api wrapper', () => {
         headers: { 'content-type': 'application/json' },
       }),
     );
-    await expect(getInbox(50, null, f)).resolves.toEqual({ messages: [], nextCursor });
+    await expect(getInbox({ limit: 50 }, f)).resolves.toEqual({ messages: [], nextCursor });
   });
 
   it('degrades a malformed nextCursor to null rather than forwarding a value it cannot trust', async () => {
@@ -121,7 +173,7 @@ describe('api wrapper', () => {
         headers: { 'content-type': 'application/json' },
       }),
     );
-    await expect(getInbox(50, null, f)).resolves.toEqual({ messages: [], nextCursor: null });
+    await expect(getInbox({ limit: 50 }, f)).resolves.toEqual({ messages: [], nextCursor: null });
   });
 
   /**
@@ -209,7 +261,7 @@ describe('api response validation', () => {
     const f = vi.fn().mockResolvedValue(
       jsonResponse({ messages: [VALID_MESSAGE, { subject: 'no identity at all' }, null, 7] }),
     );
-    await expect(getInbox(50, null, f)).resolves.toEqual({ messages: [VALID_MESSAGE], nextCursor: null });
+    await expect(getInbox({ limit: 50 }, f)).resolves.toEqual({ messages: [VALID_MESSAGE], nextCursor: null });
   });
 
   it('drops an inbox row whose date is the wrong type rather than rendering Invalid Date', async () => {
@@ -217,19 +269,19 @@ describe('api response validation', () => {
     const f = vi.fn().mockResolvedValue(
       jsonResponse({ messages: [{ ...VALID_MESSAGE, date: 1_700_000_000_000 }] }),
     );
-    await expect(getInbox(50, null, f)).resolves.toEqual({ messages: [], nextCursor: null });
+    await expect(getInbox({ limit: 50 }, f)).resolves.toEqual({ messages: [], nextCursor: null });
   });
 
   it('keeps an inbox row with a null date, which is a legitimate value', async () => {
     const row = { ...VALID_MESSAGE, date: null };
     const f = vi.fn().mockResolvedValue(jsonResponse({ messages: [row] }));
-    await expect(getInbox(50, null, f)).resolves.toEqual({ messages: [row], nextCursor: null });
+    await expect(getInbox({ limit: 50 }, f)).resolves.toEqual({ messages: [row], nextCursor: null });
   });
 
   it('logs once per response, not once per dropped row', async () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     const f = vi.fn().mockResolvedValue(jsonResponse({ messages: [{}, {}, {}, VALID_MESSAGE] }));
-    await getInbox(50, null, f);
+    await getInbox({ limit: 50 }, f);
     expect(errors).toHaveBeenCalledTimes(1);
     expect(String(errors.mock.calls[0]?.[0])).toContain('3');
   });
@@ -237,7 +289,7 @@ describe('api response validation', () => {
   it('does not log when every row is well formed', async () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     const f = vi.fn().mockResolvedValue(jsonResponse({ messages: [VALID_MESSAGE] }));
-    await getInbox(50, null, f);
+    await getInbox({ limit: 50 }, f);
     expect(errors).not.toHaveBeenCalled();
   });
 

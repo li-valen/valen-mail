@@ -1,7 +1,12 @@
 import { useState } from 'react';
 import type { ReactNode, Ref } from 'react';
-import { Activity, Inbox, Mailbox, Menu, X } from 'lucide-react';
+import { Activity, Mailbox, Menu, X } from 'lucide-react';
 
+import AccountList from './components/AccountList';
+import type { AccountSummary } from './accountRoster';
+import { FOLDER_ICONS } from './folderIcons';
+import { FOLDER_IDS, FOLDER_LABELS, headingFor } from './inboxFilters';
+import type { FolderId } from './inboxFilters';
 import { cn } from './ui/cn';
 
 /**
@@ -19,52 +24,58 @@ import { cn } from './ui/cn';
  * Postbox-specific deviations, each deliberate:
  *
  *  - **Buttons, not `<Link>`s.** Plunk navigates with Next.js routing.
- *    Postbox has two views and no router dependency, so nav items are
- *    `<button>`s carrying `aria-current="page"` for the active one.
+ *    Postbox has no router dependency, so nav items are `<button>`s
+ *    carrying `aria-current="page"` for the active one.
  *  - **No project switcher, no `⌘K`, no user dropdown.** Postbox is a
  *    single-user, single-project client; none of those three has anything
- *    to switch between. The block under the brand header is instead the
- *    ACCOUNT LIST — the accounts actually present in the loaded inbox.
+ *    to switch between.
  *  - **`h-dvh`, not `h-screen`.** `100vh` is wrong on mobile Safari while
  *    the address bar is showing, which is the one browser this app is
  *    installed as a PWA on.
- *  - **The `<h1>` is visually hidden and names the VIEW.** Plunk's brand
- *    wordmark is its `<h1>`. Here the wordmark is a plain `<span>` so the
- *    document outline has exactly one root heading and it says what the
- *    reader is actually looking at ("Inbox" / "Opens"), above the `<h2>`
- *    day rules the inbox renders.
+ *  - **The `<h1>` is visually hidden and names the SELECTION.** Plunk's
+ *    brand wordmark is its `<h1>`. Here the wordmark is a plain `<span>`
+ *    so the document outline has exactly one root heading and it says
+ *    what the reader is actually looking at ("Sent — harvard", "Opens"),
+ *    above the `<h2>` day rules the list renders.
  *
- * Accounts are LABELS, never filters — same ruling as the per-row account
- * chip in components/MessageRow.tsx. There is no click handler on them
- * because there is nothing for one to do; the inbox merges all accounts
- * by design.
+ * PLAN 5 TASK 3 — the sidebar became the control surface it was pretending
+ * to be. Two things changed, and both used to be documented here as
+ * deliberate non-features:
+ *
+ *  - **One nav list, five folders, not a duplicate "Inbox".** The old
+ *    shell had a two-item view nav (Inbox / Opens) and no folders. Adding
+ *    a folder list beside it would have shipped TWO buttons labelled
+ *    "Inbox" doing subtly different things, so the folder list replaced
+ *    the view nav: picking any folder means `view: 'inbox'` plus that
+ *    folder. Opens keeps its own item, under its own section title,
+ *    because it is a genuinely different destination rather than a
+ *    fifth mailbox.
+ *  - **Accounts are filters now.** This file used to state "Accounts are
+ *    LABELS, never filters… the inbox merges all accounts by design",
+ *    which was true only until GET /api/inbox learned `?account=`. See
+ *    components/AccountList.tsx.
+ *
+ * Folder and account are ORTHOGONAL selections held by App.tsx; this
+ * component renders them and reports clicks, and owns no selection state
+ * of its own beyond whether the mobile drawer is open.
  */
 
 export type ViewId = 'inbox' | 'opens';
 
-export interface AccountSummary {
-  readonly id: string;
-  readonly count: number;
-}
-
-interface NavItem {
-  readonly id: ViewId;
-  readonly name: string;
-  readonly icon: typeof Inbox;
-}
-
-const NAV_ITEMS: readonly NavItem[] = [
-  { id: 'inbox', name: 'Inbox', icon: Inbox },
-  { id: 'opens', name: 'Opens', icon: Activity },
-];
+/** Re-exported so the existing
+ *  `import type { AccountSummary } from './AppShell'` call sites keep
+ *  working; ./accountRoster.ts is where it is declared and where the rule
+ *  governing `count` is written down. */
+export type { AccountSummary };
 
 const VIEW_TITLES: Readonly<Record<ViewId, string>> = {
   inbox: 'Inbox',
   opens: 'Opens',
 };
 
-/** Plunk's own nav-item classes, lifted to a helper so the desktop and
- *  mobile copies of the sidebar cannot drift apart.
+/** Plunk's own nav-item classes, lifted to a helper so the folder list,
+ *  the Opens item, and the desktop and mobile copies of the whole sidebar
+ *  cannot drift apart.
  *
  *  Active and hover share `accent`/`accent-foreground` in dark mode
  *  deliberately (light keeps them as two different literals, neutral-100
@@ -78,6 +89,9 @@ function navItemClass(isActive: boolean): string {
       : 'text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900 dark:text-muted-foreground dark:hover:bg-accent dark:hover:text-accent-foreground',
   );
 }
+
+const SECTION_TITLE_CLASS =
+  'px-3 mb-2 text-xs font-semibold text-neutral-500 uppercase tracking-wider dark:text-muted-foreground';
 
 function Wordmark({ size }: { readonly size: 'sm' | 'md' }) {
   return (
@@ -99,45 +113,51 @@ function Wordmark({ size }: { readonly size: 'sm' | 'md' }) {
   );
 }
 
-interface AccountListProps {
-  readonly accounts: readonly AccountSummary[];
+interface FolderNavProps {
+  readonly folder: FolderId;
+  /** False while the Opens view is showing: no folder is the current page
+   *  then, and marking one anyway would make `aria-current` a lie. */
+  readonly isActive: boolean;
+  readonly onSelect: (folder: FolderId) => void;
 }
 
-function AccountList({ accounts }: AccountListProps) {
-  if (accounts.length === 0) return null;
+/** A real list of real buttons — `<ul>` of `<li><button>` — so assistive
+ *  tech announces "5 items" and the arrow-key/Tab behaviour is the
+ *  platform's, not a re-implementation of it. */
+function FolderNav({ folder, isActive, onSelect }: FolderNavProps) {
   return (
-    <div className="mt-6">
-      <p className="px-3 mb-2 text-xs font-semibold text-neutral-500 uppercase tracking-wider dark:text-muted-foreground">
-        Accounts
-      </p>
-      <ul className="space-y-1">
-        {accounts.map((account) => (
-          <li key={account.id} className="flex items-center gap-3 px-3 py-1.5 text-sm">
-            <span
-              className="h-6 w-6 rounded-md bg-neutral-100 text-neutral-700 dark:bg-secondary dark:text-secondary-foreground flex items-center justify-center text-[10px] font-semibold shrink-0"
-              aria-hidden="true"
+    <ul className="space-y-1">
+      {FOLDER_IDS.map((id) => {
+        const isCurrent = isActive && id === folder;
+        const Icon = FOLDER_ICONS[id];
+        return (
+          <li key={id}>
+            <button
+              type="button"
+              onClick={() => onSelect(id)}
+              aria-current={isCurrent ? 'page' : undefined}
+              className={navItemClass(isCurrent)}
             >
-              {account.id.charAt(0).toUpperCase()}
-            </span>
-            {/* Text child, never markup: an account id comes from the sync
-                service's config, and every string this app renders goes
-                through JSX escaping. */}
-            <span className="flex-1 min-w-0 truncate text-neutral-700 dark:text-muted-foreground">
-              {account.id}
-            </span>
-            <span className="text-xs text-neutral-400 tabular-nums font-mono dark:text-muted-foreground">
-              {account.count}
-            </span>
+              <Icon className="h-5 w-5 shrink-0" aria-hidden="true" />
+              {FOLDER_LABELS[id]}
+            </button>
           </li>
-        ))}
-      </ul>
-    </div>
+        );
+      })}
+    </ul>
   );
 }
 
 export interface AppShellProps {
   readonly view: ViewId;
   readonly onViewChange: (view: ViewId) => void;
+  /** The selected folder. Rendered here, owned by App.tsx — the list and
+   *  the sidebar are two views of one selection. */
+  readonly folder: FolderId;
+  readonly onFolderChange: (folder: FolderId) => void;
+  /** `null` = all accounts merged. */
+  readonly account: string | null;
+  readonly onAccountChange: (account: string | null) => void;
   readonly accounts: readonly AccountSummary[];
   /** Rendered in the sidebar's bottom block, where Plunk puts Settings and
    *  the account menu. Postbox puts the theme control and the
@@ -164,6 +184,10 @@ export interface AppShellProps {
 export default function AppShell({
   view,
   onViewChange,
+  folder,
+  onFolderChange,
+  account,
+  onAccountChange,
   accounts,
   sidebarFooter,
   isBusy = false,
@@ -172,10 +196,26 @@ export default function AppShell({
 }: AppShellProps) {
   const [isMobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  function select(next: ViewId): void {
+  // Every sidebar control closes the drawer after acting: below `lg:` the
+  // sidebar covers the content it just changed, so leaving it open would
+  // hide the result of the click that opened it.
+  function selectView(next: ViewId): void {
     onViewChange(next);
     setMobileMenuOpen(false);
   }
+
+  function selectFolder(next: FolderId): void {
+    onFolderChange(next);
+    setMobileMenuOpen(false);
+  }
+
+  function selectAccount(next: string | null): void {
+    onAccountChange(next);
+    setMobileMenuOpen(false);
+  }
+
+  const isInbox = view === 'inbox';
+  const heading = isInbox ? headingFor(folder, account) : VIEW_TITLES[view];
 
   const sidebarContent = (
     <>
@@ -191,27 +231,32 @@ export default function AppShell({
         </button>
       </div>
 
-      <nav className="flex-1 px-3 py-4 overflow-y-auto" aria-label="Views">
-        <div className="space-y-1">
-          {NAV_ITEMS.map((item) => {
-            const isActive = item.id === view;
-            const Icon = item.icon;
-            return (
+      {/* ONE navigation landmark for the whole sidebar. Folders, the Opens
+          destination and the account switcher are three groups inside it
+          rather than three landmarks, which keeps landmark navigation
+          short — the groups are already announced by their own headings
+          and list semantics. */}
+      <nav className="flex-1 px-3 py-4 overflow-y-auto" aria-label="Mailboxes">
+        <FolderNav folder={folder} isActive={isInbox} onSelect={selectFolder} />
+
+        <div className="mt-6">
+          <p className={SECTION_TITLE_CLASS}>Activity</p>
+          <ul className="space-y-1">
+            <li>
               <button
-                key={item.id}
                 type="button"
-                onClick={() => select(item.id)}
-                aria-current={isActive ? 'page' : undefined}
-                className={navItemClass(isActive)}
+                onClick={() => selectView('opens')}
+                aria-current={view === 'opens' ? 'page' : undefined}
+                className={navItemClass(view === 'opens')}
               >
-                <Icon className="h-5 w-5" aria-hidden="true" />
-                {item.name}
+                <Activity className="h-5 w-5 shrink-0" aria-hidden="true" />
+                {VIEW_TITLES.opens}
               </button>
-            );
-          })}
+            </li>
+          </ul>
         </div>
 
-        <AccountList accounts={accounts} />
+        <AccountList accounts={accounts} selected={account} onSelect={selectAccount} />
       </nav>
 
       {sidebarFooter !== undefined && (
@@ -257,19 +302,31 @@ export default function AppShell({
             <Menu className="h-6 w-6 text-neutral-900 dark:text-foreground" aria-hidden="true" />
             <span className="sr-only">Open menu</span>
           </button>
-          <div className="ml-4">
+          {/* Below `lg:` the sidebar is a CLOSED DRAWER, so the active
+              folder and account are invisible — the one place a filtered
+              view could look identical to an unfiltered empty one. This
+              is the visible answer to "which folder am I in?" at phone
+              width. `aria-hidden` because the `<h1>` below already
+              announces the very same string. */}
+          <div className="ml-4 flex min-w-0 items-center gap-2" aria-hidden="true">
             <Wordmark size="sm" />
+            <span className="text-neutral-300 dark:text-muted-foreground shrink-0">/</span>
+            <span className="truncate text-sm font-semibold text-neutral-900 dark:text-foreground">
+              {heading}
+            </span>
           </div>
         </div>
 
         <main ref={contentRef} className="flex-1 overflow-y-auto" aria-busy={isBusy}>
           <div className="max-w-5xl mx-auto px-4 py-4 sm:px-6 sm:py-6 lg:px-8 lg:py-8">
-            {/* Visually hidden, not absent: the inbox's day rules are
+            {/* Visually hidden, not absent: the list's day rules are
                 `<h2>`s and the opens feed's section heading is an `<h2>`,
                 so without this a screen reader's outline would start at
                 level 2. Plunk's shell has no visible page title in the
-                content column either. */}
-            <h1 className="sr-only">{VIEW_TITLES[view]}</h1>
+                content column either. It names the SELECTION, not just
+                the view, so changing folder or account changes what this
+                announces. */}
+            <h1 className="sr-only">{heading}</h1>
             {children}
           </div>
         </main>

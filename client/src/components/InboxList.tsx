@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Inbox as InboxIcon } from 'lucide-react';
 import { ApiError, getInbox } from '../api';
 import type { InboxCursor, InboxMessage } from '../api';
-import type { AccountSummary } from '../AppShell';
+import type { AccountSummary } from '../accountRoster';
+import { emptyStateFor } from '../emptyState';
+import { FOLDER_ICONS } from '../folderIcons';
+import type { FolderId, InboxFilter } from '../inboxFilters';
 import { Alert, AlertDescription } from '../ui/Alert';
 import { Button } from '../ui/Button';
 import { Card } from '../ui/Card';
@@ -19,15 +21,10 @@ export { formatWhen, groupByDay } from './inboxDates';
 export type { DayGroup } from './inboxDates';
 
 /** Matches the empty-state copy's own claim ("the newest 50 messages per
- *  account") — the same number used for every page, not just the first. */
+ *  account for this folder", ../emptyState.ts) — the same number used for
+ *  every page, not just the first. */
 const PAGE_SIZE = 50;
 const SKELETON_ROW_COUNT = 6;
-
-/** Real copy, not a generic "no results" line. It is honest about a real
- *  limitation: today the sync service only ever backfills the newest 50
- *  messages per account, so a truly new mailbox looking "empty" here is
- *  expected, not a bug. */
-const EMPTY_COPY = 'Nothing yet — the server syncs the newest 50 messages per account';
 
 type LoadState =
   | { readonly status: 'loading' }
@@ -64,6 +61,12 @@ function summarizeAccounts(messages: readonly InboxMessage[]): readonly AccountS
 }
 
 export interface InboxListProps {
+  /** Which mail to show. Owned by App.tsx, because the shell's sidebar
+   *  and this list are two views of the SAME selection and neither can
+   *  own state the other renders from. Destructured to primitives below
+   *  so the fetch effect depends on the two VALUES rather than on this
+   *  object's identity. */
+  readonly filter: InboxFilter;
   /** Reports the accounts present in the loaded pages up to the shell.
    *  Must be referentially stable (the caller wraps it in `useCallback`),
    *  because it is an effect dependency. */
@@ -76,11 +79,18 @@ export interface InboxListProps {
 }
 
 /**
- * The home view: the chronological, four-account-merged inbox. Fetches its
- * own first page on mount, groups it by local calendar day (newest first),
- * and loads more pages by passing the previous page's `nextCursor` straight
- * back to `getInbox` — never a `before` string reconstructed from the last
- * row, which is lossy across a shared timestamp.
+ * The home view: the chronological, account-merged mail list. Fetches its
+ * own first page on mount AND whenever the selection changes, groups it by
+ * local calendar day (newest first), and loads more pages by passing the
+ * previous page's `nextCursor` straight back to `getInbox` — never a
+ * `before` string reconstructed from the last row, which is lossy across a
+ * shared timestamp.
+ *
+ * As of Plan 5 Task 3 it renders whichever `filter` App.tsx hands down —
+ * one of five folders, merged across accounts or narrowed to one. The
+ * folder and the account are ORTHOGONAL: `{folder:'sent',
+ * account:'harvard'}` is an ordinary combination, and changing either one
+ * refetches from page 1 without disturbing the other.
  *
  * States: a shaped Skeleton list while the first page is in flight (never a
  * spinner), Plunk's `EmptyState` molecule when the service answered with
@@ -93,28 +103,58 @@ export interface InboxListProps {
  * `rounded-lg border … divide-y divide-neutral-100` row list of
  * `apps/web/src/pages/contacts/index.tsx`, wrapped in the `Card` atom.
  */
-export default function InboxList({ onAccountsChange, onOpenMessage }: InboxListProps) {
+export default function InboxList({ filter, onAccountsChange, onOpenMessage }: InboxListProps) {
+  const { folder, account } = filter;
   const [messages, setMessages] = useState<readonly InboxMessage[]>([]);
   const [cursor, setCursor] = useState<InboxCursor | null>(null);
   const [load, setLoad] = useState<LoadState>({ status: 'loading' });
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  /**
+   * Folders that have produced at least one message in this session — the
+   * client's only available answer to TRAP 3 (see ../emptyState.ts).
+   *
+   * GET /api/inbox returns `200 []` for a Sent/Spam/Trash whose IMAP
+   * special-use folder the sync loop has not discovered yet, which is
+   * byte-identical to a genuinely empty one. Having SEEN a row here is
+   * proof the folder synced; having seen none proves nothing either way,
+   * and the copy is written to be honest about exactly that much.
+   *
+   * Keyed by folder, not by folder+account: one account's Trash yielding
+   * rows is proof the sync loop reaches Trash, which is the claim the
+   * copy actually makes.
+   */
+  const [syncedFolders, setSyncedFolders] = useState<readonly FolderId[]>([]);
   // Resolved once per mount/retry, not per render: every row in one list
   // agrees on what "today" means, and a page that stays open for hours
   // does not silently relabel a message from "Today" to "Yesterday" out
   // from under the reader mid-scroll.
   const [now] = useState(() => new Date());
 
+  // Refetches whenever the selection changes, and only then: `folder` and
+  // `account` are primitives, so a re-render that hands down an
+  // equivalent-but-new `filter` object does not refetch.
+  //
+  // Deliberately does NOT clear `messages` up front. The skeleton below
+  // already hides the list while `status === 'loading'`, so stale rows are
+  // never visible — but they keep feeding the sidebar's account counts,
+  // which would otherwise blink to zero on every folder switch.
   useEffect(() => {
     let cancelled = false;
     setLoad({ status: 'loading' });
+    setLoadMoreError(null);
 
-    getInbox(PAGE_SIZE, null).then(
+    getInbox({ limit: PAGE_SIZE, folder, account }).then(
       (page) => {
         if (cancelled) return;
         setMessages(page.messages);
         setCursor(page.nextCursor);
+        if (page.messages.length > 0) {
+          setSyncedFolders((previous) =>
+            previous.includes(folder) ? previous : [...previous, folder],
+          );
+        }
         setLoad({ status: 'ready' });
       },
       (error: unknown) => {
@@ -127,7 +167,7 @@ export default function InboxList({ onAccountsChange, onOpenMessage }: InboxList
     return () => {
       cancelled = true;
     };
-  }, [attempt]);
+  }, [folder, account, attempt]);
 
   const accounts = useMemo(() => summarizeAccounts(messages), [messages]);
 
@@ -140,7 +180,14 @@ export default function InboxList({ onAccountsChange, onOpenMessage }: InboxList
     setIsLoadingMore(true);
     setLoadMoreError(null);
 
-    getInbox(PAGE_SIZE, cursor).then(
+    // TRAP 1. `cursor` came from a response and carries NO memory of the
+    // folder or account that produced it — the server rebuilds it from the
+    // last row alone (sync/src/api/inbox.ts's `nextCursorFrom`). Sending it
+    // without `folder`/`account` pages into the default unfiltered inbox
+    // with a perfectly ordinary 200, so page 2 of Sent would be page 2 of
+    // Inbox and nothing would report it. They travel together here, and
+    // `InboxRequest` is shaped so they cannot travel apart.
+    getInbox({ limit: PAGE_SIZE, folder, account, cursor }).then(
       (page) => {
         // Functional update: a load-more that lands after a fast second
         // click (guarded above, but also after any future retry path)
@@ -155,7 +202,7 @@ export default function InboxList({ onAccountsChange, onOpenMessage }: InboxList
         setIsLoadingMore(false);
       },
     );
-  }, [cursor, isLoadingMore]);
+  }, [cursor, isLoadingMore, folder, account]);
 
   const retry = useCallback(() => setAttempt((previous) => previous + 1), []);
 
@@ -192,9 +239,14 @@ export default function InboxList({ onAccountsChange, onOpenMessage }: InboxList
   }
 
   if (messages.length === 0) {
+    // Copy per folder AND per account, and honest in both directions —
+    // never "Trash is empty" for a Trash that has never synced, never a
+    // permanent "still syncing…" for one that has. ../emptyState.ts owns
+    // every string and the reasoning behind it.
+    const copy = emptyStateFor(folder, account, { everSynced: syncedFolders.includes(folder) });
     return (
       <Card>
-        <EmptyState icon={InboxIcon} title="Inbox is empty" description={EMPTY_COPY} />
+        <EmptyState icon={FOLDER_ICONS[folder]} title={copy.title} description={copy.description} />
       </Card>
     );
   }
