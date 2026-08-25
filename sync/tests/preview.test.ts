@@ -313,3 +313,170 @@ describe('previewTextFrom — transfer encodings', () => {
     expect(result.startsWith('Rendez-vous')).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Pre-header boilerplate
+// ---------------------------------------------------------------------------
+
+describe('previewTextFrom — pre-header boilerplate', () => {
+  // Every fixture below asserts on collapsed() output. That is deliberate,
+  // not laziness: what these tests are about is which WORDS survive, and
+  // collapsed() is exactly the transform normalize.ts's makeSnippet()
+  // applies before anything reaches a screen — asserting on it is asserting
+  // on what a user actually sees, the same way the HTML-fragment tests
+  // above already do.
+
+  describe('the four real inbox failures this task exists to fix', () => {
+    it('drops a trailing run of padding dots, keeping the teaser before it', () => {
+      // Observed: "Wilman just messaged you — You have 6 new messages
+      // ...................." The dot run is an ESP padding its OWN hidden
+      // preheader past Gmail's inbox preview window; "Wilman just messaged
+      // you — You have 6 new messages" is the real notification text and
+      // is not chrome, so it is kept.
+      const text = 'Wilman just messaged you — You have 6 new messages ' + '.'.repeat(20);
+      expect(collapsed(preview(text))).toBe('Wilman just messaged you — You have 6 new messages');
+    });
+
+    it('drops a trailing "view this email in your browser" fallback link', () => {
+      // Observed: "We're almost at the finish line! 🏁 — View this email
+      // in your browser..."
+      const text = "We're almost at the finish line! \u{1F3C1} — View this email in your browser";
+      expect(collapsed(preview(text))).toBe("We're almost at the finish line! \u{1F3C1}");
+    });
+
+    it('drops a trailing tracking URL, keeping the teaser before it', () => {
+      // Observed: "Catch up with the Conrad Challenge! ⏪ —
+      // https://conrad.spacecenter.org/?..." — the mirror image of "a
+      // leading URL followed by text": here text leads and the bare URL
+      // trails, and it is exactly as much a link artifact as the other
+      // order is.
+      const text =
+        'Catch up with the Conrad Challenge! ⏪ — ' +
+        'https://conrad.spacecenter.org/subscribe?id=abc123';
+      expect(collapsed(preview(text))).toBe('Catch up with the Conrad Challenge! ⏪');
+    });
+
+    it('drops a leading "view in browser" fallback link, keeping the personalized teaser', () => {
+      // Observed: "Valen, have you claimed your free Double Protein? —
+      // View in browser --..." The fallback link is what an ESP template
+      // puts FIRST in the hidden preheader div, ahead of the marketer's
+      // own custom teaser text; the personalized question is the real
+      // content and survives.
+      const text = 'View in browser — Valen, have you claimed your free Double Protein?';
+      expect(collapsed(preview(text))).toBe('Valen, have you claimed your free Double Protein?');
+    });
+  });
+
+  describe('edge-anchoring: what must NOT be touched', () => {
+    it('keeps "view in browser" sitting in the middle of a real sentence', () => {
+      // The task's own bar: real words on BOTH sides of the phrase, so no
+      // edge-anchored rule — leading or trailing — ever reaches in this
+      // far to find it.
+      const text =
+        "Let's hop on a call sometime — you can view in browser if that's " +
+        'easier, just let me know what works for you.';
+      expect(collapsed(preview(text))).toBe(text);
+    });
+
+    it('keeps a URL that IS the entire message', () => {
+      const text = 'https://example.com/shared-doc/q3-plan';
+      expect(preview(text)).toBe(text);
+    });
+
+    it('drops a leading URL, keeping the real text that follows it', () => {
+      const text = 'https://tracking.example.com/open?id=99 Hey, just following up on Tuesday.';
+      expect(collapsed(preview(text))).toBe('Hey, just following up on Tuesday.');
+    });
+
+    it('prefers the unstripped text over an empty preview when a strip would eat everything', () => {
+      // The entire fetched fragment really is just the fallback link, with
+      // nothing else in the first 512 bytes. A preview showing that beats
+      // a blank row — the same "awkward but real beats nothing" call
+      // makeSnippet already makes for whitespace, applied here to text.
+      expect(preview('View in browser')).toBe('View in browser');
+    });
+  });
+
+  describe('separator runs', () => {
+    it('collapses a long dot-run used as a visual rule, without gluing the words on either side', () => {
+      const text = `Loading${'.'.repeat(12)}please wait`;
+      expect(collapsed(preview(text))).toBe('Loading please wait');
+    });
+
+    it('keeps a real ellipsis — exactly three dots — inside a sentence', () => {
+      const text = 'Well... I suppose we could try that approach.';
+      expect(collapsed(preview(text))).toBe(text);
+    });
+
+    it('still treats a bare "--" as the signature delimiter, unaffected by the new pass', () => {
+      // "--" is 2 characters, one under the 4+ threshold the new
+      // separator-run rule uses, so the two rules can never collide — this
+      // pins that down with a fixture where BOTH could plausibly fire.
+      // What follows the delimiter ("Unsubscribe here", prime material for
+      // the new leading-boilerplate rule) is never even reached: quote and
+      // signature stripping runs first and already dropped it, which is
+      // also why boilerplate-stripping is placed after that step rather
+      // than before it.
+      expect(preview('Sale ends soon.\n--\nUnsubscribe here')).toBe('Sale ends soon.');
+    });
+  });
+
+  describe('invisible padding characters', () => {
+    it('strips a run of zero-width padding characters, in context', () => {
+      const padding = '​‌‍⁠'.repeat(6); // 24 zero-width characters
+      const text = `Your order shipped${padding}`;
+      expect(collapsed(preview(text))).toBe('Your order shipped');
+    });
+
+    it('collapses to empty when the entire fragment is invisible padding', () => {
+      // Alternating characters from the noise class, not one repeated —
+      // the run-length rule counts any 4+ consecutive characters DRAWN
+      // FROM the class, matching the alternating nbsp/zero-width trick
+      // some ESPs use specifically to dodge a same-character filter.
+      const padding = ' ​ ​'.repeat(8);
+      expect(preview(padding)).toBe('');
+    });
+  });
+
+  describe('near-variant pre-header phrases', () => {
+    it('drops a trailing "having trouble viewing this email?" disclaimer', () => {
+      // Also pins down that the kept sentence's OWN final period survives
+      // the strip — see EDGE_GLUE_CHARS's doc comment for why "." is
+      // deliberately not in the glue class.
+      const text = 'Your invoice is attached. Having trouble viewing this email?';
+      expect(collapsed(preview(text))).toBe('Your invoice is attached.');
+    });
+
+    it('drops a leading "Unsubscribe" / "Manage preferences" block', () => {
+      const text = 'Unsubscribe — Manage preferences — Hey team, quick update on the roadmap.';
+      expect(collapsed(preview(text))).toBe('Hey team, quick update on the roadmap.');
+    });
+  });
+
+  describe('ReDoS: adversarial 512-byte inputs stay fast', () => {
+    // Guards the measurement in the task report against a future regression
+    // — not a tight bound (CI machines are noisy), just far enough above
+    // observed worst case (~0.3ms) to fail only on a genuine blowup, and a
+    // small enough N (512, the real PEEK fetch size) that a quadratic
+    // regression would already show up here rather than needing a larger
+    // adversarial input to surface.
+    const ADVERSARIAL_INPUTS: readonly string[] = [
+      '|'.repeat(512),
+      '-'.repeat(512),
+      '.'.repeat(512),
+      'view '.repeat(102),
+      'viewx'.repeat(102),
+      'unsubscribe'.repeat(46),
+      ' '.repeat(500) + 'view in browser',
+      'view in browser' + ' '.repeat(500),
+      'https://' + 'a'.repeat(500),
+      'Unsubscribe | Manage preferences | View in browser | '.repeat(10) + 'Real content.',
+    ];
+
+    it.each(ADVERSARIAL_INPUTS)('resolves input %#  in well under 20ms', (text) => {
+      const start = performance.now();
+      preview(text);
+      expect(performance.now() - start).toBeLessThan(20);
+    });
+  });
+});

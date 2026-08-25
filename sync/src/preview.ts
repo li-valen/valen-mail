@@ -344,20 +344,305 @@ function stripQuotedAndSignature(text: string): string {
   return kept.join('\n');
 }
 
+// ---------------------------------------------------------------------------
+// Pre-header boilerplate
+// ---------------------------------------------------------------------------
+//
+// Marketing mail routinely leads with chrome rather than content: a "View
+// this email in your browser" fallback link, a "trouble viewing this
+// email?" disclaimer, an unsubscribe/preferences block, a decorative run
+// of dots or dashes drawn as a visual rule, or invisible padding
+// characters some ESPs insert specifically to push their OWN hidden
+// preheader text out past Gmail's ~100-character inbox preview window.
+// None of that is what stripQuotedAndSignature above is for — there are
+// no ">" lines and no "-- " delimiter — so it survives untouched into what
+// was, before this section existed, the stored snippet.
+//
+// Every rule below is EDGE-anchored: it only ever removes a match that
+// starts at the leading edge of the (remaining) text or ends at its
+// trailing edge, never a match found by searching the middle. That is
+// what lets "you can view in browser if that's easier" survive — "view in
+// browser" sits in the middle of that sentence, with real words on both
+// sides, so no edge-anchored rule ever reaches in that far to find it.
+
+/**
+ * Whitespace and the pipe/bullet/dash marks a template uses to visually
+ * separate a pre-header phrase or a tracking link from real content, or
+ * from the string's edge — e.g. the " — " between a marketer's custom
+ * teaser and an auto-appended "View in browser" link, or the " | "
+ * between short links in a footer.
+ *
+ * `\n` is deliberately whitespace here too: this runs on
+ * stripQuotedAndSignature's output, which still has real line breaks in
+ * it (collapsing them is normalize.ts's makeSnippet(), one step later), so
+ * a phrase and a tracking link that a template put on separate lines of
+ * the same hidden preheader div still read as adjacent.
+ *
+ * Deliberately NOT ".,!?:;" or quote marks, even though those often sit
+ * right next to a stripped phrase too: sentence-terminal punctuation reads
+ * as ending whatever comes BEFORE it, so letting stripTrailingBoilerplate
+ * eat backwards through it would turn "Your invoice is attached. Having
+ * trouble viewing this email?" into "Your invoice is attached" — correct
+ * content, but with a real, complete, kept sentence's own final period
+ * gone. Each phrase pattern that can legitimately be followed by "?" (see
+ * LEADING_PHRASE_PATTERNS / TRAILING_PHRASE_PATTERNS) already spells that
+ * out itself with a trailing `\??`, which only ever consumes a "?" that is
+ * actually part of THAT match — a more precise tool than a generic glue
+ * class for the one case that needed it.
+ *
+ * Consulted only to find where an ALREADY-matched phrase or URL begins or
+ * ends (see stripLeadingBoilerplate / stripTrailingBoilerplate) — never to
+ * strip glue on its own when nothing on the other side of it matched.
+ * That distinction is what keeps a message that happens to start with an
+ * em dash untouched when no boilerplate follows it.
+ */
+const EDGE_GLUE_CHARS = new Set(' \t\n\r\f\v|•·–—-');
+
+function isGlueChar(ch: string): boolean {
+  return EDGE_GLUE_CHARS.has(ch);
+}
+
+/** First index at or after `from` that is not a glue character. */
+function skipGlueForward(text: string, from: number): number {
+  let i = from;
+  while (i < text.length && isGlueChar(text[i]!)) i += 1;
+  return i;
+}
+
+/** One past the last index before `from` that is not a glue character. */
+function skipGlueBackward(text: string, from: number): number {
+  let i = from;
+  while (i > 0 && isGlueChar(text[i - 1]!)) i -= 1;
+  return i;
+}
+
+/** Whether `text` has anything in it worth showing — at least one letter
+ *  or digit in any script. Used both to tell "pure separators/padding"
+ *  input apart from real content, and to decide whether a bare URL has
+ *  real content on the far side of it. */
+function hasSubstance(text: string): boolean {
+  return /[\p{L}\p{N}]/u.test(text);
+}
+
+/**
+ * Phrases stripped ONLY at the leading edge: a leading "Unsubscribe" /
+ * "Manage preferences" / "Add us to your address book" block is dropped
+ * unconditionally, but showing up mid-message is not credible for these
+ * (nobody legitimately writes "unsubscribe" as a sentence) — restricting
+ * them to leading position matches how every ESP template actually places
+ * them, in the hidden preheader div before the real body, rather than
+ * relying on that implausibility alone.
+ */
+const LEADING_ONLY_PHRASE_PATTERNS: readonly RegExp[] = [
+  /^unsubscribe/i,
+  /^manage\s+(?:your\s+|email\s+)?preferences/i,
+  /^add\s+us\s+to\s+your\s+address\s+book/i,
+];
+
+/** The named pre-header phrases plus near variants, ^-anchored for
+ *  leading use. Kept as an ARRAY of small independent patterns rather
+ *  than one combined alternation on purpose: each is individually a
+ *  short, linear, non-backtracking scan, so the worst case across all of
+ *  them is additive, not the multiplicative blowup a mis-cast subgroup in
+ *  one giant `(?:a|b|c|...)+` can produce by accident. */
+const LEADING_PHRASE_PATTERNS: readonly RegExp[] = [
+  /^view\s+(?:this\s+|the\s+)?(?:email|message)?\s*(?:online|in\s+(?:your\s+|a\s+)?browser)/i,
+  /^(?:having\s+)?trouble\s+viewing\s+this\s+(?:email|message)\??/i,
+  /^if\s+you\s+(?:cannot|can['’]?t)\s+(?:see|view|read)\s+this\s+(?:message|email)/i,
+  /^can['’]?t\s+see\s+(?:the\s+)?images?\??/i,
+  /^images?\s+not\s+display\w*\??/i,
+  ...LEADING_ONLY_PHRASE_PATTERNS,
+];
+
+/** The same phrase family, $-anchored for trailing use — everything
+ *  except the leading-only unsubscribe/preferences block above. */
+const TRAILING_PHRASE_PATTERNS: readonly RegExp[] = [
+  /view\s+(?:this\s+|the\s+)?(?:email|message)?\s*(?:online|in\s+(?:your\s+|a\s+)?browser)$/i,
+  /(?:having\s+)?trouble\s+viewing\s+this\s+(?:email|message)\??$/i,
+  /if\s+you\s+(?:cannot|can['’]?t)\s+(?:see|view|read)\s+this\s+(?:message|email)$/i,
+  /can['’]?t\s+see\s+(?:the\s+)?images?\??$/i,
+  /images?\s+not\s+display\w*\??$/i,
+];
+
+/** A "bare" URL: not the human-authored kind that would have been wrapped
+ *  in an `<a>` the HTML strip above already unwrapped down to its link
+ *  text, just "http(s):// then anything but whitespace or a quote/angle
+ *  bracket" — the same greedy-until-a-clear-terminator shape web clients
+ *  use, because a full RFC 3986 grammar is not worth it for a fragment
+ *  this size (see the module doc for why this is hand-rolled at all). */
+const LEADING_URL_PATTERN = /^https?:\/\/[^\s<>"']+/i;
+const TRAILING_URL_PATTERN = /https?:\/\/[^\s<>"']+$/i;
+
+/** Bounds the leading/trailing strip loops below. Real mail resolves in
+ *  1-2 passes — a phrase, maybe a tracking URL right after it — so this
+ *  is a generous backstop against a crafted input chaining many short
+ *  matches, not a count expected to be reached in practice. Combined with
+ *  each pass doing bounded, linear-in-the-remaining-text work, the loop
+ *  as a whole stays O(iterations x text length) with a small constant
+ *  iteration cap, never unbounded. */
+const MAX_EDGE_STRIP_ITERATIONS = 8;
+
+/** The LENGTH of the leading phrase match, if any — how far into `text`
+ *  the match reaches, since it always starts at index 0 by construction
+ *  (every pattern in LEADING_PHRASE_PATTERNS is `^`-anchored). */
+function matchLeadingPhrase(text: string): number | null {
+  for (const pattern of LEADING_PHRASE_PATTERNS) {
+    const match = pattern.exec(text);
+    if (match) return match[0].length;
+  }
+  return null;
+}
+
+/** The START INDEX of the trailing phrase match, if any — where in `text`
+ *  it begins, since it always reaches the end by construction (every
+ *  pattern in TRAILING_PHRASE_PATTERNS is `$`-anchored). That start index
+ *  is also exactly the boundary stripTrailingBoilerplate needs: everything
+ *  before it is kept, everything from it onward is the phrase. */
+function matchTrailingPhrase(text: string): number | null {
+  for (const pattern of TRAILING_PHRASE_PATTERNS) {
+    const match = pattern.exec(text);
+    if (match) return match.index;
+  }
+  return null;
+}
+
+/**
+ * Repeatedly removes a recognized pre-header phrase, or a leading bare
+ * URL, from the front of `text`. A phrase is dropped unconditionally —
+ * "view in browser" is never legitimate standalone content — but a
+ * leading URL is dropped only when real text remains after it, so
+ * "here's the link: https://…", where the URL IS the message, survives
+ * untouched.
+ *
+ * Stops the moment nothing matches at the current leading edge. That is
+ * what makes this leading-ANCHORED rather than a global search: whatever
+ * remains from that point on, matching or not, is left alone rather than
+ * scanned into.
+ */
+function stripLeadingBoilerplate(text: string): string {
+  let result = text;
+
+  for (let i = 0; i < MAX_EDGE_STRIP_ITERATIONS; i += 1) {
+    const bodyStart = skipGlueForward(result, 0);
+    const candidate = result.slice(bodyStart);
+
+    const phraseLen = matchLeadingPhrase(candidate);
+    if (phraseLen !== null) {
+      result = result.slice(skipGlueForward(result, bodyStart + phraseLen));
+      continue;
+    }
+
+    const urlMatch = LEADING_URL_PATTERN.exec(candidate);
+    if (urlMatch) {
+      const afterUrl = result.slice(skipGlueForward(result, bodyStart + urlMatch[0].length));
+      if (!hasSubstance(afterUrl)) break; // the URL IS the message; keep it
+      result = afterUrl;
+      continue;
+    }
+
+    break;
+  }
+
+  return result;
+}
+
+/** Mirror of stripLeadingBoilerplate, anchored to the trailing edge
+ *  instead: a recognized phrase or a trailing bare URL is peeled off the
+ *  back of `text` for as long as one keeps matching. No unsubscribe /
+ *  preferences pattern here — that block is leading-only, see
+ *  LEADING_ONLY_PHRASE_PATTERNS. */
+function stripTrailingBoilerplate(text: string): string {
+  let result = text;
+
+  for (let i = 0; i < MAX_EDGE_STRIP_ITERATIONS; i += 1) {
+    const bodyEnd = skipGlueBackward(result, result.length);
+    const candidate = result.slice(0, bodyEnd);
+
+    const phraseStart = matchTrailingPhrase(candidate);
+    if (phraseStart !== null) {
+      result = result.slice(0, skipGlueBackward(result, phraseStart));
+      continue;
+    }
+
+    const urlMatch = TRAILING_URL_PATTERN.exec(candidate);
+    if (urlMatch) {
+      const beforeUrl = result.slice(0, skipGlueBackward(result, urlMatch.index));
+      if (!hasSubstance(beforeUrl)) break; // the URL IS the message; keep it
+      result = beforeUrl;
+      continue;
+    }
+
+    break;
+  }
+
+  return result;
+}
+
+/** Visual-rule and padding characters a template repeats to draw a
+ *  separator line, or to push a hidden second preheader past Gmail's
+ *  inbox preview window: ASCII separator punctuation, non-breaking space,
+ *  and the zero-width family (word joiner, ZWSP/ZWNJ/ZWJ, the BOM). 4+ IN
+ *  A ROW — in any combination, not necessarily the same character twice,
+ *  since the padding trick some ESPs use alternates two of these — is the
+ *  threshold: a real ellipsis is 3 dots and RFC 3676's signature
+ *  delimiter is exactly "--", so this can never reach either. Replaced
+ *  with a single space rather than deleted outright, so the words on
+ *  either side of a removed rule do not glue together. */
+const NOISE_CHAR_RUN = /[.\-_=\u00A0\u200B\u200C\u200D\u2060\uFEFF]{4,}/g;
+
+/**
+ * Strips marketing pre-header chrome that survives HTML- and
+ * quote/signature-stripping: "view this email in your browser" fallback
+ * links, "trouble viewing this email" disclaimers, leading unsubscribe /
+ * preference-centre blocks, decorative separator runs, invisible padding
+ * characters, and a bare tracking URL adjacent to real content. Gmail's
+ * inbox strips exactly this class of text from its preview line; this is
+ * aimed at the same bar.
+ *
+ * Under-strips ON PURPOSE. If every rule above still leaves nothing, the
+ * ORIGINAL `text` — not the noise-collapsed intermediate — is returned
+ * instead, on the theory that a preview showing slightly awkward real
+ * text (even an unstripped "View in browser", in the degenerate case
+ * where that is genuinely all there was) beats one that ate the actual
+ * message. The one exception: if `text` had no letters or digits in it AT
+ * ALL, it really was only separators and invisible padding, and '' is the
+ * honest answer — previewTextFrom's caller already treats '' as "no
+ * snippet" for an entirely-quoted reply, so this reuses that contract
+ * rather than inventing a second one.
+ */
+function stripPreheaderBoilerplate(text: string): string {
+  const withoutNoise = text.replace(NOISE_CHAR_RUN, ' ');
+  if (!hasSubstance(withoutNoise)) return '';
+
+  const stripped = stripTrailingBoilerplate(stripLeadingBoilerplate(withoutNoise));
+  return hasSubstance(stripped) ? stripped : text;
+}
+
 /**
  * The whole pipeline: raw partial-fetch bytes -> decoded text -> plain text
- * -> new content only. The result still carries line breaks and runs of
- * whitespace; normalize.ts's makeSnippet() is what collapses those and
- * applies SNIPPET_CHARS. Keeping the two apart is load-bearing rather than
- * stylistic — collapsing whitespace first would destroy the line structure
- * every quoting and signature rule above depends on.
+ * -> new content only -> pre-header chrome gone. The result still carries
+ * line breaks and runs of whitespace; normalize.ts's makeSnippet() is what
+ * collapses those and applies SNIPPET_CHARS. Keeping the two apart is
+ * load-bearing rather than stylistic — collapsing whitespace first would
+ * destroy the line structure every quoting, signature and pre-header rule
+ * above depends on.
+ *
+ * Pre-header stripping runs AFTER quote/signature stripping, not before:
+ * it needs only look at text already confirmed to be this message's own
+ * new content, which is both less text to scan and means a quoted line or
+ * a signature block that is about to be deleted anyway can never be
+ * mistaken for a pre-header phrase. It runs AFTER HTML stripping for the
+ * more obvious reason that `<a>View in browser</a>` has to become the
+ * text "View in browser" before a text-level rule can see it at all.
  *
  * Returns '' when nothing survives (an all-quoted fragment, an HTML part
- * whose first 512 bytes were entirely stylesheet); the caller treats that
- * as "no snippet" rather than storing an empty string.
+ * whose first 512 bytes were entirely stylesheet, a pre-header that was
+ * only separators and invisible padding); the caller treats that as "no
+ * snippet" rather than storing an empty string.
  */
 export function previewTextFrom(raw: Buffer, part: TextPart): string {
   const decoded = decodeTransferEncoding(raw, part.encoding);
   const plain = part.mimeType === 'text/html' ? stripHtmlFragment(decoded) : decoded;
-  return stripQuotedAndSignature(plain).trim();
+  const newContent = stripQuotedAndSignature(plain);
+  return stripPreheaderBoilerplate(newContent).trim();
 }
