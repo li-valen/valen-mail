@@ -96,6 +96,8 @@ describe('fetchOpens', () => {
   it('returns ok:true with parsed opens on success, preserving numeric sentAt/occurredAt', async () => {
     const event = {
       token: 'abc123',
+      accountId: 'acct-1',
+      messageId: '<abc123@postbox.local>',
       recipientEmail: 'li.valen.008@gmail.com',
       subject: 'hello',
       sentAt: 1787535607578,
@@ -121,6 +123,8 @@ describe('fetchOpens', () => {
     // future classifier value must not break parsing.
     const event = {
       token: 'abc123',
+      accountId: 'acct-1',
+      messageId: '<abc123@postbox.local>',
       recipientEmail: 'x@example.com',
       subject: null,
       sentAt: 1,
@@ -144,6 +148,8 @@ describe('fetchOpens', () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const valid = {
       token: 'good-token',
+      accountId: 'acct-1',
+      messageId: '<good-token@postbox.local>',
       recipientEmail: 'x@example.com',
       subject: null,
       sentAt: 1,
@@ -162,6 +168,84 @@ describe('fetchOpens', () => {
     // Logged once, not once per dropped element.
     const dropLogCalls = spy.mock.calls.filter((call) => String(call[0]).includes('dropped'));
     expect(dropLogCalls).toHaveLength(1);
+  });
+
+  // ---------------------------------------------------------------------
+  // Link an open back to its message: accountId/messageId, exercised
+  // through fetchOpens the same way the token/occurredAt checks above are
+  // — isValidOpenEvent itself is not exported, matching this file's
+  // existing convention (Amendment 3 treats it as an internal boundary
+  // check, not part of the module's public surface).
+  // ---------------------------------------------------------------------
+  describe('isValidOpenEvent: accountId/messageId', () => {
+    const complete = {
+      token: 'good-token',
+      accountId: 'acct-1',
+      messageId: '<good-token@postbox.local>',
+      recipientEmail: 'x@example.com',
+      subject: null,
+      sentAt: 1,
+      occurredAt: 2,
+      classification: 'open',
+      deviceClass: null,
+      os: null,
+    };
+
+    async function opensFrom(events: readonly unknown[]) {
+      const fetchStub = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ opens: events }), { status: 200 }),
+      );
+      return fetchOpens(50, { ...BASE, fetchImpl: fetchStub });
+    }
+
+    it('rejects an event missing accountId', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const missingAccountId = { ...complete, accountId: undefined };
+      const out = await opensFrom([missingAccountId]);
+      expect(out).toEqual({ ok: true, opens: [] });
+      spy.mockRestore();
+    });
+
+    it('rejects an event missing messageId', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const missingMessageId = { ...complete, messageId: undefined };
+      const out = await opensFrom([missingMessageId]);
+      expect(out).toEqual({ ok: true, opens: [] });
+      spy.mockRestore();
+    });
+
+    it('accepts a complete event carrying both accountId and messageId', async () => {
+      const out = await opensFrom([complete]);
+      expect(out).toEqual({ ok: true, opens: [complete] });
+    });
+
+    it('rejects an event whose accountId is an empty string, not just a missing one', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const emptyAccountId = { ...complete, accountId: '' };
+      const out = await opensFrom([emptyAccountId]);
+      expect(out).toEqual({ ok: true, opens: [] });
+      spy.mockRestore();
+    });
+
+    it('rejects an event whose messageId is an empty string, not just a missing one', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const emptyMessageId = { ...complete, messageId: '' };
+      const out = await opensFrom([emptyMessageId]);
+      expect(out).toEqual({ ok: true, opens: [] });
+      spy.mockRestore();
+    });
+
+    it('a mixed batch drops only the element missing accountId/messageId, keeps the complete one, and logs once', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const missingAccountId = { ...complete, accountId: undefined };
+      const out = await opensFrom([complete, missingAccountId]);
+      expect(out).toEqual({ ok: true, opens: [complete] });
+      // Logged once, not once per dropped element — same contract as the
+      // token/occurredAt drop test above.
+      const dropLogCalls = spy.mock.calls.filter((call) => String(call[0]).includes('dropped'));
+      expect(dropLogCalls).toHaveLength(1);
+      spy.mockRestore();
+    });
   });
 
   it('treats a response whose body has no opens array as zero results, not a crash', async () => {

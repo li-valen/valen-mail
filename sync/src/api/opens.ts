@@ -16,9 +16,17 @@ export const REQUEST_TIMEOUT_MS = 5000;
  * genuinely nullable. `classification` is deliberately left as `string`
  * rather than narrowed to a union: an unrecognised value from a future
  * classifier must still parse rather than be rejected at this boundary.
+ *
+ * `accountId`/`messageId` (link an open back to its message): the
+ * tracking service now projects both from `tokens`, where they're NOT
+ * NULL, so every open a well-behaved upstream sends carries them —
+ * `isValidOpenEvent` below treats a row missing either the same as a
+ * missing token, not as an optional display field.
  */
 export interface OpenEvent {
   readonly token: string;
+  readonly accountId: string;
+  readonly messageId: string;
   readonly recipientEmail: string;
   readonly subject: string | null;
   readonly sentAt: number;
@@ -73,12 +81,14 @@ function clampLimit(limit: number): number {
 
 /**
  * Narrow, hand-written boundary check (Amendment 3) — not a schema
- * library, just the two fields the rest of the system actually depends
- * on structurally. `token` is the join key back to a specific tracked
- * send; `occurredAt` is what the rail sorts and formats by. Every other
- * field is display-only and already tolerates `null`/unexpected values
- * downstream, so requiring them here would only make the endpoint more
- * fragile without protecting anything real.
+ * library, just the fields the rest of the system actually depends on
+ * structurally. `token` is the join key back to a specific tracked send;
+ * `occurredAt` is what the rail sorts and formats by; `accountId`/
+ * `messageId` (link an open back to its message) are what a client
+ * resolves the opened message with. Every other field is display-only
+ * and already tolerates `null`/unexpected values downstream, so requiring
+ * them here would only make the endpoint more fragile without protecting
+ * anything real.
  */
 function isValidOpenEvent(value: unknown): value is OpenEvent {
   if (typeof value !== 'object' || value === null) return false;
@@ -96,7 +106,15 @@ function isValidOpenEvent(value: unknown): value is OpenEvent {
     // mode for as long as that one poisoned event kept being read back —
     // cheaper to reject it here, at the boundary, than to discover it
     // downstream.
-    Number.isFinite(record.occurredAt)
+    Number.isFinite(record.occurredAt) &&
+    // Link an open back to its message: required as non-empty strings,
+    // not merely present, because an empty accountId/messageId is
+    // exactly the "can't resolve the message" case — a client is better
+    // off never rendering that open than rendering a dead link.
+    typeof record.accountId === 'string' &&
+    record.accountId.length > 0 &&
+    typeof record.messageId === 'string' &&
+    record.messageId.length > 0
   );
 }
 
@@ -124,9 +142,13 @@ function parseOpensBody(body: unknown): readonly OpenEvent[] {
   }
 
   if (droppedCount > 0) {
+    // Never logs the events themselves (or any field value) — only the
+    // count — so a batch of malformed rows can't leak accountId/messageId
+    // or anything else into logs gratuitously.
     console.error(
       `opens: dropped ${droppedCount} of ${rawOpens.length} open event(s) from the tracking ` +
-      'service response — missing a string token or a numeric occurredAt',
+      'service response — missing a string token, a numeric occurredAt, or a non-empty ' +
+      'accountId/messageId',
     );
   }
 

@@ -34,6 +34,12 @@ const VAPID: VapidConfig = {
 function makeOpenEvent(overrides: Partial<OpenEvent> = {}): OpenEvent {
   return {
     token: 'tok-1',
+    // Link an open back to its message: OpenEvent now requires both as
+    // non-empty strings (sync/src/api/opens.ts's isValidOpenEvent) — this
+    // fixture is otherwise unrelated to that change, so it just needs
+    // placeholder values that satisfy the type.
+    accountId: 'acct-1',
+    messageId: '<tok-1@postbox.local>',
     recipientEmail: 'yspiegler@g.harvard.edu',
     subject: 'Re: Grays M #2',
     sentAt: 1_756_000_000_000,
