@@ -59,7 +59,36 @@ const SESSION_VERSION = 'v1';
  */
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
-export const SESSION_COOKIE_NAME = 'postbox_session';
+/**
+ * The `__Host-` prefix is load-bearing, not decoration.
+ *
+ * A browser refuses to store a `__Host-`-prefixed cookie unless it is
+ * `Secure`, has `Path=/`, and carries **no `Domain` attribute** — all three
+ * of which already held here, so the prefix costs nothing and turns three
+ * conventions into three rules the browser enforces on our behalf.
+ *
+ * Two things it buys, and the second is the one that matters here:
+ *
+ *  1. **Portability.** Without the prefix, "no sibling subdomain can set
+ *     this cookie for us" is a fact about `duckdns.org` being on the Public
+ *     Suffix List — a fact about one hostname, not about this application.
+ *     The PSL entry is not going anywhere, but moving behind any non-PSL
+ *     shared domain later would evaporate the property silently, with
+ *     nothing in the code to notice.
+ *  2. **Same-origin path-scoped shadowing.** Script running on this very
+ *     origin cannot overwrite an `HttpOnly` cookie — but it can set a
+ *     *different* one, `postbox_session=junk; path=/api`. RFC 6265 orders
+ *     longer paths first, so that forgery arrives ahead of the real cookie
+ *     and wins any first-match read. The session is then bricked until the
+ *     junk cookie is removed, and nothing server-side can remove it.
+ *     `__Host-` forbids `Path` other than `/`, which closes it outright.
+ *     Not reachable today — but Task 4 is where attacker-authored email
+ *     content starts being rendered into this origin, so it is closed now
+ *     rather than after that lands. `readSessionCookies` independently
+ *     tolerates duplicates (see below), so the two fixes cover the vector
+ *     from both ends.
+ */
+export const SESSION_COOKIE_NAME = '__Host-postbox_session';
 
 /**
  * `SameSite=Strict` is deliberate: nothing legitimately navigates to this
@@ -68,6 +97,12 @@ export const SESSION_COOKIE_NAME = 'postbox_session';
  * correct even in local development — browsers exempt `localhost` from the
  * HTTPS requirement. `Path=/` because Task 8 serves the client itself from
  * this origin.
+ *
+ * `Secure` and `Path=/` are also two of the three `__Host-` preconditions,
+ * and no `Domain` is ever emitted, which is the third. Removing any of
+ * them would make the browser reject the cookie outright rather than
+ * silently weaken it — a good failure mode, but do not discover it in
+ * production.
  */
 const COOKIE_ATTRIBUTES = 'Path=/; HttpOnly; Secure; SameSite=Strict';
 
@@ -76,9 +111,23 @@ const COOKIE_ATTRIBUTES = 'Path=/; HttpOnly; Secure; SameSite=Strict';
  *  recover — the bearer credential. */
 const SESSION_KEY_INFO = 'postbox/session-cookie/v1';
 
-/** base64url alphabet, unpadded. `Buffer.from(x, 'base64url')` silently
- *  discards characters outside it, so a shape check happens before the
- *  decode rather than trusting the decode to reject anything. */
+/**
+ * base64url alphabet, unpadded. `Buffer.from(x, 'base64url')` silently
+ * discards characters outside it, so this rejects obvious junk before the
+ * decode rather than trusting the decode to reject anything.
+ *
+ * It does **not** make the encoding canonical, and it was previously
+ * commented as though it did. A 32-byte HMAC is 43 unpadded base64url
+ * characters = 258 bits, so the final character carries two unused bits
+ * and exactly four distinct in-alphabet strings decode to the same 32
+ * bytes. That is malleability, not forgery — an attacker still cannot
+ * produce any of the four without the key — and it is harmless here
+ * because the cookie value is never used as an identity, a dedup key, or
+ * a revocation key. `verifySessionValue` re-encodes after the decode
+ * anyway, so only the canonical spelling is accepted; strictness is free,
+ * and a future use of this value as a key should not have to rediscover
+ * the caveat.
+ */
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
 
 function deriveSessionKey(apiToken: string): Buffer {
@@ -119,6 +168,11 @@ export function verifySessionValue(value: string, apiToken: string, nowMs: numbe
   if (!BASE64URL.test(signature)) return false;
 
   const provided = Buffer.from(signature, 'base64url');
+  // Canonical-encoding check: base64url is not injective at this length
+  // (see BASE64URL above), so re-encoding and requiring the exact original
+  // spelling is what makes one signature exactly one accepted string.
+  if (provided.toString('base64url') !== signature) return false;
+
   const expected = signPayload(apiToken, version, expiresAtRaw);
   // timingSafeEqual throws on a length mismatch, so the length check must
   // come first; it leaks nothing the caller does not already know.
@@ -129,31 +183,44 @@ export function verifySessionValue(value: string, apiToken: string, nowMs: numbe
 }
 
 /**
- * Pulls this service's cookie out of a `Cookie:` header, or null.
+ * Every value in the `Cookie:` header under this service's cookie name, in
+ * the order the browser sent them.
+ *
+ * **All of them, not the first.** A `Cookie:` header may legitimately carry
+ * the same name more than once — RFC 6265 sends longer `Path` matches
+ * first — so a first-match read lets one junk entry mask a perfectly good
+ * session with no way for the server to clear it. The `__Host-` prefix
+ * already forbids the `Path != /` that makes that shadowing possible; this
+ * makes the shadowing a non-event independently of the cookie's *name*,
+ * which is the part a future rename could quietly undo.
  *
  * Deliberately minimal rather than a general RFC 6265 parser: the only
- * cookie this service reads is its own, whose value is base64url and
- * therefore contains no `;`, no `=` (base64url is unpadded) and no
- * quoting. The first matching name wins.
+ * cookie this service reads is its own, whose value is canonical base64url
+ * and therefore contains no `;`, no `=` (unpadded) and no quoting.
  */
-export function readSessionCookie(request: Request): string | null {
+export function readSessionCookies(request: Request): readonly string[] {
   const header = request.headers.get('cookie');
-  if (!header) return null;
+  if (!header) return [];
 
+  const values: string[] = [];
   for (const pair of header.split(';')) {
     const separator = pair.indexOf('=');
     if (separator === -1) continue;
     if (pair.slice(0, separator).trim() !== SESSION_COOKIE_NAME) continue;
     const value = pair.slice(separator + 1).trim();
-    return value.length > 0 ? value : null;
+    if (value.length > 0) values.push(value);
   }
-  return null;
+  return values;
 }
 
-/** True when `request` carries a session cookie this service will accept. */
+/**
+ * True when `request` carries at least one session cookie this service
+ * will accept. Every candidate is checked: a forged or stale entry sitting
+ * ahead of the real one must not deny access, and verifying an extra value
+ * or two costs one HMAC each.
+ */
 export function requestHasValidSession(request: Request, apiToken: string, nowMs: number): boolean {
-  const value = readSessionCookie(request);
-  return value !== null && verifySessionValue(value, apiToken, nowMs);
+  return readSessionCookies(request).some((value) => verifySessionValue(value, apiToken, nowMs));
 }
 
 const SESSION_MAX_AGE_SECONDS = Math.floor(SESSION_TTL_MS / 1000);

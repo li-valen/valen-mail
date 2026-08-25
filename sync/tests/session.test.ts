@@ -5,6 +5,8 @@ import {
   buildSessionCookie,
   buildClearedSessionCookie,
   mintSessionValue,
+  readSessionCookies,
+  requestHasValidSession,
   verifySessionValue,
 } from '../src/api/session';
 
@@ -141,5 +143,111 @@ describe('session cookie header', () => {
     expect(header).toContain('Secure');
     expect(header).toContain('SameSite=Strict');
     expect(header).toContain('Path=/');
+  });
+});
+
+/**
+ * A base64url spelling of the SAME 32 bytes that is not the canonical one.
+ *
+ * 32 bytes is 43 unpadded base64url characters = 258 bits, so the last
+ * character's low two bits are unused and four in-alphabet strings decode
+ * identically. Node emits the variant with those bits zeroed; this returns
+ * a different one. Constructed rather than hardcoded so the test proves
+ * the property instead of asserting a magic string.
+ */
+const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
+function nonCanonicalSpelling(signature: string): string {
+  const last = signature[signature.length - 1]!;
+  const value = ALPHABET.indexOf(last);
+  // Flip one of the two unused low bits; the decoded bytes are untouched.
+  return signature.slice(0, -1) + ALPHABET[value | 0b01]!;
+}
+
+describe('session cookie name (__Host- prefix)', () => {
+  it('carries the __Host- prefix', () => {
+    expect(SESSION_COOKIE_NAME.startsWith('__Host-')).toBe(true);
+  });
+
+  it('satisfies all three preconditions the browser enforces for that prefix', () => {
+    // A browser silently refuses to store a __Host- cookie that breaks any
+    // of these, so each is asserted rather than assumed. The Domain check
+    // is the one a well-meaning future edit would break.
+    const header = buildSessionCookie(mintSessionValue(TOKEN, NOW));
+    expect(header).toContain('Secure');
+    expect(header).toContain('Path=/');
+    expect(header.toLowerCase()).not.toContain('domain=');
+  });
+
+  it('keeps the prefix and the preconditions on the clearing header too', () => {
+    // A clearing cookie the browser refuses to store is a sign-out that
+    // silently does nothing.
+    const header = buildClearedSessionCookie();
+    expect(header.startsWith(`${SESSION_COOKIE_NAME}=`)).toBe(true);
+    expect(header).toContain('Secure');
+    expect(header).toContain('Path=/');
+    expect(header.toLowerCase()).not.toContain('domain=');
+  });
+});
+
+describe('canonical base64url', () => {
+  it('rejects a non-canonical spelling of a signature that decodes to identical bytes', () => {
+    const original = mintSessionValue(TOKEN, NOW);
+    const [version, expiresAt, signature] = original.split('.') as [string, string, string];
+    const restated = nonCanonicalSpelling(signature);
+
+    // The two proofs that make this a malleability test and not a
+    // corrupted-signature test: the string really is different, and it
+    // really does decode to the same 32 bytes. Without them, this would
+    // pass just as happily against a garbled signature and prove nothing
+    // about canonical encoding.
+    expect(restated).not.toBe(signature);
+    expect(Buffer.from(restated, 'base64url').equals(Buffer.from(signature, 'base64url'))).toBe(true);
+
+    expect(verifySessionValue(original, TOKEN, NOW)).toBe(true);
+    expect(verifySessionValue(`${version}.${expiresAt}.${restated}`, TOKEN, NOW)).toBe(false);
+  });
+});
+
+describe('reading cookies from the header', () => {
+  function withCookie(header: string): Request {
+    return new Request('http://x/api/inbox', { headers: { cookie: header } });
+  }
+
+  it('returns every value under this name, not just the first', () => {
+    const request = withCookie(
+      `${SESSION_COOKIE_NAME}=first; other=x; ${SESSION_COOKIE_NAME}=second`,
+    );
+    expect(readSessionCookies(request)).toEqual(['first', 'second']);
+  });
+
+  it('returns nothing when the header is absent or carries no match', () => {
+    expect(readSessionCookies(new Request('http://x/api/inbox'))).toEqual([]);
+    expect(readSessionCookies(withCookie('theme=dark; other=1'))).toEqual([]);
+  });
+
+  it('accepts a good session sitting BEHIND a shadowing junk cookie', () => {
+    // The path-scoped shadowing vector: RFC 6265 sends longer Path matches
+    // first, so a same-origin script's `path=/api` forgery arrives ahead of
+    // the real cookie. A first-match read would take the junk and brick the
+    // session with nothing server-side able to clear it.
+    const good = mintSessionValue(TOKEN, NOW);
+    const request = withCookie(`${SESSION_COOKIE_NAME}=junk; ${SESSION_COOKIE_NAME}=${good}`);
+    expect(requestHasValidSession(request, TOKEN, NOW)).toBe(true);
+  });
+
+  it('accepts a good session sitting AHEAD of a junk cookie', () => {
+    const good = mintSessionValue(TOKEN, NOW);
+    const request = withCookie(`${SESSION_COOKIE_NAME}=${good}; ${SESSION_COOKIE_NAME}=junk`);
+    expect(requestHasValidSession(request, TOKEN, NOW)).toBe(true);
+  });
+
+  it('still refuses when every candidate is bad — tolerance is not permissiveness', () => {
+    const foreign = mintSessionValue('q'.repeat(64), NOW);
+    const expired = mintSessionValue(TOKEN, NOW - SESSION_TTL_MS - 60_000);
+    const request = withCookie(
+      `${SESSION_COOKIE_NAME}=junk; ${SESSION_COOKIE_NAME}=${foreign}; ${SESSION_COOKIE_NAME}=${expired}`,
+    );
+    expect(requestHasValidSession(request, TOKEN, NOW)).toBe(false);
   });
 });

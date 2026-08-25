@@ -12,6 +12,8 @@ import {
   mintSessionValue,
   requestHasValidSession,
 } from './session.ts';
+import { createFixedWindowLimiter } from './rate-limit.ts';
+import type { RateLimiter } from './rate-limit';
 
 function json(
   body: unknown,
@@ -28,6 +30,31 @@ function json(
  *  establishes a credential, another one that revokes it, and a shared or
  *  browser cache replaying either is a correctness bug. */
 const NO_STORE: Readonly<Record<string, string>> = { 'cache-control': 'no-store' };
+
+/**
+ * Freshness directives for every route that returns mailbox data.
+ *
+ * This became necessary the moment the session cookie shipped, and it is
+ * easy to miss why. When the only credential was an `Authorization`
+ * header, no cache anywhere treats the response as shareable — the header
+ * is not a cache key and its presence suppresses storage by default. An
+ * ambient cookie now authorises the same responses, and they were going
+ * out with no freshness directives at all.
+ *
+ * Exposure today is close to nil: Caddy's bare `reverse_proxy` does not
+ * cache, and these responses carry no validators. But Task 6 adds a
+ * service worker and Task 8 puts a static file server on this same origin,
+ * and a naive `caches.put('/api/inbox', response)` would write four
+ * mailboxes to the device's disk where nothing ever evicts them. Two
+ * words now; awkward to retrofit after either lands.
+ *
+ * `private` bars a shared cache from storing it at all; `no-store` bars
+ * every cache, private ones included. Both are stated because they fail
+ * differently on the intermediaries that only understand one of them.
+ */
+const PRIVATE_NO_STORE: Readonly<Record<string, string>> = {
+  'cache-control': 'private, no-store',
+};
 
 function noContent(headers: Readonly<Record<string, string>> = {}): Response {
   return new Response(null, { status: 204, headers });
@@ -226,8 +253,29 @@ function contentDispositionFor(filename: string): string {
  * `tokenMatches` (not `===`) for the same reason the bearer path uses it:
  * this endpoint is an unauthenticated oracle on the public internet, and a
  * short-circuiting comparison leaks the token's prefix through timing.
+ *
+ * Rate limited, and it is the only route that is — see ./rate-limit.ts for
+ * why the limiter is scoped here and nowhere else. Every non-204 outcome
+ * charges the window, including a malformed body: leaving 400s uncounted
+ * would hand an attacker a free channel to probe from.
  */
-async function handleCreateSession(request: Request, apiToken: string): Promise<Response> {
+async function handleCreateSession(
+  request: Request,
+  apiToken: string,
+  limiter: RateLimiter,
+  nowMs: number,
+): Promise<Response> {
+  const decision = limiter.check(nowMs);
+  if (!decision.allowed) {
+    console.error(
+      'api: refusing POST /api/session — too many failed attempts in the current window',
+    );
+    return json({ error: 'too many requests' }, 429, {
+      ...NO_STORE,
+      'retry-after': String(decision.retryAfterSeconds),
+    });
+  }
+
   let body: unknown;
   try {
     body = await request.json();
@@ -236,6 +284,7 @@ async function handleCreateSession(request: Request, apiToken: string): Promise<
     // surrounding source in "Unexpected token" messages, and on this route
     // the surrounding source is the credential.
     console.error('api: rejected POST /api/session — request body was not valid JSON');
+    limiter.recordFailure(nowMs);
     return json({ error: 'invalid request body' }, 400, NO_STORE);
   }
 
@@ -244,11 +293,13 @@ async function handleCreateSession(request: Request, apiToken: string): Promise<
 
   if (typeof submitted !== 'string' || submitted.length === 0) {
     console.error('api: rejected POST /api/session — body carried no non-empty string "token"');
+    limiter.recordFailure(nowMs);
     return json({ error: 'invalid request body' }, 400, NO_STORE);
   }
 
   if (!tokenMatches(submitted, apiToken)) {
     console.error('api: rejected POST /api/session — submitted token did not match API_TOKEN');
+    limiter.recordFailure(nowMs);
     return json({ error: 'unauthorized' }, 401, NO_STORE);
   }
 
@@ -299,7 +350,7 @@ async function handleInbox(db: Db, url: URL): Promise<Response> {
   const limit = parseLimit(url.searchParams.get('limit'));
   const cursor = parseInboxCursor(url);
   const messages = await db.getUnifiedInbox({ limit, cursor });
-  return json({ messages, nextCursor: nextCursorFrom(messages, limit) });
+  return json({ messages, nextCursor: nextCursorFrom(messages, limit) }, 200, PRIVATE_NO_STORE);
 }
 
 /**
@@ -324,7 +375,7 @@ async function handleOpens(
   fetchImpl?: typeof fetch,
 ): Promise<Response> {
   if (!tracking) {
-    return json({ opens: [], available: false });
+    return json({ opens: [], available: false }, 200, PRIVATE_NO_STORE);
   }
 
   const limit = parseLimit(url.searchParams.get('limit'));
@@ -335,9 +386,9 @@ async function handleOpens(
   });
 
   if (!result.ok) {
-    return json({ opens: [], available: false });
+    return json({ opens: [], available: false }, 200, PRIVATE_NO_STORE);
   }
-  return json({ opens: result.opens, available: true });
+  return json({ opens: result.opens, available: true }, 200, PRIVATE_NO_STORE);
 }
 
 async function handleThread(db: Db, threadId: string): Promise<Response> {
@@ -346,7 +397,7 @@ async function handleThread(db: Db, threadId: string): Promise<Response> {
   // the unified inbox; returning 200 with an empty array either way removes
   // that signal.
   const messages = await db.getThread(threadId);
-  return json({ messages });
+  return json({ messages }, 200, PRIVATE_NO_STORE);
 }
 
 /**
@@ -452,7 +503,10 @@ async function handleBody(
     // fetchBudgetedPart matters most on this route.
     const bytes = await fetchBudgetedPart(pool, resolved, accountId, folder, uid);
     if (bytes instanceof Response) return bytes;
-    return new Response(bytes, { status: 200, headers: { 'content-type': 'message/rfc822' } });
+    return new Response(bytes, {
+      status: 200,
+      headers: { 'content-type': 'message/rfc822', ...PRIVATE_NO_STORE },
+    });
   } catch (error) {
     console.error(`api: failed to fetch body for account "${accountId}" uid ${uid}`, error);
     return json({ error: 'failed to fetch message body' }, 502);
@@ -511,6 +565,7 @@ async function handleAttachment(
     if (bytes instanceof Response) return bytes;
     const headers: Record<string, string> = {
       'content-type': meta?.mime_type ?? 'application/octet-stream',
+      ...PRIVATE_NO_STORE,
     };
     if (meta?.filename) {
       headers['content-disposition'] = contentDispositionFor(meta.filename);
@@ -566,6 +621,11 @@ export function createRouter(
   trackingConfig: TrackingConfig | null = null,
   fetchImpl?: typeof fetch,
 ): (request: Request) => Promise<Response> {
+  // One counter per router, created here rather than taken as a parameter:
+  // production builds exactly one router, and giving each call its own
+  // instance keeps tests from sharing a window and becoming order-dependent.
+  const sessionLimiter = createFixedWindowLimiter();
+
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -578,7 +638,7 @@ export function createRouter(
     // it IS the gate's entrance for a browser, and it authenticates from
     // its own body. Everything else below requires a credential already.
     if (path === '/api/session' && request.method === 'POST') {
-      return handleCreateSession(request, apiToken);
+      return handleCreateSession(request, apiToken, sessionLimiter, Date.now());
     }
 
     if (!isAuthorized(request, apiToken)) {

@@ -532,10 +532,12 @@ nothing to back up. Still $0.
 
 ### Things that will actually bite you
 
-- **TLS must be live before a browser can sign in.** The cookie is set
-  `Secure`, so a browser silently discards it over plain `http://` on a
-  real hostname. Sign-in then appears to succeed (`204`) and every
-  subsequent request still 401s, with nothing in the log to explain it.
+- **TLS must be live before a browser can sign in.** The cookie is named
+  `__Host-postbox_session` and set `Secure`, so a browser flatly refuses to
+  store it over plain `http://` on a real hostname. Sign-in then appears to
+  succeed (`204`) and every subsequent request still 401s, with nothing in
+  the log to explain it. (`localhost` is a secure context, so local
+  development over plain HTTP is unaffected.)
   Section 10's one remaining step — point the DuckDNS A record at the
   instance, uncomment the site block, `sudo systemctl reload caddy` — is
   therefore a prerequisite for the web client, not an optional extra.
@@ -558,6 +560,20 @@ nothing to back up. Still $0.
   legitimately links into this app from elsewhere.
 - **Request bodies are capped at 8 KB** and answered `413` above it. Only
   `POST /api/session` reads a body at all.
+- **`POST /api/session` is rate limited: 10 failed attempts per 15
+  minutes**, answered `429` with a `Retry-After` once spent. Successful
+  sign-ins never consume budget, so setting up several devices in a row is
+  fine. The counter is a single in-memory global — **restarting the service
+  clears it**, which is the documented way to unblock yourself if you ever
+  do trip it. No other route is limited, deliberately: they are all
+  authenticated and serve one person, and a limiter there would eventually
+  throttle your own inbox polling.
+- **Do not put a caching layer in front of `/api/*`.** Mailbox responses
+  (`/api/inbox`, `/api/opens`, `/api/thread/*`, message bodies and
+  attachments) now send `Cache-Control: private, no-store`, because they
+  are authorised by an ambient cookie rather than only by an
+  `Authorization` header. Caddy does not cache by default; keep it that
+  way.
 
 ### Verifying it, once the service is started and TLS is live
 
@@ -570,6 +586,8 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 curl -s -o /dev/null -w '%{http_code}\n' 'https://<duckdns-host>/api/inbox?limit=1'
 
 # 3. Sign in, keeping the cookie in a jar — expect 204 and a Set-Cookie
+#    named __Host-postbox_session. A 429 here means the failure window is
+#    spent; wait it out or restart the service.
 curl -s -D - -o /dev/null -c /tmp/postbox-cookies.txt \
   -H 'content-type: application/json' \
   -d "{\"token\":\"$API_TOKEN\"}" \
@@ -604,4 +622,4 @@ delete the cookie jar afterwards as shown.
 | systemd unit   | installed, valid, **enabled**, **inactive**         |
 | Caddy          | installed, running, staged (no TLS site yet)        |
 | postbox-sync   | **NOT started** — left to the controller (A5)       |
-| Browser auth   | bearer **or** session cookie; needs TLS live (§13)  |
+| Browser auth   | bearer **or** `__Host-` session cookie; needs TLS live (§13) |
