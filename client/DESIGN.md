@@ -1,5 +1,8 @@
 # Postbox — DESIGN.md
 
+> **Superseded by the Plunk rebase** (see `client/CLAUDE.md`'s "Direction pivot 2") — the visual values below no longer apply.
+> §5's read-state semantics and copy voice remain binding.
+
 The visual contract for the Postbox client. Written for an implementer who was not in
 the design conversation. Every value here is literal. Where a number is stated, use that
 number; do not substitute one that "looks about right."

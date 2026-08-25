@@ -9,6 +9,7 @@ import { Alert, AlertDescription } from './ui/Alert';
 import { Button } from './ui/Button';
 import { Card } from './ui/Card';
 import { Skeleton } from './ui/Skeleton';
+import { initialViewFromSearch } from './initialView';
 import { useSessionGate } from './useSessionGate';
 
 /**
@@ -79,7 +80,10 @@ function ShellSkeleton() {
 
 export default function App() {
   const { gate, signIn, retry } = useSessionGate();
-  const [view, setView] = useState<ViewId>('inbox');
+  // Lazy initializer: seeds the view from a push notification's deep link
+  // (`?rail=opens`, sync/src/push/dispatch.ts's OPENS_URL) on first mount,
+  // without re-reading location.search on every render.
+  const [view, setView] = useState<ViewId>(() => initialViewFromSearch(location.search));
   const [accounts, setAccounts] = useState<readonly AccountSummary[]>([]);
   // Component-local, not persisted — keyed on the message text rather than
   // a plain boolean, so a retry that fails with a DIFFERENT message still

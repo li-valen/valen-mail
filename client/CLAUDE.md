@@ -7,8 +7,8 @@ filled-in instance for this project. Read that file for the full tier tables.
 
 ```
 Direction skill:   impeccable          (Tier 1 — product UI / app shell)
-Component source:  hand-rolled on tokens; pick-ui-library ONLY for virtualization
-Motion library:    motion/react        (single layer — no animista, no GSAP)
+Component source:  Plunk port (Tailwind v4 + shadcn-style atoms) — see Direction pivot 2
+Motion library:    none (CSS transitions only)
 Icon set:          lucide-react        (one family, never both)
 ```
 

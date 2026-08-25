@@ -382,6 +382,10 @@ export class ConnectionPool {
     // belt-and-braces protection against stop() itself rejecting if that
     // contract were ever accidentally broken — today's behaviour does not
     // depend on the choice either way.
+    //
+    // This drain is unbounded, so sync/deploy/postbox-sync.service's
+    // TimeoutStopSec must stay >= the ~250s worst case documented below or
+    // systemd SIGKILLs the process mid-drain, before db.close() ever runs.
     await Promise.allSettled([...this.inFlightDispatches]);
   }
 

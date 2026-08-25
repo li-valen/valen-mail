@@ -11,7 +11,7 @@ import {
 import type { OpenEvent, OpensResponse } from '../src/api';
 
 /**
- * Pure-logic coverage for OpensRail.tsx's supporting module, none of
+ * Pure-logic coverage for OpensView.tsx's supporting module, none of
  * which renders a component (client/CLAUDE.md's standing constraint).
  * The two functions the task's own report explicitly asks to be checked
  * for vacuousness live here: `partitionOpens` (self suppressed AND
@@ -175,7 +175,7 @@ describe('deriveRailView — unavailable told apart from empty', () => {
   // The critical case: identical `opens: []` content, differing ONLY in
   // `available`, must land on different `kind`s. A version of this test
   // that only checked one branch (or that asserted on `opens.length`
-  // instead of `kind`) would pass even if OpensRail rendered the two
+  // instead of `kind`) would pass even if OpensView rendered the two
   // states identically — this asserts the actual discriminant the
   // component branches on.
   it('reports `unavailable` when available is false, even with an empty opens array', () => {

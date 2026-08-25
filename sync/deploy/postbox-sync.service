@@ -15,6 +15,11 @@ EnvironmentFile=/opt/postbox/sync/.env
 ExecStart=/usr/bin/node --experimental-strip-types src/api/server.ts
 Restart=always
 RestartSec=10
+# 300s: covers ConnectionPool.stop()'s documented worst-case drain (pool.ts,
+# ~250s = 50 msgs x 5s) + concurrent IMAP LOGOUT (connection.ts's
+# LOGOUT_TIMEOUT_MS, 5s) + a margin, so a slow shutdown never gets SIGKILLed
+# before db.close() runs. Keep in sync with pool.ts's own note on this bound.
+TimeoutStopSec=300
 StandardOutput=journal
 StandardError=journal
 # accounts.json holds real Gmail app passwords (currently four accounts,

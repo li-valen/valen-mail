@@ -19,13 +19,15 @@ import type { PushSubscription, VapidConfig } from './vapid';
 
 /**
  * Same-origin paths client/public/sw.js's `sameOriginPath` resolves and
- * navigates to on notificationclick. This app has no client-side router —
- * App.tsx renders the inbox and the opens rail together on one page — so
- * both paths land on the same route today. The query string still lets a
- * future click handler (or an analytics read) tell the two kinds of
- * notification apart, and sw.js only strips the URL fragment, never the
- * search string, so a query parameter survives the round trip a `#hash`
- * would not.
+ * navigates to on notificationclick. This app still has no client-side
+ * router — App.tsx seeds its view once, on mount, rather than routing on
+ * navigation — but these are genuinely different destinations:
+ * client/src/initialView.ts's `initialViewFromSearch` reads the `rail`
+ * query param out of `location.search` in App.tsx's lazy `useState`
+ * initializer, so `?rail=opens` opens straight onto the Opens view and
+ * `/` opens onto the Inbox. sw.js only strips the URL fragment, never the
+ * search string, so this query parameter survives the round trip a
+ * `#hash` would not.
  */
 const INBOX_URL = '/';
 const OPENS_URL = '/?rail=opens';
