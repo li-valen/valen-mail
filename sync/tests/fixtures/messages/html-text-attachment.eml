@@ -1,0 +1,31 @@
+Return-Path: <sender@example.com>
+From: "Ada Lovelace" <ada@example.com>
+To: Grace <grace@example.com>, hopper@example.com
+Cc: "Alan T" <alan@example.com>
+Subject: =?utf-8?B?UXVhcnRlcmx5IHJlcG9ydCDwn5OI?=
+Date: Tue, 25 Aug 2026 09:30:00 +0000
+Message-ID: <report-1@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="MIXED-BOUNDARY"
+
+--MIXED-BOUNDARY
+Content-Type: multipart/alternative; boundary="ALT-BOUNDARY"
+
+--ALT-BOUNDARY
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+Plain text version of the report.
+--ALT-BOUNDARY
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+<html><body><p onclick="alert(1)">Rich <b>report</b></p><script>window.top.location="https://evil.example"</script><img src="https://tracker.example/pixel.gif"></body></html>
+--ALT-BOUNDARY--
+--MIXED-BOUNDARY
+Content-Type: application/pdf; name="q3-report.pdf"
+Content-Disposition: attachment; filename="q3-report.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQgZmFrZSByZXBvcnQgYnl0ZXM=
+--MIXED-BOUNDARY--

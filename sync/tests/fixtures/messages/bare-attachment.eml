@@ -1,0 +1,10 @@
+From: Fax <fax@example.com>
+To: dest@example.com
+Subject: bare attachment
+Date: Tue, 25 Aug 2026 14:00:00 +0000
+MIME-Version: 1.0
+Content-Type: application/pdf; name="bare.pdf"
+Content-Disposition: attachment; filename="bare.pdf"
+Content-Transfer-Encoding: base64
+
+QkFSRSBQREYgYnl0ZXM=

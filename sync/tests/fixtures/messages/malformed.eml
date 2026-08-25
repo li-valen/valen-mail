@@ -1,0 +1,15 @@
+From: Broken <broken@example.com>
+Subject: truncated
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="NEVERCLOSED"
+
+--NEVERCLOSED
+Content-Type: text/plain; charset="definitely-not-a-charset"
+
+SENTINEL-BODY-DO-NOT-LOG
+--NEVERCLOSED
+Content-Type: application/pdf; name="half.pdf"
+Content-Disposition: attachment; filename="half.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQg!!!not base64 at a

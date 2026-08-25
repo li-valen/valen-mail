@@ -1,0 +1,35 @@
+From: Sibling <sib@example.com>
+To: dest@example.com
+Subject: Two multiparts side by side
+Date: Tue, 25 Aug 2026 13:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="MIX"
+
+--MIX
+Content-Type: multipart/alternative; boundary="ALT"
+
+--ALT
+Content-Type: text/plain; charset=utf-8
+
+plain alternative
+--ALT
+Content-Type: text/html; charset=utf-8
+
+<p>html alternative</p>
+--ALT--
+--MIX
+Content-Type: multipart/related; boundary="REL"
+
+--REL
+Content-Type: text/html; charset=utf-8
+
+<p>related <img src="cid:logo@example"></p>
+--REL
+Content-Type: image/png; name="logo.png"
+Content-ID: <logo@example>
+Content-Disposition: inline; filename="logo.png"
+Content-Transfer-Encoding: base64
+
+wolQTkcgZmFrZSBsb2dv
+--REL--
+--MIX--

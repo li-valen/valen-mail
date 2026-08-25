@@ -1,0 +1,14 @@
+From: Scanner <scanner@example.com>
+To: dest@example.com
+Subject: Scan 0042
+Date: Tue, 25 Aug 2026 12:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="ONLY"
+
+--ONLY
+Content-Type: image/png; name="scan-0042.png"
+Content-Disposition: attachment; filename="scan-0042.png"
+Content-Transfer-Encoding: base64
+
+wolQTkcgZmFrZSBzY2FuIGJ5dGVz
+--ONLY--
