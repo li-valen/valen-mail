@@ -1,50 +1,74 @@
 /**
- * One row of the unified inbox (client/DESIGN.md §6, component #7:
- * "grid 1fr auto; sender (500 if unread) · subject · snippet (1-line
- * clamp) · receiving-account stub (mono --t-xs) · timestamp (mono,
- * tabular)"). Every value is a token from client/src/theme.css.
+ * One row of the unified inbox (client/DESIGN.md §6, component #7, as
+ * amended — see client/DESIGN.md's "Amendment 1: density & ergonomics"
+ * section, which supersedes this component's original `1fr auto` anatomy
+ * from §4.1's `.row` sample and §6's component-inventory row). Every
+ * value is a token from client/src/theme.css.
  *
- * `snippet` is always null today (task-4-brief.md ground truth) so it has
- * no column here — see MessageRow.tsx's doc comment for why nothing fills
- * that space as a placeholder.
+ * Amendment 1's row is a real 3-column grid — `168px minmax(0, 1fr) auto`
+ * — not the previous flex-inside-a-grid-column nesting. That nesting is
+ * what let the subject column mis-size and truncate far too early: the
+ * sender and subject shared one flex box competing against the meta
+ * column, instead of the subject getting every pixel left over after a
+ * fixed sender width. `snippet` is still always null today (task-4-
+ * brief.md ground truth) so it still has no column here.
  *
- * Ordering follows DESIGN.md's anatomy list, which places the account
- * stub next to the timestamp as secondary meta, not ahead of the sender —
- * that reading is more specific than, and takes precedence over,
- * task-4-brief.md's own looser prose ("account label, sender, subject,
- * time"), per this task's instruction that the DESIGN.md anatomy section
- * is binding.
+ * The account label that DESIGN.md's original anatomy placed in the meta
+ * text is now a short chip (`.row__chip`) between the subject and the
+ * time — see MessageRow.tsx's `accountChip` for the derivation. It is a
+ * label, never a filter.
  *
  * "unread" (sender at weight 500) is implemented via `.row__sender--unread`
  * below — see MessageRow.tsx and messageFlags.ts for the derivation, its
  * evidence, and its staleness caveat.
+ *
+ * `font-family` is NOT set on the UI-face spans below — `body` in
+ * theme.css now carries `--font-ui` for the whole document (Amendment 1's
+ * font-family fix), so a per-selector declaration here would only ever
+ * repeat it. `.row__chip` and `.row__time` still declare `--font-mono`
+ * explicitly, because that is a real departure from the inherited default,
+ * not a redundant restatement of it.
  */
 
 .row {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: 168px minmax(0, 1fr) auto;
   column-gap: var(--s-4);
-  row-gap: var(--s-1); /* DESIGN.md §4.1's .row sample — inert with no
-                           snippet line rendered today (nothing wraps to a
-                           second grid row yet), kept anyway so this rule
-                           does not silently drift from the token contract. */
   align-items: baseline;
-  min-height: var(--row-min-h);
+  min-height: var(--row-h);
   padding-block: var(--s-2);
+  transition: background-color var(--dur-fast) var(--ease-out);
 }
 
-.row__primary {
-  display: flex;
-  align-items: baseline;
-  gap: var(--s-2);
-  min-width: 0; /* required for text-overflow: ellipsis inside a flex item */
-  overflow: hidden;
-  white-space: nowrap;
+/* Full-row hover shift (Amendment 1), reusing the same --bg-hover token
+   every other hover state in the product already uses — DESIGN.md never
+   defines a separate "raise" token, so this is not a new one. Rows stay
+   plain, non-interactive `<li>`s: no detail view exists yet for them to
+   open, so this is a scanning aid, not a click affordance. `prefers-
+   reduced-motion` is handled once, globally, in theme.css — it already
+   collapses every transition-duration to 1ms, including this one. */
+.row:hover {
+  background: var(--bg-hover);
+}
+
+/* iOS touch-target floor (client/DESIGN.md §2.4 --hit-min), reused rather
+   than a second new row-height token — Amendment 1's own rationale for
+   introducing --row-h in the first place was to avoid token sprawl, and
+   --hit-min already IS 44px. */
+@media (max-width: 720px) {
+  .row {
+    min-height: var(--hit-min);
+  }
 }
 
 .row__sender {
-  flex-shrink: 0;
-  font-family: var(--font-ui);
+  min-width: 0; /* grid items default to a content-based min-width, which
+    would let a long name push past the fixed 168px track and defeat the
+    ellipsis below it — same hazard as .row__subject's own min-width: 0,
+    just on a fixed-width column instead of a 1fr one. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: var(--t-base);
   font-weight: 400;
   letter-spacing: -0.006em;
@@ -59,33 +83,43 @@
 }
 
 .row__subject {
-  flex: 1 1 auto;
-  min-width: 0;
+  min-width: 0; /* required for text-overflow: ellipsis inside a grid
+    item — do not remove; see the file doc comment above. */
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--font-ui);
   font-size: var(--t-base);
   letter-spacing: -0.006em;
   color: var(--fg-secondary);
 }
 
 /* DESIGN.md §3.3 puts tabular-nums on the .row__meta CONTAINER, not just
-   the timestamp — it inherits, so this also covers .row__account (the
-   account-id stub), which is correct: DESIGN.md's own §3.3 selector list
-   includes .row__meta by name. */
+   the timestamp — it inherits, so this also covers .row__chip (the
+   account-id stub's replacement), which is correct: DESIGN.md's own §3.3
+   selector list includes .row__meta by name. */
 .row__meta {
   display: flex;
   align-items: center;
   gap: var(--s-2);
-  flex-shrink: 0;
   color: var(--fg-secondary);
   font-variant-numeric: tabular-nums;
 }
 
-.row__account {
+/* Amendment 1's account chip. Deliberately achromatic — DESIGN.md §6's
+   "No account colour legend" rule bans colour as an account signal, so
+   this borrows StateToken's (component #10) quiet visual language
+   (mono, --t-2xs, --r-sm, small padding) without its wash background,
+   which is read-state-exclusive. --line-border's own token comment in
+   theme.css ("control edges only") is exactly this case. */
+.row__chip {
+  flex-shrink: 0;
   font-family: var(--font-mono);
-  font-size: var(--t-xs);
+  font-size: var(--t-2xs);
+  font-weight: 500;
+  padding: 2px var(--s-2);
+  border: 1px solid var(--line-border);
+  border-radius: var(--r-sm);
+  line-height: 1;
   white-space: nowrap;
 }
 

@@ -10,6 +10,16 @@
  * The focus ring is NOT defined here. theme.css states it once for every
  * interactive element in the product; a second definition scoped to this
  * component is how one control ends up disagreeing with the rest.
+ *
+ * Touched outside its normal ownership by task 7.5A ("Amendment 1:
+ * density & ergonomics") for two reasons only: the redundant
+ * `font-family: var(--font-ui)` removed below (theme.css now sets it once
+ * on `body`), and the dismiss button on the non-available-capability note
+ * (`.push-toggle--banner` / `.push-toggle__dismiss`) — the diagnosed
+ * "notifications banner is not dismissible" root cause, which only this
+ * file's own render branch could fix. Nothing else in this component was
+ * touched: the switch/track/knob markup, its ARIA, and the permission-
+ * gesture discipline in the file's own top comment are all unchanged.
  */
 
 .push-toggle {
@@ -20,6 +30,42 @@
   min-width: 0;
 }
 
+/* Amendment 1 ("density & ergonomics"): the non-available-capability note
+   (ios-install / unsupported / blocked) is the "notifications banner" the
+   amendment names as a root cause — it was the ONLY thing this toolbar
+   ever rendered in those states, permanently, with no way to dismiss it.
+   `.push-toggle--banner` pairs the note with `.push-toggle__dismiss`; see
+   PushToggle.tsx's own comment on `isNoteDismissed` for the full case. */
+.push-toggle--banner {
+  justify-content: space-between;
+}
+
+.push-toggle__dismiss {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--hit-min);
+  width: var(--hit-min);
+  padding: 0;
+  color: var(--fg-secondary);
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.push-toggle__dismiss:hover {
+  background: var(--bg-hover);
+}
+
+.push-toggle__dismiss:active {
+  background: var(--bg-active);
+}
+
 .push-toggle__switch {
   display: inline-flex;
   align-items: center;
@@ -28,7 +74,6 @@
      56px toolbar on a phone (DESIGN.md §2.4 --hit-min). */
   min-height: var(--hit-min);
   padding-inline: var(--s-2);
-  font-family: var(--font-ui);
   font-size: var(--t-base);
   letter-spacing: -0.006em;
   color: var(--fg-primary);
@@ -136,7 +181,6 @@
   margin: 0;
   min-width: 0;
   max-width: 40ch;
-  font-family: var(--font-ui);
   font-size: var(--t-xs);
   line-height: 1.3;
   color: var(--fg-secondary);

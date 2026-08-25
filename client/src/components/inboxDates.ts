@@ -84,18 +84,29 @@ export interface DayGroup {
   readonly messages: readonly InboxMessage[];
 }
 
-/** The day-rule label (client/DESIGN.md §3.1/§4.2): weekday, month, day,
- *  and year, always — never a relative "Today"/"Yesterday", which would
- *  make the label depend on the current wall-clock time and turn this
- *  file's only exported grouping function into something that reads the
- *  clock despite taking no `now` parameter. */
-function formatDayLabel(date: Date): string {
-  return date.toLocaleDateString('en-US', {
-    weekday: 'long',
-    month: 'long',
-    day: 'numeric',
-    year: 'numeric',
-  });
+/**
+ * The day-rule label (client/DESIGN.md's "Amendment 1: density &
+ * ergonomics" — supersedes §3.1/§4.2's original "weekday, month, day,
+ * year, always, never relative" rule). `Today` / `Yesterday`, else a
+ * short `Mon, Aug 24` — every glyph in all three forms (letters, digits,
+ * comma, space) is inside the Bricolage Grotesque `&text=` subset
+ * `index.html` requests; a period or any other punctuation here would
+ * silently fall back to the UI face instead of erroring, so nothing here
+ * introduces one.
+ *
+ * Reads `now` explicitly rather than `new Date()` — the same reason
+ * `formatWhen` takes it: every group label in one render agrees on what
+ * "today" means, and this stays a pure, testable function. This is a
+ * deliberate reversal of the ORIGINAL version's design (quoted in the
+ * amendment's history), which took no `now` for exactly the purity
+ * reason restated here; Amendment 1 judged relative labels worth the
+ * `now` parameter this needs to stay pure while having them.
+ */
+function formatDayLabel(date: Date, now: Date): string {
+  const daysAgo = calendarDaysBefore(now, date);
+  if (daysAgo === 0) return 'Today';
+  if (daysAgo === 1) return 'Yesterday';
+  return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
 /**
@@ -108,8 +119,14 @@ function formatDayLabel(date: Date): string {
  * Never mutates `messages`: every bucket holds a freshly built array, and
  * the only sort runs over an array of bucket entries derived from a Map,
  * never over the input array itself (project immutability rule).
+ *
+ * `now` (Amendment 1): threaded through to `formatDayLabel` so `Today`/
+ * `Yesterday` resolve against the one "now" the whole render agrees on —
+ * see that function's own comment. It affects label text only, never the
+ * bucketing/ordering/dateless-handling logic below, which is unchanged
+ * from the original version.
  */
-export function groupByDay(messages: readonly InboxMessage[]): readonly DayGroup[] {
+export function groupByDay(messages: readonly InboxMessage[], now: Date): readonly DayGroup[] {
   const buckets = new Map<string, { readonly date: Date; readonly messages: InboxMessage[] }>();
   const dateless: InboxMessage[] = [];
 
@@ -130,7 +147,7 @@ export function groupByDay(messages: readonly InboxMessage[]): readonly DayGroup
 
   const dayGroups: DayGroup[] = [...buckets.values()]
     .sort((a, b) => b.date.getTime() - a.date.getTime())
-    .map((bucket) => ({ day: formatDayLabel(bucket.date), messages: bucket.messages }));
+    .map((bucket) => ({ day: formatDayLabel(bucket.date, now), messages: bucket.messages }));
 
   if (dateless.length === 0) return dayGroups;
   return [...dayGroups, { day: NO_DATE_GROUP_LABEL, messages: dateless }];

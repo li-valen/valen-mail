@@ -3,7 +3,13 @@
  *
  * Layout only — every value is a token from client/src/theme.css.
  * client/DESIGN.md §3.1/§4.2 (day rule), §6 (component #5 InboxList, #16
- * Skeleton, #17 EmptyState), §7 (loading / empty / error) are the sources.
+ * Skeleton, #17 EmptyState), §7 (loading / empty / error) are the sources,
+ * as amended by "Amendment 1: density & ergonomics" (day rule size/margins,
+ * the skeleton row's height token).
+ *
+ * `font-family: var(--font-ui)` was removed from every UI-face selector
+ * below (Amendment 1) — theme.css now sets it once on `body`, so a
+ * per-selector repeat here only ever restated the inherited value.
  */
 
 .inbox-list {
@@ -12,11 +18,30 @@
   gap: var(--s-2);
 }
 
-/* The day rule (DESIGN.md §3.1, §4.2, §6 component #6): Bricolage
-   Grotesque, condensed — the ONLY element in the product that uses the
-   display face. --s-10 above / --s-4 below, per §4.2 ("more space above a
-   heading than below it"), except the very first one, which needs no
-   lead-in.
+/* The day rule (DESIGN.md §3.1, §4.2, §6 component #6, as amended — see
+   client/DESIGN.md's "Amendment 1: density & ergonomics" section, which
+   supersedes this rule's original --s-10/--s-4 margins, --t-xl size, and
+   letter-spacing direction). Bricolage Grotesque, condensed — still the
+   ONLY element in the product that uses the display face; Amendment 1
+   shrinks it to a quiet Superhuman-style label rather than removing it.
+   --s-6 above / --s-2 below, keeping §4.2's "more space above a heading
+   than below it," just at smaller values — except the very first one,
+   which needs no lead-in.
+
+   `font-variation-settings`'s `opsz` moved from 24 to 14: Bricolage's
+   optical-size axis is tuned to the rendered size, and 24 was chosen
+   for the original 26px label — left as-is at 13px it renders letterforms
+   cut for a size more than 2x too large.
+
+   `text-transform: uppercase` plus positive letter-spacing (Amendment 1's
+   own call — the brief left "uppercase with letter-spacing OR small-caps
+   feel" open): small-caps support varies enough across variable fonts
+   that uppercase-plus-tracking is the more reliable of the two here, and
+   it's a CSS transform, not a DOM change, so `Today`/`Yesterday` and a
+   screen reader's own casing stay normal-case in the accessibility tree.
+   Original letter-spacing was NEGATIVE (-0.02em, correct for tightening
+   large display type); uppercase small text needs the opposite direction
+   for legibility, hence the sign flip to +0.06em.
 
    Component #6's states are "default / stuck", and its anatomy line says
    "sticky at the inbox scroller top" — DESIGN.md specifies no visual
@@ -34,15 +59,16 @@
   top: 0;
   z-index: 1;
   margin: 0;
-  margin-block-start: var(--s-10);
-  margin-block-end: var(--s-4);
+  margin-block-start: var(--s-6);
+  margin-block-end: var(--s-2);
   padding-block: 2px; /* keeps the opaque stuck background off the glyphs' edges */
   font-family: var(--font-display);
-  font-variation-settings: 'wdth' 85, 'opsz' 24;
+  font-variation-settings: 'wdth' 85, 'opsz' 14;
   font-size: var(--t-xl);
   font-weight: 600;
-  line-height: 1.15;
-  letter-spacing: -0.02em;
+  line-height: 1.3;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: var(--fg-primary);
   background: var(--bg-inbox);
 }
@@ -60,9 +86,15 @@
 }
 
 /* Loading — shaped blocks matching real row geometry, never a spinner in
-   the middle of the region (DESIGN.md §7.1). */
+   the middle of the region (DESIGN.md §7.1). `--row-h`, not `--row-min-h`
+   (Amendment 1): the real row's own height token shrank to --row-h so it
+   could shrink independently of OpensRail's unrelated, concurrently-owned
+   use of --row-min-h — see theme.css's comment on both tokens. The
+   skeleton must track whichever token the real row actually uses, or a
+   loading inbox shows blocks visibly taller than the rows they resolve
+   into. */
 .inbox-list__skeleton-row {
-  height: var(--row-min-h);
+  height: var(--row-h);
   border-radius: var(--r-sm);
   background: var(--bg-skeleton);
   margin-block-end: var(--s-2);
@@ -77,7 +109,6 @@
 
 .inbox-list__empty-copy {
   margin: 0;
-  font-family: var(--font-ui);
   font-size: var(--t-md);
   line-height: 1.6;
   letter-spacing: -0.008em;
@@ -92,7 +123,6 @@
   margin: 0;
   margin-block-start: var(--s-6);
   padding: var(--s-3) var(--s-4);
-  font-family: var(--font-ui);
   font-size: var(--t-base);
   line-height: 1.4;
   letter-spacing: -0.006em;
@@ -132,7 +162,6 @@
 .inbox-list__load-more-button {
   min-height: var(--hit-min);
   padding-inline: var(--s-4);
-  font-family: var(--font-ui);
   font-size: var(--t-base);
   font-weight: 500;
   color: var(--fg-primary);

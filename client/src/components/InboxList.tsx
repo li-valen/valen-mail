@@ -150,7 +150,7 @@ export default function InboxList() {
     );
   }
 
-  const groups = groupByDay(messages);
+  const groups = groupByDay(messages, now);
 
   return (
     <div className="inbox-list">

@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import { X } from 'lucide-react';
 import LoginView from './LoginView';
 import InboxList from './components/InboxList';
 import OpensRail from './components/OpensRail';
@@ -25,6 +27,7 @@ import './shell.css';
 interface SessionErrorProps {
   readonly message: string;
   readonly onRetry: () => void;
+  readonly onDismiss: () => void;
 }
 
 /**
@@ -32,20 +35,36 @@ interface SessionErrorProps {
  * inbox with one retry control (DESIGN.md §7.4) — never a modal, never a
  * red banner that pushes content down and disappears. Task 4 owns the
  * richer per-account sync-failure surface; this is the shell-level case.
+ *
+ * Amendment 1 ("density & ergonomics") adds `onDismiss`: this and the
+ * notifications banner (PushToggle.tsx) were the two banners flagged as
+ * "not dismissible, takes prime space" — see App()'s own comment on the
+ * dismiss state for why dismissal does not also remove the retry link.
  */
-function SessionError({ message, onRetry }: SessionErrorProps) {
+function SessionError({ message, onRetry, onDismiss }: SessionErrorProps) {
   return (
-    <p className="shell__error" role="alert">
-      {message} Postbox has not loaded any mail.{' '}
-      <button type="button" className="shell__retry" onClick={onRetry}>
-        Try again
+    <div className="shell__banner" role="alert">
+      <p className="shell__banner-text">
+        {message} Postbox has not loaded any mail.{' '}
+        <button type="button" className="shell__retry" onClick={onRetry}>
+          Try again
+        </button>
+      </p>
+      <button type="button" className="shell__dismiss" onClick={onDismiss} aria-label="Dismiss">
+        <X size={14} strokeWidth={1.5} aria-hidden="true" />
       </button>
-    </p>
+    </div>
   );
 }
 
 export default function App() {
   const { gate, signIn, retry } = useSessionGate();
+  // Amendment 1: component-local, not persisted (the task's own spec for
+  // this banner's dismiss state) — keyed on the message text rather than
+  // a plain boolean, so a retry that fails with a DIFFERENT message still
+  // shows; only a repeat of the exact message the user already dismissed
+  // stays hidden.
+  const [dismissedErrorMessage, setDismissedErrorMessage] = useState<string | null>(null);
 
   // Replaces the shell rather than overlaying it: there is nothing behind
   // this to look at, and a modal over an empty grid would only imply there
@@ -77,7 +96,13 @@ export default function App() {
               no chrome for one), so this gives the outline a real root
               without adding anything to look at. */}
           <h1 className="visually-hidden">Inbox</h1>
-          {gate.status === 'error' && <SessionError message={gate.message} onRetry={retry} />}
+          {gate.status === 'error' && gate.message !== dismissedErrorMessage && (
+            <SessionError
+              message={gate.message}
+              onRetry={retry}
+              onDismiss={() => setDismissedErrorMessage(gate.message)}
+            />
+          )}
           {gate.status === 'authorized' && <InboxList />}
         </div>
       </main>

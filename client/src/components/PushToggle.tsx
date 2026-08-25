@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Bell, BellOff } from 'lucide-react';
+import { Bell, BellOff, X } from 'lucide-react';
 import { detectPushCapability, readPushEnvironment } from '../pushSupport';
 import type { PushCapability } from '../pushSupport';
 import { enablePush, disablePush, readPushState, browserPushDeps } from '../pushSubscribe';
@@ -35,6 +35,21 @@ import './PushToggle.css';
  * task); built on its tokens and its rules — achromatic like all chrome,
  * the shared focus ring, `--hit-min` touch target, no icon standing in for
  * a label.
+ *
+ * **The dismiss button (Amendment 1: "density & ergonomics").** With no
+ * other toolbar content built yet (App.tsx's own comment: AccountFilter,
+ * ThemeToggle, and the rail toggle are all still Task-4/5-shaped gaps),
+ * a browser in the `ios-install` / `unsupported` / `blocked` state
+ * rendered NOTHING but this note in the 56px toolbar, permanently, with
+ * no way to put it away — exactly the "notifications banner is not
+ * dismissible and takes prime space" root cause the amendment names.
+ * `isNoteDismissed` is component-local state, not persisted (the task's
+ * own spec): it resets on reload, which is fine — the note is low-value
+ * once read once per session, not something that needs to stay hidden
+ * forever. Deliberately scoped to only this non-`available` branch: the
+ * `failure` note in the `available` branch below is a direct response to
+ * an action the user just took (a toggle click that failed), which is a
+ * different kind of message and stays as it was.
  */
 
 /** Copy for the three states that are not a control. Written as what is
@@ -55,6 +70,7 @@ export default function PushToggle() {
   const [isOn, setOn] = useState(false);
   const [isBusy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  const [isNoteDismissed, setNoteDismissed] = useState(false);
 
   useEffect(() => {
     if (capability !== 'available') return;
@@ -105,9 +121,18 @@ export default function PushToggle() {
   }, [isOn]);
 
   if (capability !== 'available') {
+    if (isNoteDismissed) return null;
     return (
-      <div className="push-toggle">
+      <div className="push-toggle push-toggle--banner">
         <p className="push-toggle__note">{NOTES[capability]}</p>
+        <button
+          type="button"
+          className="push-toggle__dismiss"
+          onClick={() => setNoteDismissed(true)}
+          aria-label="Dismiss notification message"
+        >
+          <X size={14} strokeWidth={1.5} aria-hidden="true" />
+        </button>
       </div>
     );
   }

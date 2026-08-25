@@ -16,6 +16,12 @@ import type { InboxMessage } from '../src/api';
  * fixtures group 2+1 in UTC and US Eastern but collapse to a single group
  * at UTC+3 and eastward, which is exactly the kind of failure that is
  * green on one machine and red on another for no visible reason.
+ *
+ * `groupByDay` takes `NOW` explicitly as of client/DESIGN.md's "Amendment
+ * 1: density & ergonomics" — day-rule labels are now relative ("Today" /
+ * "Yesterday"), so the function needs a reference point the same way
+ * `formatWhen` already did. Every call below passes `NOW` for that reason,
+ * not because the bucketing/ordering logic itself changed.
  */
 
 const NOW = new Date('2026-08-24T23:30:00Z');
@@ -81,11 +87,14 @@ describe('formatWhen', () => {
 
 describe('groupByDay', () => {
   it('groups messages under day headers, newest day first', () => {
-    const out = groupByDay([
-      buildMessage({ uid: '3', date: '2026-08-24T10:00:00Z' }),
-      buildMessage({ uid: '2', date: '2026-08-24T08:00:00Z' }),
-      buildMessage({ uid: '1', date: '2026-08-23T22:00:00Z' }),
-    ]);
+    const out = groupByDay(
+      [
+        buildMessage({ uid: '3', date: '2026-08-24T10:00:00Z' }),
+        buildMessage({ uid: '2', date: '2026-08-24T08:00:00Z' }),
+        buildMessage({ uid: '1', date: '2026-08-23T22:00:00Z' }),
+      ],
+      NOW,
+    );
     expect(out).toHaveLength(2);
     expect(out[0]?.messages).toHaveLength(2);
   });
@@ -94,16 +103,19 @@ describe('groupByDay', () => {
   // groups came out oldest-first, or in input order, or in any order
   // other than newest calendar day first.
   it('would fail if day order were reversed: newest day is index 0', () => {
-    const out = groupByDay([
-      buildMessage({ uid: 'a', date: '2026-08-20T10:00:00Z' }), // oldest
-      buildMessage({ uid: 'b', date: '2026-08-24T10:00:00Z' }), // newest
-      buildMessage({ uid: 'c', date: '2026-08-22T10:00:00Z' }), // middle
-    ]);
+    const out = groupByDay(
+      [
+        buildMessage({ uid: 'a', date: '2026-08-20T10:00:00Z' }), // oldest
+        buildMessage({ uid: 'b', date: '2026-08-24T10:00:00Z' }), // newest
+        buildMessage({ uid: 'c', date: '2026-08-22T10:00:00Z' }), // middle
+      ],
+      NOW,
+    );
     expect(out.map((group) => group.messages.map((m) => m.uid))).toEqual([['b'], ['c'], ['a']]);
   });
 
   it('puts messages with no date in their own group rather than dropping them', () => {
-    const out = groupByDay([buildMessage({ uid: '1', date: null })]);
+    const out = groupByDay([buildMessage({ uid: '1', date: null })], NOW);
     expect(out.flatMap((g) => g.messages)).toHaveLength(1);
   });
 
@@ -115,7 +127,7 @@ describe('groupByDay', () => {
   it('keeps a dateless message in its own trailing group, not merged or dropped', () => {
     const dated = buildMessage({ uid: 'dated', date: '2026-08-24T10:00:00Z' });
     const dateless = buildMessage({ uid: 'dateless', date: null });
-    const out = groupByDay([dateless, dated]);
+    const out = groupByDay([dateless, dated], NOW);
 
     expect(out).toHaveLength(2);
     expect(out[0]?.messages).toEqual([dated]);
@@ -123,20 +135,20 @@ describe('groupByDay', () => {
   });
 
   it('groups multiple dateless messages together in the single trailing group', () => {
-    const out = groupByDay([
-      buildMessage({ uid: '1', date: null }),
-      buildMessage({ uid: '2', date: null }),
-    ]);
+    const out = groupByDay(
+      [buildMessage({ uid: '1', date: null }), buildMessage({ uid: '2', date: null })],
+      NOW,
+    );
     expect(out).toHaveLength(1);
     expect(out[0]?.messages.map((m) => m.uid)).toEqual(['1', '2']);
   });
 
   it('returns an empty list for an empty inbox, not a placeholder group', () => {
-    expect(groupByDay([])).toEqual([]);
+    expect(groupByDay([], NOW)).toEqual([]);
   });
 
   it('treats an unparseable date string the same as a null date', () => {
-    const out = groupByDay([buildMessage({ uid: '1', date: 'not-a-date' })]);
+    const out = groupByDay([buildMessage({ uid: '1', date: 'not-a-date' })], NOW);
     expect(out).toHaveLength(1);
     expect(out[0]?.messages).toHaveLength(1);
   });
@@ -152,11 +164,56 @@ describe('groupByDay', () => {
       buildMessage({ uid: '2', date: '2026-08-24T10:00:00Z' }),
       buildMessage({ uid: '1', date: '2026-08-20T10:00:00Z' }),
     ]);
-    expect(() => groupByDay(input)).not.toThrow();
+    expect(() => groupByDay(input, NOW)).not.toThrow();
     // The frozen array's own element order is untouched — this is the
     // part that would fail if groupByDay had instead called `.slice()`
     // then silently returned messages in a mutated order derived from a
     // copy, masking an in-place sort attempt on a non-frozen array.
     expect(input.map((m) => m.uid)).toEqual(['2', '1']);
+  });
+});
+
+/**
+ * Label-format assertions (client/DESIGN.md's "Amendment 1: density &
+ * ergonomics"): day-rule text is now `Today` / `Yesterday` / a short
+ * `Mon, Aug 24` form, replacing the original always-absolute "Tuesday,
+ * August 25, 2026" format. These are new — the pre-amendment suite above
+ * never pinned the label TEXT, only counts/order/grouping, which is why
+ * none of those assertions needed to change to add relative labels.
+ */
+describe('groupByDay — day-rule label format (Amendment 1)', () => {
+  it('labels the group containing "now" as "Today"', () => {
+    const out = groupByDay([buildMessage({ uid: '1', date: '2026-08-24T10:00:00Z' })], NOW);
+    expect(out[0]?.day).toBe('Today');
+  });
+
+  it('labels the group one calendar day before "now" as "Yesterday"', () => {
+    const out = groupByDay([buildMessage({ uid: '1', date: '2026-08-23T10:00:00Z' })], NOW);
+    expect(out[0]?.day).toBe('Yesterday');
+  });
+
+  it('labels a group two or more days back as "Weekday, Month Day" — never a bare weekday', () => {
+    const out = groupByDay([buildMessage({ uid: '1', date: '2026-08-20T10:00:00Z' })], NOW);
+    expect(out[0]?.day).toBe('Thu, Aug 20');
+  });
+
+  it('never renders a glyph outside the Bricolage day-rule subset (letters, digits, comma, space)', () => {
+    const out = groupByDay(
+      [
+        buildMessage({ uid: 'today', date: '2026-08-24T10:00:00Z' }),
+        buildMessage({ uid: 'yesterday', date: '2026-08-23T10:00:00Z' }),
+        buildMessage({ uid: 'older', date: '2026-06-01T10:00:00Z' }),
+        buildMessage({ uid: 'dateless', date: null }),
+      ],
+      NOW,
+    );
+    for (const group of out) {
+      expect(group.day).toMatch(/^[A-Za-z0-9, ]+$/);
+    }
+  });
+
+  it('still labels the dateless trailing group "No date", unaffected by the relative-label change', () => {
+    const out = groupByDay([buildMessage({ uid: '1', date: null })], NOW);
+    expect(out[out.length - 1]?.day).toBe('No date');
   });
 });

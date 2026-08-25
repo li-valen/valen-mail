@@ -889,3 +889,223 @@ Run in **all three root states** (unstamped on a light OS, unstamped on a dark O
 - [ ] `deviceClass` and `os` appear nowhere in the rendered DOM.
 - [ ] No checkmark glyph is rendered anywhere.
 - [ ] The mobile rail strip clears the iOS home indicator with the safe-area inset applied.
+
+---
+
+## 11. Amendment 1: density & ergonomics (user-directed)
+
+Task 7.5A of Plan 3. The user reviewed the running app and said: *"There are a lot of
+UI changes that need to be fixed... use superhuman or gmail design as a guide."* This
+amendment is scoped to ergonomics — density, hierarchy, and a foundational font bug —
+not identity. The token system, the three honest read-states, and the design's voice
+(§1–§2, §5) are unchanged. Where a value below conflicts with an earlier section, this
+amendment wins; the earlier section is left as written, as a record of what changed and
+why, rather than silently edited.
+
+### 11.1 The font bug (root cause)
+
+`body` (§2.1's own three-block structure) declared `background` and `color` but never
+`font-family`. `--font-ui` / `--font-mono` / `--font-display` all existed (§3.1); every
+component that did not opt into one of them per-selector — email subjects, list rows,
+whatever a future component forgot — fell through to the browser's serif default.
+Computed style on a live row, before this fix: `font: Times`. This was diagnosed as the
+single biggest reason the shipped app didn't look like a real product, ahead of any
+spacing or hierarchy problem below.
+
+Fix, in `theme.css`:
+
+```css
+body {
+  background: var(--bg-page);
+  color: var(--fg-primary);
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+}
+```
+
+The redundant `font-family: var(--font-ui)` this made unnecessary was removed from
+every selector in this task's files that had one: `MessageRow.css` (`.row__sender`,
+`.row__subject`), `InboxList.css` (`.inbox-list__empty-copy`, `.inbox-list__error`,
+`.inbox-list__load-more-button`), `shell.css` (the banner text, §11.4), and
+`PushToggle.css` (`.push-toggle__switch`, `.push-toggle__note` — see §11.4's note on
+why this file was touched at all). Selectors that explicitly need `--font-mono` or
+`--font-display` still declare them; those are real departures from the inherited
+default, not restatements of it. `login.css` and the concurrently-owned rail files
+(`OpensRail.css`, `ReadState.css`) carry the same redundant declarations and were left
+alone — they inherit the fix automatically, and this task's file ownership does not
+extend to them.
+
+### 11.2 Row anatomy — supersedes §4.1's `.row` sample and §6 component #7
+
+Old: `.row { grid-template-columns: 1fr auto; }` with sender and subject sharing one
+flex box as the first column. That nesting is what let the subject column mis-size and
+truncate far too early — the sender and subject were competing for one flex box's width
+against the meta column, instead of the subject getting every pixel left over after a
+fixed sender width. Computed on a live row, before this fix: height 80px (min-height 64
++ padding-block 8 top and bottom), for a single line of text.
+
+New, in `MessageRow.css`:
+
+```css
+.row {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr) auto; /* sender · subject · meta */
+  column-gap: var(--s-4);
+  align-items: baseline;
+  min-height: var(--row-h); /* 40px desktop */
+  padding-block: var(--s-2); /* 8px */
+}
+@media (max-width: 720px) {
+  .row { min-height: var(--hit-min); } /* 44px — the existing iOS touch-target floor */
+}
+```
+
+Sender is a fixed 168px column; subject is `minmax(0, 1fr)` and gets all remaining
+width; meta (`auto`) is paperclip, then the account chip (§11.3), then the time, right-
+aligned by grid position. `min-width: 0` stays on both `.row__sender` and
+`.row__subject` — required for `text-overflow: ellipsis` to actually clip inside a grid
+item rather than overflow its track.
+
+**A new token, `--row-h: 40px`, not a changed `--row-min-h`.** `--row-min-h` (64px) is
+also used by `OpensRail.css`, owned by a concurrent task on this same branch. Shrinking
+it in place would have silently shrunk the rail's row height out from under that task.
+`--row-h` is the inbox row's own token; `--row-min-h` is untouched and still means
+64px, exclusively for the rail. `InboxList.css`'s loading skeleton
+(`.inbox-list__skeleton-row`) was repointed from `--row-min-h` to `--row-h` so shaped
+loading blocks still match the real row height they resolve into.
+
+**Hover** reuses `--bg-hover` — the same token every other hover state in the product
+already uses. There is no separate "raise" token in this system, so none was invented.
+Rows stay plain, non-interactive `<li>`s; hover is a scanning aid, not a click
+affordance (no detail view exists yet for a row to open).
+
+Total row height, desktop: 40 + 8 + 8 = 56px. In an 800px-tall inbox scroller, that is
+approximately 14 rows of plain message rows back to back (fewer wherever a day rule's
+own margin — §11.3 — falls in the same span). Mobile: 44 + 8 + 8 = 60px.
+
+### 11.3 Day rule — supersedes §3.2's `--t-xl` row, §4.2's margins, and §6 component #6
+
+Old: 26px (`--t-xl`), `--s-10` (40px) above / `--s-4` (16px) below, sentence case,
+`letter-spacing: -0.02em`, always the full `Tuesday, August 25, 2026` form — DESIGN.md's
+original position was explicitly "never a relative Today/Yesterday" (the rationale
+lived in `inboxDates.ts`'s own doc comment, not in this file), reasoned on keeping
+`groupByDay` clock-independent. This amendment reverses that call: relative labels are
+worth the `now` parameter `groupByDay` now takes to stay pure while having them (every
+row in one render already agreed on "now" via the same `now` state `formatWhen` uses;
+`groupByDay(messages, now)` extends that agreement to day-rule labels rather than
+introducing a second, uncoordinated read of the clock).
+
+New format, in `inboxDates.ts`'s `formatDayLabel(date, now)`:
+
+- `Today` — same local calendar day as `now`.
+- `Yesterday` — exactly one calendar day before.
+- Otherwise `Mon, Aug 24` — `en-US` `{ weekday: 'short', month: 'short', day: 'numeric' }`.
+
+Every glyph in all three forms (letters, digits, comma, space) is inside the Bricolage
+Grotesque `&text=` subset `index.html` requests. No period, colon, or other punctuation
+is introduced anywhere in this function — any of those would silently fall back to the
+UI face rather than error, which is why this was checked against the actual subset
+string before shipping, not assumed.
+
+New size and style, in `InboxList.css`'s `.day-rule__label`:
+
+```css
+font-family: var(--font-display);
+font-variation-settings: 'wdth' 85, 'opsz' 14; /* opsz was 24, tuned for the old 26px size */
+font-size: var(--t-xl); /* redefined below, was 1.625rem/26px */
+font-weight: 600;
+line-height: 1.3;
+letter-spacing: 0.06em; /* was -0.02em — see the direction note below */
+text-transform: uppercase;
+margin-block-start: var(--s-6); /* 24px, was --s-10/40px */
+margin-block-end: var(--s-2); /* 8px, was --s-4/16px */
+```
+
+`--t-xl` itself was redefined in `theme.css`, `1.625rem` (26px) → `0.8125rem` (13px) —
+this was a value correction in place, not a new token: nothing else in the product
+reads `--t-xl` (checked before changing it), so there was no risk of a second caller
+silently shrinking, and no orphaned token left behind either way.
+
+The brief left the choice between "uppercase with letter-spacing" and "small-caps feel"
+open; this amendment picked **uppercase + positive tracking**. Small-caps support is
+inconsistent enough across variable fonts to be the less reliable of the two, and
+`text-transform` is a CSS-only transform — `Today`, `Yesterday`, and a screen reader's
+own casing all stay normal-case in the accessibility tree; only the visual rendering
+uppercases. The letter-spacing *sign* had to flip from the original: `-0.02em` was
+correct for tightening large (26px) display type, but uppercase text at 13px needs
+positive tracking for legibility, not negative.
+
+Sticky positioning and the opaque `background: var(--bg-inbox)` stuck-header treatment
+are both unchanged — a prior review finding, explicitly not to be regressed here.
+
+### 11.4 Account chip (new) — the account label moves out of the meta text
+
+§6 component #7's original anatomy put the account id directly in the meta text
+(mono, `--t-xs`). It now renders as a short chip, `MessageRow.tsx`'s `accountChip`:
+the first three characters of `account_id`, lower-cased — `primary` → `pri`,
+`harvard` → `har`, `personal` → `per`, `masterman` → `mas`, covering every account id
+this inbox has today. It sits between the subject and the time in `.row__meta`.
+
+```css
+.row__chip {
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs); /* 11px */
+  font-weight: 500;
+  padding: 2px var(--s-2);
+  border: 1px solid var(--line-border);
+  border-radius: var(--r-sm);
+}
+```
+
+Deliberately achromatic, borrowing StateToken's (component #10) quiet visual language
+(mono, `--t-2xs`, `--r-sm`, small padding) without its wash background — washes are
+read-state-exclusive, and §6's own "No account colour legend" rule bans colour as an
+account signal outright. `--line-border`'s token comment in `theme.css` ("control edges
+only") is exactly this chip's case. It is a label, never a filter: no click handler, no
+`role="button"`, nothing it does when pressed.
+
+### 11.5 Banners — supersedes part of §7.4, extends §6 component #19
+
+Two banners were diagnosed as broken in the running app: the toolbar's
+notifications-blocked note (`PushToggle.tsx`) and the shell-level session error
+(`App.tsx`'s `SessionError`). Both were a single line of text with no way to put it
+away — for the notifications note specifically, since no other toolbar content exists
+yet (no `AccountFilter`/`ThemeToggle`/rail toggle — still Task-4/5-shaped gaps per
+`App.tsx`'s own comment), that note was the *entire* rendered content of the 56px
+toolbar, permanently, on every load, in the `ios-install` / `unsupported` / `blocked`
+capability states.
+
+Both now pair the message with an icon-only dismiss button, matching §6 component #19's
+existing spec for that button shape (`--hit-min` square, `aria-label` required — nothing
+new invented, just applied for the first time): `X` from `lucide-react`, 14px,
+`stroke-width: 1.5`. Dismiss state is component-local (`useState`), not persisted, per
+this task's own instruction — it resets on reload, which is fine for both: neither
+message needs to stay hidden forever once read.
+
+`App.tsx`'s dismissal is keyed on the message text, not a bare boolean, so a retry that
+resurfaces a *different* error still shows; only a repeat of the exact message already
+dismissed stays hidden. The inline "Try again" retry link is unaffected — dismissing
+the banner does not remove the retry action, it only stops the banner rendering.
+
+`PushToggle.tsx`/`PushToggle.css` are outside this task's normal file ownership (see
+`client/CLAUDE.md`'s task-7.5A brief) but were touched for exactly this fix, plus the
+matching font-family cleanup (§11.1) — that file's own render branch was the only place
+the notifications-banner root cause could actually be fixed. Nothing else in that
+component changed: the switch/track/knob markup, its `role="switch"`/`aria-checked`,
+and the permission-gesture discipline documented in its own top comment are untouched.
+
+### 11.6 Tests updated
+
+`tests/inbox.test.ts`: every `groupByDay(...)` call gained a second `NOW` argument —
+the function's signature changed from `(messages)` to `(messages, now)` to support
+relative day-rule labels (§11.3). No existing assertion was deleted; all of them
+previously checked only group counts, order, and dateless handling, never label text,
+so none needed to change beyond adding the new required argument. A new
+`describe('groupByDay — day-rule label format (Amendment 1)')` block was added: it pins
+`Today`, `Yesterday`, the `Mon, Aug 20` form for anything older, the unchanged `No date`
+trailing-group label, and a regex guard (`/^[A-Za-z0-9, ]+$/`) that every label stays
+inside the Bricolage subset described in §11.3.
+
+`tests/theme-tokens.test.ts` (the theme-guard) and `tests/opens-rail-static-guards.test.ts`
+(the static-guard) were not modified and remain green — neither guard's assertions
+touch anything this amendment changed.

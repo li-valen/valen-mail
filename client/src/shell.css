@@ -88,18 +88,65 @@
  * failure renders in place at the top of the inbox with one retry control
  * (DESIGN.md §7.4). Achromatic — §7.4 forbids the red banner, and colour
  * in Postbox means a read-state and nothing else.
+ *
+ * Amendment 1 ("density & ergonomics") gives this the same one-line,
+ * muted, dismissible treatment as the notifications banner root cause it
+ * names alongside it: `.shell__banner` is now a flex row pairing the
+ * message with a `.shell__dismiss` icon-only button (DESIGN.md §6
+ * component #19's `--hit-min` square, `aria-label` required) rather than
+ * a bare paragraph with no way to put it away. Dismissal is component-
+ * local state in App.tsx keyed on the message text, not persisted — a
+ * genuinely new error (a different message) still shows even if a past
+ * one was dismissed. `.shell__banner-text` also drops the
+ * `font-family: var(--font-ui)` the original `.shell__error` declared —
+ * theme.css now sets it once on `body` (Amendment 1's font-family fix),
+ * so the per-selector copy here only ever restated the inherited value.
  */
-.shell__error {
+.shell__banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
   margin: 0;
   margin-block-start: var(--s-6);
   padding: var(--s-3) var(--s-4);
-  font-family: var(--font-ui);
+  background: var(--bg-hover);
+  border-radius: var(--r-sm);
+}
+
+.shell__banner-text {
+  margin: 0;
+  min-width: 0;
   font-size: var(--t-base);
   line-height: 1.4;
   letter-spacing: -0.006em;
   color: var(--fg-primary);
-  background: var(--bg-hover);
+}
+
+.shell__dismiss {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--hit-min);
+  width: var(--hit-min);
+  padding: 0;
+  color: var(--fg-secondary);
+  background: none;
+  border: 0;
   border-radius: var(--r-sm);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.shell__dismiss:hover {
+  background: var(--bg-active);
+}
+
+.shell__dismiss:active {
+  background: var(--bg-active);
 }
 
 /* A text-weight control, not a button-shaped one: the retry sits inside a
