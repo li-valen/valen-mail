@@ -25,6 +25,12 @@ const ACCOUNT_B: AccountConfig = {
   appPassword: 'y'.repeat(16),
   isPrimary: false,
 };
+const ACCOUNT_C: AccountConfig = {
+  id: 'c',
+  email: 'c@example.com',
+  appPassword: 'z'.repeat(16),
+  isPrimary: false,
+};
 
 interface RecordedOptions {
   readonly host: string;
@@ -136,6 +142,42 @@ describe('createTransports', () => {
 
     expect(() => transports.closeAll()).not.toThrow();
     expect(closeCalls).toEqual([]);
+  });
+
+  it('closeAll() isolates a throwing close(): every other transport still closes', () => {
+    // Task 2 review finding, landed with Task 3 because Task 3's send
+    // route is what first populates this cache. A bare
+    // `for (...) transport.close()` had two failure modes on one throwing
+    // close: it skipped every REMAINING transport, and it escaped
+    // synchronously while createShutdown's `Promise.all([...])` argument
+    // array was still being built — bypassing `await db.close()` on the
+    // next line and turning an orderly shutdown into exit(1).
+    const logged: unknown[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      logged.push(args);
+    });
+    const closed: string[] = [];
+    const createTransport = vi.fn((options: RecordedOptions) => ({
+      close: () => {
+        if (options.auth.user === ACCOUNT_B.email) throw new Error('socket already gone');
+        closed.push(options.auth.user);
+      },
+    })) as unknown as CreateTransportFn;
+    const transports = createTransports([ACCOUNT_A, ACCOUNT_B, ACCOUNT_C], createTransport);
+
+    transports.get('a');
+    transports.get('b');
+    transports.get('c');
+
+    expect(() => transports.closeAll()).not.toThrow();
+    // The one after the failure is the load-bearing half: 'a' closing
+    // proves nothing, since it ran before the throw.
+    expect(closed).toEqual([ACCOUNT_A.email, ACCOUNT_C.email]);
+
+    const output = JSON.stringify(logged);
+    expect(output).toContain('b');
+    expect(output).not.toContain(ACCOUNT_B.appPassword);
+    spy.mockRestore();
   });
 
   it('never lets the app password reach anything logged during get() or closeAll()', () => {

@@ -18,6 +18,12 @@ import { json, noContent, NO_STORE, PRIVATE_NO_STORE } from './http.ts';
 import { handlePushKey, handlePushSubscribe, handlePushUnsubscribe } from './push.ts';
 import type { VapidConfig } from '../push/vapid';
 import { handleIdentities } from './identities.ts';
+import {
+  handleSend,
+  SEND_RATE_LIMIT_MAX_ATTEMPTS,
+  SEND_RATE_LIMIT_WINDOW_MS,
+} from './send.ts';
+import type { Transports } from '../send/transports';
 import { createStaticHandler, defaultStaticRoot } from './static.ts';
 
 /**
@@ -582,6 +588,15 @@ async function handleAttachment(
  * caller of this function (tests included) keeps compiling unchanged, and
  * a router built with no accounts degrades to an empty identities list
  * rather than throwing.
+ *
+ * `transports` backs POST /api/send (Plan 4 Task 3) — see ./send.ts —
+ * and is appended after `accounts` for the same reason. `null` is a
+ * supported state: the route answers 503 rather than throwing, which is
+ * how every test in this repo that does not care about sending keeps
+ * building a router with no SMTP at all. `fetchImpl`, already present
+ * above for the /api/opens proxy, is reused for that route's token mint:
+ * both talk to the SAME tracking deployment, so a test that stubs one
+ * origin has no reason to stub it twice.
  */
 export function createRouter(
   db: Db,
@@ -595,11 +610,21 @@ export function createRouter(
   // that module's doc comment). Tests pass a fixture directory instead.
   staticRoot: string = defaultStaticRoot(),
   accounts: readonly AccountConfig[] = [],
+  transports: Transports | null = null,
 ): (request: Request) => Promise<Response> {
   // One counter per router, created here rather than taken as a parameter:
   // production builds exactly one router, and giving each call its own
   // instance keeps tests from sharing a window and becoming order-dependent.
   const sessionLimiter = createFixedWindowLimiter();
+
+  // A SECOND, independent counter for POST /api/send — same mechanism,
+  // its own window and its own budget (./send.ts documents both numbers).
+  // Deliberately not the instance above: a burst of sends must never
+  // spend the budget that lets the owner sign in.
+  const sendLimiter = createFixedWindowLimiter(
+    SEND_RATE_LIMIT_MAX_ATTEMPTS,
+    SEND_RATE_LIMIT_WINDOW_MS,
+  );
 
   // Built once per router, same reasoning as sessionLimiter above: the
   // one-time "does STATIC_ROOT even exist" warning (./static.ts) must fire
@@ -644,6 +669,20 @@ export function createRouter(
 
     if (path === '/api/push/subscribe' && request.method === 'DELETE') {
       return handlePushUnsubscribe(db, request);
+    }
+
+    // Plan 4 Task 3's write, matched before the GET-only check below for
+    // the same reason the two push writes are: it would otherwise fall
+    // through to that 404.
+    if (path === '/api/send' && request.method === 'POST') {
+      return handleSend(request, {
+        accounts,
+        transports,
+        trackingConfig,
+        limiter: sendLimiter,
+        nowMs: Date.now(),
+        fetchImpl,
+      });
     }
 
     if (request.method !== 'GET') {

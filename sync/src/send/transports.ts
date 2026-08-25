@@ -70,6 +70,16 @@ export interface Transports {
  * actually created — never on every configured account. An account whose
  * identity was listed but never sent through never opened a socket, so
  * there is nothing for shutdown to close on its behalf.
+ *
+ * Each close is isolated (Task 2 review finding, landed with Task 3, which
+ * is what first populates this cache): one transport whose `close()`
+ * throws must not skip the transports after it, and — the sharper half —
+ * must not escape synchronously out of ../api/server.ts's
+ * `Promise.all([...])` ARGUMENT LIST, which is still being evaluated when
+ * `closeAll()` runs. A throw there never reaches a rejected promise: it
+ * unwinds past the `await db.close()` on the following line and turns an
+ * orderly shutdown into exit(1). Same belt-and-braces reasoning
+ * `pool.stop()` already documents.
  */
 export function createTransports(
   accounts: readonly AccountConfig[],
@@ -95,7 +105,16 @@ export function createTransports(
   }
 
   function closeAll(): void {
-    for (const transport of cache.values()) transport.close();
+    for (const [accountId, transport] of cache) {
+      try {
+        transport.close();
+      } catch (error) {
+        // Account id only — never the account's credential. Closing a
+        // socket that the far end already dropped is the ordinary case
+        // here, and it is not worth failing a shutdown over.
+        console.error(`send: transport close failed for account ${accountId}`, error);
+      }
+    }
   }
 
   return { get, closeAll };

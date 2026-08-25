@@ -404,28 +404,41 @@ export function createShutdown(
  * startServer itself cannot be called from a test without a live Postgres
  * and four IMAP connections, so the seam is pulled out to where it can be.
  * tests/push.test.ts drives it with fakes and asserts GET /api/push/key
- * reports the configured key.
+ * reports the configured key; tests/send-route.test.ts does the same for
+ * `transports` and POST /api/send.
+ *
+ * `transports` (Plan 4 Task 3) is a parameter rather than something built
+ * from `config` here because startServer already builds exactly one
+ * instance to hand to createShutdown — building a second one here would
+ * give the send route a set of SMTP connections shutdown never closes.
+ * `fetchImpl` is threaded through for the same reason it exists on
+ * createRouter: production passes nothing, and a test can stub the
+ * tracking service without a live network call.
  */
 export function createRouterFromConfig(
   db: Db,
   pool: ConnectionPool,
   apiToken: string,
   config: SyncConfig,
+  transports: Transports | null = null,
+  fetchImpl?: typeof fetch,
 ): (request: Request) => Promise<Response> {
   return createRouter(
     db,
     pool,
     apiToken,
     config.trackingConfig,
-    // Production always uses the real global fetch; the parameter exists
-    // so tests can stub the /api/opens proxy (see routes.ts).
-    undefined,
+    // Production always uses the real global fetch (the caller passes
+    // nothing); the parameter exists so tests can stub the tracking
+    // service for /api/opens and /api/send alike (see routes.ts).
+    fetchImpl,
     config.vapidConfig,
     // staticRoot: undefined keeps createRouter's own default
     // (defaultStaticRoot()) — skipped positionally, the same way
     // fetchImpl is skipped two lines up, to reach accounts below it.
     undefined,
     config.accounts,
+    transports,
   );
 }
 
@@ -525,13 +538,13 @@ export async function startServer(): Promise<{ close(): Promise<void> }> {
   const opensPoll = createOpensPollFromConfig(db, config);
   opensPoll?.start();
 
-  // Plan 4 Task 2: one lazy, per-account SMTP transport. Nothing calls
-  // .get() yet — POST /api/send is Task 3 — so this exists purely to be
-  // wired into createShutdown below from the moment it does, rather than
-  // introducing that wiring later alongside the route that first needs it.
+  // Plan 4 Task 2: one lazy, per-account SMTP transport, built once and
+  // shared by the two things that need it — POST /api/send (Task 3, via
+  // the router below) and createShutdown further down, which closes
+  // exactly the transports the route actually opened.
   const transports = createTransports(config.accounts);
 
-  const router = createRouterFromConfig(db, pool, apiToken, config);
+  const router = createRouterFromConfig(db, pool, apiToken, config, transports);
   const server = createServer((nodeRequest, nodeResponse) => {
     void handleRequest(router, nodeRequest, nodeResponse);
   });
