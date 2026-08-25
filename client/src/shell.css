@@ -1,0 +1,78 @@
+/**
+ * The AppShell layout (client/DESIGN.md §4.1, §4.3). Layout only — colours
+ * and spacing come from theme.css tokens, never literal values.
+ *
+ * Toolbar, inbox, and rail are landmarks with no real content yet (Tasks 4
+ * and 5 render the message list and the opens rail). The mobile rail strip
+ * and its bottom-sheet expansion (§4.3) are Task 5's job too, since they
+ * have nothing to show without real open-event data — this file only
+ * establishes the >=1080px two-column / <1080px single-column switch.
+ */
+
+.shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--shell-rail-w);
+  grid-template-rows: var(--shell-toolbar-h) minmax(0, 1fr);
+  grid-template-areas: 'toolbar rail' 'inbox rail';
+  height: 100dvh; /* dvh, not vh — iOS PWA chrome */
+  overflow: hidden; /* the page never scrolls; regions do */
+}
+
+.toolbar {
+  grid-area: toolbar;
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  padding-inline: var(--s-6);
+  background: var(--bg-page);
+  /* No border — DESIGN.md §4.2: "no horizontal rules anywhere." The
+     toolbar/rail share --bg-page/--bg-rail's casing tone against the
+     inbox's paper tone (--bg-inbox), which is the separation, not a line. */
+}
+
+.inbox {
+  grid-area: inbox;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--bg-inbox);
+}
+
+.rail {
+  grid-area: rail;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--bg-rail);
+}
+
+/* minmax(0, 1fr) above — not 1fr — or a long unbreakable subject blows the
+   grid out and the body scrolls sideways (DESIGN.md §4.1). */
+.inbox__inner {
+  max-width: var(--shell-inbox-max);
+  margin-inline: auto;
+  padding-inline: var(--s-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+/* Any wide content inside the inbox (a fixed-width table, a code block)
+   must scroll in its own box — the page body itself never scrolls
+   horizontally (DESIGN.md §4.1). */
+.scroll-x {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  max-width: 100%;
+}
+
+/* Below 1080px the rail collapses to a bottom strip; it does not vanish
+   (DESIGN.md §4.3). The strip itself is rendered by Task 5. */
+@media (max-width: 1079px) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: 'toolbar' 'inbox';
+    grid-template-rows: var(--shell-toolbar-h) minmax(0, 1fr);
+  }
+  .rail {
+    display: none;
+  }
+}

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <!-- Matches --bg-page in each theme (client/DESIGN.md §2.3) so the browser
+         chrome doesn't flash a mismatched colour before theme.css paints. -->
+    <meta name="theme-color" content="#f3f3f7" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0b0b10" media="(prefers-color-scheme: dark)" />
+    <!-- iOS: makes "Add to Home Screen" launch in the manifest's standalone
+         display mode, which Web Push (Task 6) requires. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Bricolage Grotesque is used for exactly one element in this product,
+         the day-rule label (DESIGN.md §3.1), so it is requested with a
+         `text=` subset covering only the glyphs a day rule needs — letters,
+         digits, space, comma. This is a deliberate ruling (not the full
+         Google Fonts snippet in DESIGN.md §3.1, which loads the unsubset
+         family): see the "Font subsetting" note in task-3-report.md. -->
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,600&text=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789%2C%20&display=swap"
+    />
+    <!-- IBM Plex Sans and IBM Plex Mono carry running text and arbitrary
+         email content, so their glyph set is not knowable in advance —
+         these load full and unsubset. -->
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+    />
+    <title>Postbox</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
