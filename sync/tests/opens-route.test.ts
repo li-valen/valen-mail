@@ -87,15 +87,23 @@ describe('GET /api/opens', () => {
     expect(body.opens).toEqual([event]);
   });
 
-  it('never puts the tracking token in the outgoing request URL', async () => {
+  it('sends the tracking token as a bearer header, never in the outgoing request URL', async () => {
+    // Fix 4 (fix round 1 review): absence-only ("not in the URL") also
+    // passes against a build that never sends the token anywhere at all.
+    // The positive assertion on the authorization header is what makes
+    // this load-bearing — it would fail if the header were dropped,
+    // renamed, or malformed, not just if the token leaked into the URL.
     const fetchImpl = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ opens: [] }), { status: 200 }),
     );
     const router = createRouter(FAKE_DB, FAKE_POOL, TOKEN, TRACKING, fetchImpl);
     await router(new Request('http://x/api/opens', { headers: auth }));
     expect(fetchImpl).toHaveBeenCalled();
-    const calledUrl = String(fetchImpl.mock.calls[0]![0]);
-    expect(calledUrl).not.toContain(TRACKING.readToken);
+    const [calledUrl, init] = fetchImpl.mock.calls[0]!;
+    expect(String(calledUrl)).not.toContain(TRACKING.readToken);
+    expect((init as { headers: { authorization: string } }).headers.authorization).toBe(
+      `Bearer ${TRACKING.readToken}`,
+    );
   });
 
   it('forwards a clamped limit from the query string', async () => {

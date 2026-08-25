@@ -1,12 +1,12 @@
-/** Mirrors routes.ts's own cap: a client (or a misconfigured caller of
- *  this module directly) asking for `limit=999999` must not be honoured
- *  regardless of what the tracking service itself would tolerate. */
-const MAX_LIMIT = 200;
-const DEFAULT_LIMIT = 50;
+import { MAX_LIMIT, DEFAULT_LIMIT } from './limits.ts';
 
-/** The tracking service is a separate deployment on its own network path;
- *  a hung connection must not hang the inbox request that triggered it. */
-const REQUEST_TIMEOUT_MS = 5000;
+/**
+ * The tracking service is a separate deployment on its own network path; a
+ * hung connection must not hang the inbox request that triggered it.
+ * Exported so tests can assert against it directly rather than
+ * hardcoding a second copy of the number.
+ */
+export const REQUEST_TIMEOUT_MS = 5000;
 
 /**
  * One open event as returned by the tracking service's GET /api/opens

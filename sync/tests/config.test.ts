@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { loadConfig, MAX_ACCOUNTS } from '../src/config';
 
 const ENV = { DATABASE_URL: 'postgresql://localhost/x', PORT: '8080' } as NodeJS.ProcessEnv;
@@ -6,6 +6,23 @@ const ENV = { DATABASE_URL: 'postgresql://localhost/x', PORT: '8080' } as NodeJS
 const ONE = [{ id: 'primary', email: 'a@gmail.com', appPassword: 'abcdefghijklmnop', isPrimary: true }];
 
 describe('loadConfig', () => {
+  // Fix 3 (fix round 1 review): this ENV fixture carries no TRACKING_*
+  // vars, so every test below triggers parseTrackingConfig's startup
+  // warning (Amendment 4 working as intended) — that's correct behaviour,
+  // but a suite that always prints a warning is one where a genuinely new
+  // warning would go unnoticed. Silenced here, not weakened: the dedicated
+  // 'loadConfig trackingConfig' describe block below still asserts the
+  // warning fires, with its own un-silenced spies.
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
   it('accepts a well-formed single account', () => {
     const config = loadConfig(ONE, ENV);
     expect(config.accounts).toHaveLength(1);

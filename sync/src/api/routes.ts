@@ -5,12 +5,7 @@ import type { ImapConnection } from '../imap/connection';
 import type { TrackingConfig } from '../config';
 import { fetchBodyPart, BodyPartTooLargeError, MAX_BODY_PART_BYTES } from '../imap/fetch.ts';
 import { fetchOpens } from './opens.ts';
-
-/** A client asking for `limit=999999` must not be honoured — this caps how
- *  many rows a single /api/inbox request can pull regardless of what the
- *  query string asks for. */
-const MAX_LIMIT = 200;
-const DEFAULT_LIMIT = 50;
+import { MAX_LIMIT, DEFAULT_LIMIT } from './limits.ts';
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {

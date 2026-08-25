@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { fetchOpens } from '../src/api/opens';
+import { fetchOpens, REQUEST_TIMEOUT_MS } from '../src/api/opens';
 
 /**
  * Unit tests for fetchOpens: the module that reaches across the network
@@ -22,6 +22,35 @@ afterEach(() => {
 });
 
 describe('fetchOpens', () => {
+  it('aborts and reports unreachable when the tracking service never responds within REQUEST_TIMEOUT_MS', async () => {
+    // Fix 1 (fix round 1 review): `fetchStub.mockRejectedValue(...)` in the
+    // test below this one reaches the same catch block a real timeout
+    // would, so it looks like timeout coverage without being any — deleting
+    // `signal: controller.signal` from fetchOpens still passes every other
+    // test in this file. This test is the one that actually depends on the
+    // timer firing and the abort signal being wired to the fetch call: a
+    // fetchImpl that never settles on its own, and only rejects when its
+    // AbortSignal fires.
+    vi.useFakeTimers();
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const fetchImpl = vi.fn((_url: unknown, init?: { signal?: AbortSignal }) => {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(new Error('The operation was aborted'));
+          });
+        });
+      });
+      const pending = fetchOpens(50, { ...BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
+      await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS);
+      const out = await pending;
+      expect(out).toEqual({ ok: false, reason: 'unreachable' });
+    } finally {
+      vi.useRealTimers();
+      spy.mockRestore();
+    }
+  });
+
   it('reports unreachable and logs when the tracking service is unreachable', async () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const fetchStub = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
