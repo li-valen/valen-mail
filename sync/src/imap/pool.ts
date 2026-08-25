@@ -232,6 +232,14 @@ export class ConnectionPool {
   // trackNewMessages()'s own comment.
   private readonly seenUidValidity = new Map<string, bigint>();
 
+  // Fix round 2, Fix A: every detached dispatch chain currently running
+  // (Fix round 1, Fix 5 made dispatch fire-and-forget from syncOnce(), so
+  // more than one of these can be live per account at once during a mail
+  // burst). Added when a chain is launched, removed once it settles —
+  // see trackDispatch(). stop() drains this set so a chain can never be
+  // left racing db.close() against the account it dispatched for.
+  private readonly inFlightDispatches = new Set<Promise<void>>();
+
   // Lets a backoff sleep (up to MAX_BACKOFF_MS) be cut short the instant
   // stop() is called, instead of stop() having to wait out whatever delay
   // a reconnecting account happened to be in the middle of.
@@ -354,6 +362,40 @@ export class ConnectionPool {
     const connections = [...this.connections.values()];
     await Promise.all(connections.map((connection) => connection.disconnect()));
     this.connections.clear();
+
+    // Fix round 2, Fix A: drain any detached dispatch chains (Fix round 1,
+    // Fix 5) AFTER disconnecting IMAP, not before — dispatch does not
+    // touch IMAP at all, so ordering it after preserves the existing
+    // disconnect-first shutdown shape rather than inventing a new one.
+    //
+    // Without this, server.ts's createShutdown() closes `db` right after
+    // this method resolves (server -> pool/poll -> db), and Fix 5 made
+    // dispatch detached from syncOnce() specifically so MULTIPLE chains
+    // per account can be in flight at once during a mail burst against a
+    // slow push service — any of them still running at that moment would
+    // read push_subscriptions or write a prune against a closing/closed
+    // db, and (per notifyNewMail's documented at-most-once semantics) that
+    // failure is silently dropped, not retried.
+    //
+    // allSettled, not all: dispatchNewMessages() is structurally
+    // never-rejecting (its own try/catch swallows and logs), so this is
+    // belt-and-braces protection against stop() itself rejecting if that
+    // contract were ever accidentally broken — today's behaviour does not
+    // depend on the choice either way.
+    await Promise.allSettled([...this.inFlightDispatches]);
+  }
+
+  /**
+   * Registers a detached dispatch chain so stop() can drain it, and
+   * removes it once it settles. `dispatchNewMessages()` never rejects, so
+   * the `.finally()` below is the only cleanup needed — there is no
+   * rejection branch to route separately.
+   */
+  private trackDispatch(promise: Promise<void>): void {
+    this.inFlightDispatches.add(promise);
+    void promise.finally(() => {
+      this.inFlightDispatches.delete(promise);
+    });
   }
 
   private async sleepInterruptible(ms: number): Promise<void> {
@@ -553,7 +595,13 @@ export class ConnectionPool {
     // when a slow cycle's dispatch is still running while the NEXT cycle's
     // dispatch starts; they just don't block each other or the sync loop
     // any more.
-    void this.dispatchNewMessages(accountId, newMessages);
+    //
+    // Fix round 2, Fix A: routed through trackDispatch() rather than a
+    // bare `void` — detaching multiple chains per account (exactly what
+    // this comment describes above) means stop() needs a way to find and
+    // drain every one of them, not just fire them and lose track. See
+    // trackDispatch()'s and stop()'s own comments for why.
+    this.trackDispatch(this.dispatchNewMessages(accountId, newMessages));
   }
 
   /**
@@ -665,6 +713,19 @@ export class ConnectionPool {
    * Always returns a resolved promise, never a rejected one — which is
    * what makes calling this without `await` at the syncOnce() call site
    * safe.
+   *
+   * This makes the new-mail path AT-MOST-ONCE: a message trackNewMessages()
+   * already decided was "new" and then failed to dispatch for (the hook
+   * threw, or its own network call failed) is never retried — the
+   * high-water mark has already moved past its UID by the time this
+   * method even runs, so no later cycle will ever re-offer it. Contrast
+   * push/opens-poll.ts's `notifyOpens` call site, which is deliberately
+   * AT-LEAST-ONCE instead (persists its watermark only after a successful
+   * send, so a crash between the two re-notifies on the next tick) — the
+   * two paths made opposite choices for reasons specific to each: opens
+   * has a durable, restart-safe watermark to re-derive "did this already
+   * send" from; new mail's watermark is in-memory only (Amendment 3) and
+   * has no such recovery story to lean on.
    */
   private async dispatchNewMessages(
     accountId: string,

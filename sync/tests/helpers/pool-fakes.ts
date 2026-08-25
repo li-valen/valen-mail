@@ -47,14 +47,19 @@ export interface FakeClientOptions {
   /** Injected between the download starting and its first chunk, so a test
    *  can hold an on-demand fetch open while it observes what else runs. */
   readonly downloadGate?: Promise<void>;
-  /** Initial UIDVALIDITY the fake mailbox reports. Defaults to 1. A test
-   *  simulating a real UIDVALIDITY change uses the returned handle's
-   *  `setUidValidity()` rather than a second option — a live IMAP server
-   *  changes this value on an already-open connection mid-session, not at
-   *  connect time, so the fake needs to be mutable the same way `messages`
-   *  is (see the `mailbox` getter's own comment on why it recomputes
-   *  rather than snapshots). */
-  readonly uidValidity?: number;
+  /** Initial UIDVALIDITY the fake mailbox reports. Defaults to 1n. Typed
+   *  `bigint`, not `number`, to mirror imapflow's own
+   *  `MailboxObject.uidValidity` (imap-flow.d.ts) — fetch.ts reads this
+   *  field directly as a bigint (`BigInt(mailbox.uidValidity)` is a
+   *  defensive identity conversion, not a widening one), so a fake typed
+   *  as `number` here would silently diverge from what production code
+   *  actually receives. A test simulating a real UIDVALIDITY change uses
+   *  the returned handle's `setUidValidity()` rather than a second
+   *  option — a live IMAP server changes this value on an already-open
+   *  connection mid-session, not at connect time, so the fake needs to be
+   *  mutable the same way `messages` is (see the `mailbox` getter's own
+   *  comment on why it recomputes rather than snapshots). */
+  readonly uidValidity?: bigint;
 }
 
 /**
@@ -113,7 +118,7 @@ export function createFakeClient(options: FakeClientOptions = {}) {
   const getMailboxLock = vi.fn(async () => ({ release: () => {} }));
 
   const messages = options.messages ?? [];
-  let uidValidity = options.uidValidity ?? 1;
+  let uidValidity = options.uidValidity ?? 1n;
 
   const fetch = vi.fn(function* fetchImpl() {
     for (const message of messages) yield message;
@@ -174,7 +179,7 @@ export function createFakeClient(options: FakeClientOptions = {}) {
       for (const handler of existsListeners) handler({});
     },
     existsListenerCount: () => existsListeners.size,
-    setUidValidity: (value: number) => {
+    setUidValidity: (value: bigint) => {
       uidValidity = value;
     },
   };

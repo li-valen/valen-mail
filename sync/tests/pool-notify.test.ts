@@ -256,7 +256,7 @@ describe('ConnectionPool — UIDVALIDITY re-baseline (Fix round 1, Fix 3)', () =
    */
   it('a UIDVALIDITY change fires zero callbacks and resets the mark; the next cycle under the new numbering notifies normally', async () => {
     const msgs: FakeFetchMessage[] = [{ uid: 501, envelope: { messageId: '<m1@x>' } }];
-    const fakeA = createFakeClient({ messages: msgs, uidValidity: 100 });
+    const fakeA = createFakeClient({ messages: msgs, uidValidity: 100n });
     const db = createFakeDb();
     const onNewMessages = vi.fn();
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -272,7 +272,7 @@ describe('ConnectionPool — UIDVALIDITY re-baseline (Fix round 1, Fix 3)', () =
 
     // The server renumbers the mailbox: UIDVALIDITY changes AND UIDs
     // restart lower — the actual failure mode a UID-only mark breaks on.
-    fakeA.setUidValidity(200);
+    fakeA.setUidValidity(200n);
     msgs.length = 0;
     msgs.push({ uid: 5, envelope: { messageId: '<new1@x>' } });
     fakeA.triggerExists();
@@ -303,7 +303,7 @@ describe('ConnectionPool — UIDVALIDITY re-baseline (Fix round 1, Fix 3)', () =
 
   it('a stable UIDVALIDITY across cycles never triggers the re-baseline log', async () => {
     const msgs: FakeFetchMessage[] = [{ uid: 501, envelope: { messageId: '<m1@x>' } }];
-    const fakeA = createFakeClient({ messages: msgs, uidValidity: 100 });
+    const fakeA = createFakeClient({ messages: msgs, uidValidity: 100n });
     const db = createFakeDb();
     const onNewMessages = vi.fn();
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -328,5 +328,183 @@ describe('ConnectionPool — UIDVALIDITY re-baseline (Fix round 1, Fix 3)', () =
     expect(loggedChange).toBe(false);
 
     consoleErrorSpy.mockRestore();
+  });
+});
+
+/**
+ * Fix round 2, Fix A — stop() drains in-flight detached dispatch chains.
+ *
+ * Fix round 1's Fix 5 detached dispatch from syncOnce() (`void` instead of
+ * `await`) so the idle loop's time-to-next-IDLE would not scale with
+ * push-service latency. That changed the blast radius of a PRE-EXISTING
+ * gap (pool.stop() never awaited in-flight work): before Fix 5, at most
+ * ONE dispatch chain per account could ever be racing db.close(), since
+ * dispatch was serialised inside syncOnce(); after Fix 5, a mail burst can
+ * launch several concurrent chains per account, any of which can still be
+ * running when stop() returns and server.ts's createShutdown() closes
+ * `db` right after. A chain that loses that race has its db read/write
+ * silently dropped, per notifyNewMail's own documented at-most-once
+ * semantics.
+ */
+describe('ConnectionPool — stop() drains in-flight dispatch chains (Fix round 2, Fix A)', () => {
+  const harness = createPoolHarness();
+  const launch = harness.launch;
+
+  afterEach(async () => {
+    await harness.stop();
+  });
+
+  /**
+   * Mirrors the shape of push/opens-poll.ts's own stop()-awaits-an-
+   * in-flight-tick test (Fix round 1, Fix 2): hang the chain on a gate,
+   * call stop(), prove it has NOT resolved after a microtask/macrotask
+   * flush, release the gate, and prove stop() only resolves once the
+   * chain's own effects (here: a stand-in "prune write" the hook performs
+   * after its stand-in "slow sendPush" gate opens) have actually landed —
+   * not merely that the promise eventually settles.
+   */
+  it('does not resolve until an in-flight dispatch chain completes, and the chain is not dropped', async () => {
+    const msgs: FakeFetchMessage[] = [{ uid: 501, envelope: { messageId: '<m1@x>' } }];
+    const fakeA = createFakeClient({ messages: msgs });
+    const db = createFakeDb();
+
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    let subscriptionReadStarted = false;
+    let pruneWriteLanded = false;
+
+    const onNewMessages = vi.fn(async () => {
+      subscriptionReadStarted = true; // stands in for notifyNewMail's push_subscriptions read
+      await gate; // stands in for a slow sendPush call to a hung push service
+      pruneWriteLanded = true; // stands in for the resulting prune write landing
+    });
+
+    const pool = new ConnectionPool(
+      [ACCOUNT_A],
+      db,
+      () => new ImapConnection(ACCOUNT_A, () => fakeA.client),
+      onNewMessages,
+    );
+
+    launch(pool);
+    await wait(50); // first cycle: baseline set, no call yet (Amendment 3)
+
+    msgs.push({ uid: 502, envelope: { messageId: '<m2@x>' } });
+    fakeA.triggerExists();
+    await wait(50); // second cycle: dispatch launched, hangs on the gate
+
+    expect(subscriptionReadStarted).toBe(true);
+    expect(pruneWriteLanded).toBe(false);
+
+    let stopResolved = false;
+    const stopPromise = harness.current()!.stop().then(() => {
+      stopResolved = true;
+    });
+
+    // Flush pending microtasks/macrotasks without releasing the gate.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(stopResolved).toBe(false); // stop() must still be waiting on the dispatch chain
+
+    releaseGate();
+    await stopPromise;
+
+    expect(stopResolved).toBe(true);
+    // Proves the chain was DRAINED, not dropped — its own effect landed
+    // before stop() resolved, not merely "eventually, on its own time".
+    expect(pruneWriteLanded).toBe(true);
+  });
+
+  it('resolves promptly when there is no in-flight dispatch to drain', async () => {
+    const fakeA = createFakeClient({ messages: [{ uid: 501, envelope: { messageId: '<m1@x>' } }] });
+    const db = createFakeDb();
+    const onNewMessages = vi.fn();
+    const pool = new ConnectionPool(
+      [ACCOUNT_A],
+      db,
+      () => new ImapConnection(ACCOUNT_A, () => fakeA.client),
+      onNewMessages,
+    );
+
+    launch(pool);
+    await wait(50); // first cycle only — Amendment 3 means no dispatch was ever launched
+
+    const stoppedAt = Date.now();
+    await harness.current()!.stop();
+    expect(Date.now() - stoppedAt).toBeLessThan(200);
+  });
+});
+
+/**
+ * Fix round 2, Fix B — a behavioural regression test for Fix round 1's
+ * Fix 5.
+ *
+ * The report argued the "idle loop's time-to-next-IDLE does not scale
+ * with push-service latency" property held STRUCTURALLY and needed no
+ * dedicated test. The counter-argument that won: a future revert of
+ * `void this.dispatchNewMessages(...)` back to `await
+ * this.dispatchNewMessages(...)` — exactly the "cleanup" a well-meaning
+ * editor would make, since a bare `void someAsyncCall()` looks like a
+ * mistake — would pass the entire existing suite undetected. This test
+ * fails against that revert (see the Fix B mutation check in the report).
+ */
+describe('ConnectionPool — dispatch does not block the idle loop (Fix round 2, Fix B)', () => {
+  const harness = createPoolHarness();
+  const launch = harness.launch;
+
+  afterEach(async () => {
+    await harness.stop();
+  });
+
+  it("syncOnce() returns without waiting for the dispatch chain, and the chain is not dropped", async () => {
+    const msgs: FakeFetchMessage[] = [{ uid: 501, envelope: { messageId: '<m1@x>' } }];
+    const fakeA = createFakeClient({ messages: msgs });
+    const db = createFakeDb();
+
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    let dispatchCompleted = false;
+    const onNewMessages = vi.fn(async () => {
+      await gate;
+      dispatchCompleted = true;
+    });
+
+    const pool = new ConnectionPool(
+      [ACCOUNT_A],
+      db,
+      () => new ImapConnection(ACCOUNT_A, () => fakeA.client),
+      onNewMessages,
+    );
+
+    launch(pool);
+    await wait(50); // first cycle: baseline set, one IDLE session already entered
+
+    const idleCallsBeforeSecondCycle = fakeA.idle.mock.calls.length;
+
+    msgs.push({ uid: 502, envelope: { messageId: '<m2@x>' } });
+    fakeA.triggerExists();
+    await wait(50); // second cycle runs; dispatch launched and hangs on the gate
+
+    expect(onNewMessages).toHaveBeenCalledTimes(1);
+    expect(dispatchCompleted).toBe(false); // the gate is still closed
+
+    // The property under test, made observable without reaching into any
+    // private field: the pool re-entered IDLE again (idleLoop() looped
+    // back around to waitForIdleWake(), which calls client.idle()) WHILE
+    // the dispatch chain is still hanging on the gate. That can only be
+    // true if syncOnce() already returned without waiting for the hook.
+    // Against the `await` version, idle() would not be called again until
+    // the gate opens — this assertion would fail (0 new calls) rather
+    // than time out, since nothing here blocks on real wall-clock time
+    // beyond the fixed `wait(50)` above.
+    expect(fakeA.idle.mock.calls.length).toBeGreaterThan(idleCallsBeforeSecondCycle);
+
+    releaseGate();
+    await wait(50);
+    // The chain was DETACHED, not DROPPED: it still runs to completion.
+    expect(dispatchCompleted).toBe(true);
   });
 });
