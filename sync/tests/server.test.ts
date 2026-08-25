@@ -17,7 +17,7 @@ import type { ConnectionPool } from '../src/imap/pool';
 import type { Db, MessageInput } from '../src/db';
 import type { SyncConfig } from '../src/config';
 import { makeFakeDb } from './helpers/api-fakes.ts';
-import { ACCOUNT_A } from './helpers/pool-fakes.ts';
+import { ACCOUNT_A, ACCOUNT_B } from './helpers/pool-fakes.ts';
 
 /**
  * No Postgres, no IMAP, no live Gmail. The API_TOKEN cases below throw on
@@ -510,6 +510,76 @@ describe('createOpensPollFromConfig — the wiring', () => {
         ),
       ),
     ).toBe(true);
+  });
+
+  /**
+   * The same causally-inert-wiring hazard this whole block exists for,
+   * applied to the newest positional argument: `config.accounts`' email
+   * list is what stops a push claiming "{me} opened your mail" when the
+   * recipient was the user themselves (../src/push/dispatch.ts's
+   * `shouldNotifyOpen`). Passing `[]` here — or dropping the argument —
+   * would leave dispatch.test.ts and opens-poll.test.ts entirely green
+   * while production lost the suppression.
+   *
+   * Observed WITHOUT the network and WITHOUT a push send, using the same
+   * trick buildNewMessagesHandler's wiring test above uses: `notifyOpens`
+   * reads `push_subscriptions` as its FIRST act, and only reaches that
+   * read if at least one event survived filtering. So "did a `select
+   * endpoint` query happen" is a faithful proxy for "would this have
+   * pushed", and returning zero rows from it means nothing is ever
+   * handed to web-push.
+   */
+  function pollDepsForOwnAddressWiring(recipientEmail: string) {
+    const queries: string[] = [];
+    const db = makeFakeDb({
+      query: async (text: string) => {
+        queries.push(text);
+        return [];
+      },
+      // A persisted watermark, so the tick takes the normal path rather
+      // than the first-ever-run branch that notifies for nothing at all.
+      getSyncState: async () => ({ uidValidity: null, lastSeenUid: 1n, backfillDone: false }),
+      setSyncState: async () => {},
+    });
+    const event = {
+      token: 'tok', accountId: 'a', messageId: '<m@x>', recipientEmail,
+      subject: 's', sentAt: 100, occurredAt: 200, classification: 'open',
+      deviceClass: null, os: null,
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ opens: [event] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const config: SyncConfig = {
+      ...BASE_SYNC_CONFIG,
+      accounts: [ACCOUNT_A, ACCOUNT_B],
+      vapidConfig: VAPID,
+      trackingConfig: { baseUrl: 'https://t.example', readToken: 'r'.repeat(32) },
+    };
+    return { db, config, queries };
+  }
+
+  it('passes the configured account emails through, so an open of my own mail never dispatches', async () => {
+    // ACCOUNT_B's own address, in a different case than accounts.json
+    // holds it — proving both that the list (not just the primary) is
+    // passed and that the comparison survives the round trip.
+    const { db, config, queries } = pollDepsForOwnAddressWiring('B@EXAMPLE.COM');
+    const poll = createOpensPollFromConfig(db as unknown as Db, config);
+    await poll!.tick();
+    await poll!.stop();
+
+    expect(queries.some((text) => text.includes('select endpoint'))).toBe(false);
+  });
+
+  it('still dispatches for an external recipient, so the wiring suppresses rather than silences', async () => {
+    const { db, config, queries } = pollDepsForOwnAddressWiring('stranger@example.org');
+    const poll = createOpensPollFromConfig(db as unknown as Db, config);
+    await poll!.tick();
+    await poll!.stop();
+
+    expect(queries.some((text) => text.includes('select endpoint'))).toBe(true);
   });
 });
 

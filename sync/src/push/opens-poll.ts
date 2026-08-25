@@ -130,11 +130,20 @@ export interface OpensPollDeps {
  * its OWN line only on a state TRANSITION (up -> down, down -> up), which
  * tells an operator when an outage started and when it ended without
  * drowning that signal in identical lines in between.
+ *
+ * `ownAddresses` is carried, untouched, from ../api/server.ts's
+ * `createOpensPollFromConfig` to `notifyOpens` — this module makes no
+ * decision with it. It sits ahead of `deps` in the parameter list, not
+ * inside it, because `deps` is the test-injection bag ("production never
+ * passes this") and this is the opposite: real configuration that
+ * production must always pass. See `shouldNotifyOpen` (./dispatch.ts) for
+ * what it suppresses and what it deliberately does not.
  */
 export function createOpensPoll(
   db: Db,
   vapid: VapidConfig,
   tracking: TrackingConfig,
+  ownAddresses: readonly string[],
   deps: OpensPollDeps = {},
 ): OpensPoll {
   let timer: ReturnType<typeof setInterval> | null = null;
@@ -227,7 +236,7 @@ export function createOpensPoll(
     //    "strictly newer than itself" on a later tick. Using `>=` would
     //    fix that at the cost of re-notifying the LAST already-sent event
     //    on every subsequent tick forever, which is worse.
-    await notifyOpens(db, vapid, freshEvents, deps.sendImpl);
+    await notifyOpens(db, vapid, freshEvents, ownAddresses, deps.sendImpl);
 
     const newest = newestOccurredAt(freshEvents);
     if (newest !== null) await writeLastSeenOccurredAt(db, newest);

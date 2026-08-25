@@ -31,6 +31,21 @@ const VAPID: VapidConfig = {
   subject: 'https://postbox.example',
 };
 
+/**
+ * The user's own configured accounts, exactly as
+ * `createOpensPollFromConfig` (../src/api/server.ts) derives them from
+ * accounts.json: two of them, because a one-element list would not
+ * distinguish "checks the list" from "checks the primary account".
+ *
+ * Every pre-existing test in this file passes this list rather than `[]`,
+ * deliberately: `[]` would make the own-address rule vacuous, and those
+ * tests would keep passing against a build that had lost it. Their
+ * fixture recipient (`makeOpenEvent`'s default,
+ * 'yspiegler@g.harvard.edu') is not in this list, so they all exercise
+ * the external-recipient path — the one that still notifies.
+ */
+const OWN_ADDRESSES: readonly string[] = ['valen@postbox.test', 'Valen.Alt@Postbox.Test'];
+
 function makeOpenEvent(overrides: Partial<OpenEvent> = {}): OpenEvent {
   return {
     token: 'tok-1',
@@ -79,17 +94,98 @@ function makeMessage(overrides: Partial<MessageInput> = {}): MessageInput {
 
 describe('shouldNotifyOpen', () => {
   it('notifies only for a confirmed open', () => {
-    expect(shouldNotifyOpen(makeOpenEvent({ classification: 'open' }))).toBe(true);
+    expect(shouldNotifyOpen(makeOpenEvent({ classification: 'open' }), OWN_ADDRESSES)).toBe(true);
   });
 
   it('never notifies for mpp, prefetch, scanner or self', () => {
     for (const c of ['mpp', 'prefetch', 'scanner', 'self']) {
-      expect(shouldNotifyOpen(makeOpenEvent({ classification: c }))).toBe(false);
+      expect(shouldNotifyOpen(makeOpenEvent({ classification: c }), OWN_ADDRESSES)).toBe(false);
     }
   });
 
   it('does not notify for an unrecognised classification', () => {
-    expect(shouldNotifyOpen(makeOpenEvent({ classification: 'future-thing' }))).toBe(false);
+    expect(shouldNotifyOpen(makeOpenEvent({ classification: 'future-thing' }), OWN_ADDRESSES)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shouldNotifyOpen — the user's own accounts
+//
+// The tracking service's `'self'` classification exists to stop the
+// sender's own pixel fetch from being reported as the recipient reading
+// the mail, and it is unreachable for server-sent mail: the mint path
+// (tracking/src/db.ts's insertTokens) never writes `sender_ip`, so
+// `senderIps` is always `[]` and classifyHit's first branch can never
+// fire. An open of mail the user sent to THEMSELVES therefore arrives
+// here as a plain `'open'` and, before this rule, pushed
+// "{me} opened your mail" to my own phone.
+//
+// Every test below pairs a suppressed case with a case that still
+// notifies. A suppression rule is only worth anything if it
+// discriminates — one that suppressed everything would satisfy each
+// "does not notify" assertion on its own.
+// ---------------------------------------------------------------------------
+
+describe('shouldNotifyOpen — the recipient is one of my own accounts', () => {
+  it('does not notify when the recipient is exactly a configured account', () => {
+    const event = makeOpenEvent({ recipientEmail: 'valen@postbox.test' });
+    expect(shouldNotifyOpen(event, OWN_ADDRESSES)).toBe(false);
+  });
+
+  it('does not notify when the recipient differs only in case', () => {
+    // Email local-parts are case-sensitive per RFC 5321, but no mail
+    // provider in practice treats them so, and the address can arrive
+    // from the tracking service in whatever case the sender typed it.
+    const event = makeOpenEvent({ recipientEmail: 'VaLeN@PostBox.TEST' });
+    expect(shouldNotifyOpen(event, OWN_ADDRESSES)).toBe(false);
+  });
+
+  it('does not notify when the recipient carries surrounding whitespace', () => {
+    const event = makeOpenEvent({ recipientEmail: '  valen@postbox.test\n' });
+    expect(shouldNotifyOpen(event, OWN_ADDRESSES)).toBe(false);
+  });
+
+  it('normalises the CONFIGURED side too, not just the incoming address', () => {
+    // OWN_ADDRESSES' second entry is mixed-case on purpose. A rule that
+    // lower-cased only `recipientEmail` and compared it against the raw
+    // configured string would pass every test above and fail this one.
+    const event = makeOpenEvent({ recipientEmail: 'valen.alt@postbox.test' });
+    expect(shouldNotifyOpen(event, OWN_ADDRESSES)).toBe(false);
+  });
+
+  it('STILL notifies for an external recipient with the identical classification', () => {
+    // The other half of the pair: same event shape, same `'open'`
+    // classification, only the recipient differs. This is what proves the
+    // check discriminates rather than suppressing every open.
+    const external = makeOpenEvent({
+      recipientEmail: 'yspiegler@g.harvard.edu',
+      classification: 'open',
+    });
+    const own = makeOpenEvent({ recipientEmail: 'valen@postbox.test', classification: 'open' });
+    expect(shouldNotifyOpen(external, OWN_ADDRESSES)).toBe(true);
+    expect(shouldNotifyOpen(own, OWN_ADDRESSES)).toBe(false);
+  });
+
+  it('notifies for a recipient that differs from a configured account by ONE character', () => {
+    // Non-vacuity. A rule implemented as a substring/prefix test, or one
+    // that suppressed anything sharing our domain, would swallow this —
+    // and swallowing it means a real open by a real stranger never
+    // reaches the phone, which is the failure mode a suppression rule is
+    // most likely to introduce and least likely to be noticed.
+    expect(shouldNotifyOpen(makeOpenEvent({ recipientEmail: 'valen@postbox.tes' }), OWN_ADDRESSES))
+      .toBe(true);
+    expect(shouldNotifyOpen(makeOpenEvent({ recipientEmail: 'valenn@postbox.test' }), OWN_ADDRESSES))
+      .toBe(true);
+    expect(shouldNotifyOpen(makeOpenEvent({ recipientEmail: 'vale@postbox.test' }), OWN_ADDRESSES))
+      .toBe(true);
+  });
+
+  it('notifies for every recipient when no accounts are configured at all', () => {
+    // The degenerate list must not accidentally match: `[].some(...)` is
+    // false, so nothing is ever suppressed. Stated as a test because the
+    // opposite mistake (an empty list matching everything) is a plausible
+    // way to write this and would silence the feature completely.
+    expect(shouldNotifyOpen(makeOpenEvent({ recipientEmail: 'valen@postbox.test' }), [])).toBe(true);
   });
 });
 
@@ -330,21 +426,21 @@ describe('notifyOpens', () => {
       makeOpenEvent({ classification: 'scanner', token: 'd' }),
       makeOpenEvent({ classification: 'self', token: 'e' }),
     ];
-    await notifyOpens(db, VAPID, events, sendImpl as unknown as SendImpl);
+    await notifyOpens(db, VAPID, events, OWN_ADDRESSES, sendImpl as unknown as SendImpl);
     expect(sendImpl).toHaveBeenCalledTimes(1);
   });
 
   it('does nothing when there are no confirmed opens at all', async () => {
     const db = dbWithSubscriptions([subscriptionRow()]);
     const sendImpl = vi.fn(async () => ({ statusCode: 201 }));
-    await notifyOpens(db, VAPID, [makeOpenEvent({ classification: 'mpp' })], sendImpl as unknown as SendImpl);
+    await notifyOpens(db, VAPID, [makeOpenEvent({ classification: 'mpp' })], OWN_ADDRESSES, sendImpl as unknown as SendImpl);
     expect(sendImpl).not.toHaveBeenCalled();
   });
 
   it('does nothing when there are no subscriptions stored', async () => {
     const db = dbWithSubscriptions([]);
     const sendImpl = vi.fn(async () => ({ statusCode: 201 }));
-    await notifyOpens(db, VAPID, [makeOpenEvent()], sendImpl as unknown as SendImpl);
+    await notifyOpens(db, VAPID, [makeOpenEvent()], OWN_ADDRESSES, sendImpl as unknown as SendImpl);
     expect(sendImpl).not.toHaveBeenCalled();
   });
 
@@ -374,9 +470,55 @@ describe('notifyOpens', () => {
       return { statusCode: 201 };
     };
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    await notifyOpens(db, VAPID, [makeOpenEvent()], sendImpl);
+    await notifyOpens(db, VAPID, [makeOpenEvent()], OWN_ADDRESSES, sendImpl);
     errorSpy.mockRestore();
 
     expect(sent).toEqual(['https://push.example/alive']);
+  });
+
+  /**
+   * The two tests below are the same assertions as the `shouldNotifyOpen`
+   * block's, driven through the function production actually calls. They
+   * are not redundant with it: `notifyOpens` could pass the events to
+   * `dispatchToAll` without consulting `shouldNotifyOpen` at all (it did
+   * exactly that for the classification rule until it was wired), and no
+   * predicate-level test would notice. These prove no BYTE reaches
+   * `sendImpl`.
+   */
+  it('sends no push at all when the only open is of mail I sent to myself', async () => {
+    const db = dbWithSubscriptions([subscriptionRow()]);
+    const sendImpl = vi.fn(async () => ({ statusCode: 201 }));
+    await notifyOpens(
+      db,
+      VAPID,
+      [makeOpenEvent({ classification: 'open', recipientEmail: 'Valen@Postbox.Test' })],
+      OWN_ADDRESSES,
+      sendImpl as unknown as SendImpl,
+    );
+    expect(sendImpl).not.toHaveBeenCalled();
+  });
+
+  it('sends exactly one push when the same batch holds one self-open and one external open', async () => {
+    // The discriminating pair inside a single call: the batch is
+    // filtered, not dropped. A build that suppressed the whole batch on
+    // seeing one own-address event would fail here while passing the test
+    // above.
+    const db = dbWithSubscriptions([subscriptionRow()]);
+    const titles: string[] = [];
+    const sendImpl: SendImpl = async (_subscription, payload) => {
+      titles.push((JSON.parse(payload) as { title: string }).title);
+      return { statusCode: 201 };
+    };
+    await notifyOpens(
+      db,
+      VAPID,
+      [
+        makeOpenEvent({ token: 'own', recipientEmail: 'valen@postbox.test' }),
+        makeOpenEvent({ token: 'external', recipientEmail: 'yspiegler@g.harvard.edu' }),
+      ],
+      OWN_ADDRESSES,
+      sendImpl,
+    );
+    expect(titles).toEqual(['yspiegler@g.harvard.edu opened your mail']);
   });
 });

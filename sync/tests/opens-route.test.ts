@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createRouter } from '../src/api/routes';
 import { AUTH as auth, TOKEN, makeFakeDb, makeFakePool, readJson } from './helpers/api-fakes.ts';
-import type { TrackingConfig } from '../src/config';
+import type { AccountConfig, TrackingConfig } from '../src/config';
 
 /**
  * Route-level coverage for GET /api/opens: the HTTP contract the amendment
@@ -121,5 +121,52 @@ describe('GET /api/opens', () => {
     await router(new Request('http://x/api/opens?limit=999999', { headers: auth }));
     const calledUrl = String(fetchImpl.mock.calls[0]![0]);
     expect(calledUrl).toContain('limit=200');
+  });
+
+  /**
+   * The push side suppresses a notification when an open's recipient is
+   * one of the user's own configured accounts (../src/push/dispatch.ts's
+   * `shouldNotifyOpen`) — because a phone buzzing to tell me I opened my
+   * own mail is a claim about someone else's behaviour that isn't true.
+   *
+   * The FEED makes no such claim: it is a list the user went looking at,
+   * and "you opened this" in it is honest and worth seeing. So the
+   * suppression must be push-only, and this route must keep returning the
+   * event. Written as a route test rather than a comment because the
+   * tempting way to "finish" the suppression is to filter it here too,
+   * which would silently delete data the user asked for.
+   */
+  it('still returns an open addressed to one of the user\'s OWN accounts — suppression is push-only', async () => {
+    const ownAccount: AccountConfig = {
+      id: 'primary',
+      email: 'valen@postbox.test',
+      appPassword: 'p'.repeat(16),
+      isPrimary: true,
+    };
+    const event = {
+      token: 'self-open',
+      accountId: 'primary',
+      messageId: '<self-open@postbox.test>',
+      // Exactly the configured account: the case the push path suppresses.
+      recipientEmail: ownAccount.email,
+      subject: 'note to self',
+      sentAt: 1,
+      occurredAt: 2,
+      classification: 'open',
+      deviceClass: null,
+      os: null,
+    };
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ opens: [event] }), { status: 200 }),
+    );
+    const router = createRouter(
+      FAKE_DB, FAKE_POOL, TOKEN, TRACKING, fetchImpl, null, undefined, [ownAccount],
+    );
+    const response = await router(new Request('http://x/api/opens', { headers: auth }));
+
+    expect(response.status).toBe(200);
+    const body = await readJson<{ opens: unknown[]; available: boolean }>(response);
+    expect(body.available).toBe(true);
+    expect(body.opens).toEqual([event]);
   });
 });

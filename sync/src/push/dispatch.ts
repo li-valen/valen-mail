@@ -33,17 +33,88 @@ const INBOX_URL = '/';
 const OPENS_URL = '/?rail=opens';
 
 /**
- * True only for a genuinely confirmed open. An `mpp` event is Apple's mail
- * privacy proxy prefetching the tracking pixel, not a person reading the
- * message — a phone buzzing for that would train the user to distrust
- * every notification this feature ever sends. Every other non-`open`
- * classification (`prefetch`, `scanner`, `self`, and anything not yet
- * invented) is equally not a confirmed human read, so the default branch
- * is `false` rather than an allowlist that a future classifier could slip
- * past by omission.
+ * Compares two email addresses as identities: case-insensitively, with
+ * surrounding whitespace ignored. `recipientEmail` arrives from the
+ * tracking service (a separate deployment, so external data), and a
+ * configured address arrives from accounts.json — neither side is assumed
+ * to already be normalised, even though `loadConfig`'s `parseAccount`
+ * happens to trim its own.
+ *
+ * Deliberately NOT full RFC 5322 equivalence, and deliberately not
+ * Gmail's dots-and-plus-tags folding: matching here means staying SILENT,
+ * so a looser rule would swallow a genuine open by a stranger whose
+ * address merely normalises onto one of ours.
  */
-export function shouldNotifyOpen(event: OpenEvent): boolean {
-  return event.classification === 'open';
+function isSameAddress(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+/** True when `address` is one of the user's own configured accounts. */
+function isOwnAddress(address: string, ownAddresses: readonly string[]): boolean {
+  return ownAddresses.some((own) => isSameAddress(own, address));
+}
+
+/**
+ * True only for a genuinely confirmed open BY SOMEONE ELSE.
+ *
+ * Two independent rules, both of which must hold:
+ *
+ * 1. `classification === 'open'`. An `mpp` event is Apple's mail privacy
+ *    proxy prefetching the tracking pixel, not a person reading the
+ *    message — a phone buzzing for that would train the user to distrust
+ *    every notification this feature ever sends. Every other non-`open`
+ *    classification (`prefetch`, `scanner`, `self`, and anything not yet
+ *    invented) is equally not a confirmed human read, so the default
+ *    branch is `false` rather than an allowlist that a future classifier
+ *    could slip past by omission.
+ *
+ * 2. The recipient is not one of the user's OWN configured accounts
+ *    (`ownAddresses`, derived from accounts.json — see
+ *    `createOpensPollFromConfig` in ../api/server.ts). If you mail
+ *    yourself, your phone must not buzz to tell you that you opened your
+ *    own mail.
+ *
+ * WHY RULE 2 EXISTS, AND WHAT IT DOES NOT COVER.
+ *
+ * The tracking service's classifier has a `'self'` classification whose
+ * entire job is exactly this — see `classifyHit` in
+ * tracking/src/classify.ts. It is UNREACHABLE for server-sent mail. The
+ * mint path (`insertTokens`, tracking/src/db.ts) writes the column list
+ * `(token, account_id, message_id, recipient_email, subject)` and never
+ * `sender_ip`, so `sender_ip` is NULL for every token minted by
+ * `POST /api/tokens`; tracking/api/o/[token].ts consequently always passes
+ * `senderIps: []`, and the `'self'` branch can never be true in
+ * production. Rule 1 alone therefore does nothing to stop a sender's own
+ * pixel fetch from arriving here as a plain `'open'`.
+ *
+ * Wiring `sender_ip` was considered and rejected — it cannot fix the
+ * dominant case. When the sender reads their own Sent copy in Gmail web,
+ * the pixel is fetched by Google's image proxy, whose IP is Google's and
+ * never the sender's, so an IP comparison still fails. That column's
+ * premise (the sender's own client fetches the pixel directly, from the
+ * sender's own network) predates both server-side sending and
+ * browser-based reading. Spec 7.2 also deliberately avoids storing raw
+ * IPs, so wiring it would trade a real privacy property for an unreliable
+ * partial fix.
+ *
+ * RESIDUAL, stated plainly rather than implied away: this closes the
+ * self-send case completely (mail addressed to one of our own accounts),
+ * and closes nothing else. A sender viewing their own Sent copy of mail
+ * sent to an EXTERNAL recipient still produces a pixel fetch that this
+ * system cannot distinguish from that recipient's genuine open, and it
+ * will still be classified `'open'` and still push
+ * "{recipientEmail} opened your mail". Nothing recorded about such a hit
+ * separates it from the real thing.
+ *
+ * PUSH ONLY. Rule 2 suppresses the notification, never the event: the
+ * opens feed (GET /api/opens, ../api/routes.ts's `handleOpens`) returns
+ * every event the tracking service reports, unfiltered. Seeing "you
+ * opened this" in a feed you went looking for is honest; a phone buzzing
+ * to tell you so is not.
+ */
+export function shouldNotifyOpen(event: OpenEvent, ownAddresses: readonly string[]): boolean {
+  if (event.classification !== 'open') return false;
+  return !isOwnAddress(event.recipientEmail, ownAddresses);
 }
 
 /**
@@ -224,18 +295,30 @@ export async function notifyNewMail(
 
 /**
  * Dispatches "opened" pushes for whichever of `events` are confirmed
- * opens (`shouldNotifyOpen`). Recency filtering against a persisted
- * last-seen watermark is the opens poll's job (push/opens-poll.ts), not
- * this function's — by the time events reach here they are assumed to be
- * ones the poll has not already notified for.
+ * opens by someone other than the user (`shouldNotifyOpen`). Recency
+ * filtering against a persisted last-seen watermark is the opens poll's
+ * job (push/opens-poll.ts), not this function's — by the time events
+ * reach here they are assumed to be ones the poll has not already
+ * notified for.
+ *
+ * `ownAddresses` is the user's own configured account addresses, threaded
+ * in from accounts.json rather than read here: this module deliberately
+ * knows nothing about `SyncConfig`, and a bare `readonly string[]` is
+ * also what keeps `AccountConfig.appPassword` out of the push layer
+ * entirely (the same structural reasoning as `orderIdentities` in
+ * ../api/identities.ts). It is a REQUIRED parameter, not an optional one
+ * defaulting to `[]`, precisely so a future call site cannot silently opt
+ * out of the suppression by forgetting it — see `shouldNotifyOpen` for
+ * what that suppression is and what it deliberately does not cover.
  */
 export async function notifyOpens(
   db: Db,
   vapid: VapidConfig,
   events: readonly OpenEvent[],
+  ownAddresses: readonly string[],
   sendImpl?: SendImpl,
 ): Promise<void> {
-  const notifyWorthy = events.filter(shouldNotifyOpen);
+  const notifyWorthy = events.filter((event) => shouldNotifyOpen(event, ownAddresses));
   if (notifyWorthy.length === 0) return;
 
   const subscriptions = await loadSubscriptions(db);

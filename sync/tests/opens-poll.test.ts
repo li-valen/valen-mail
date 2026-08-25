@@ -21,6 +21,19 @@ import { makeFakeDb } from './helpers/api-fakes.ts';
 const VAPID: VapidConfig = { publicKey: 'pub', privateKey: 'priv', subject: 'https://postbox.example' };
 const TRACKING: TrackingConfig = { baseUrl: 'https://t.example', readToken: 'r'.repeat(32) };
 
+/**
+ * The user's own configured account addresses, as
+ * `createOpensPollFromConfig` (../src/api/server.ts) derives them from
+ * accounts.json. Deliberately non-empty in EVERY test in this file, not
+ * `[]`: an empty list would make `shouldNotifyOpen`'s own-address rule
+ * vacuously true everywhere here, and these tests would then keep passing
+ * against a build that had lost the rule entirely. `makeOpenEvent`'s
+ * default `recipientEmail` ('a@b.com') is deliberately NOT in this list,
+ * so every pre-existing behaviour below is exercised on the
+ * external-recipient path — the one that still notifies.
+ */
+const OWN_ADDRESSES: readonly string[] = ['owner@example.com'];
+
 function makeOpenEvent(overrides: Partial<OpenEvent> = {}): OpenEvent {
   return {
     token: 'tok-1',
@@ -90,7 +103,7 @@ describe('createOpensPoll — first-ever run', () => {
       makeOpenEvent({ token: 'a', occurredAt: 100 }),
       makeOpenEvent({ token: 'b', occurredAt: 200 }),
     ]);
-    const poll = createOpensPoll(db, VAPID, TRACKING, { fetchImpl, sendImpl: sendImpl as unknown as SendImpl });
+    const poll = createOpensPoll(db, VAPID, TRACKING, OWN_ADDRESSES, { fetchImpl, sendImpl: sendImpl as unknown as SendImpl });
 
     await poll.tick();
 
@@ -107,13 +120,13 @@ describe('createOpensPoll — first-ever run', () => {
   it('a later tick only notifies for events strictly newer than the established baseline', async () => {
     const db = makeSharedSyncStateDb();
     const sendImpl = vi.fn(async () => ({ statusCode: 201 }));
-    const poll = createOpensPoll(db, VAPID, TRACKING, {
+    const poll = createOpensPoll(db, VAPID, TRACKING, OWN_ADDRESSES, {
       fetchImpl: fetchStubReturning([makeOpenEvent({ token: 'a', occurredAt: 100 })]),
       sendImpl: sendImpl as unknown as SendImpl,
     });
     await poll.tick(); // first-ever run: baseline set to 100, no notify
 
-    const poll2 = createOpensPoll(db, VAPID, TRACKING, {
+    const poll2 = createOpensPoll(db, VAPID, TRACKING, OWN_ADDRESSES, {
       fetchImpl: fetchStubReturning([
         makeOpenEvent({ token: 'a', occurredAt: 100 }),
         makeOpenEvent({ token: 'b', occurredAt: 200 }),
@@ -138,7 +151,7 @@ describe('createOpensPoll — restart safety (persisted last-seen)', () => {
   it('a second poll instance, sharing only the db, does not re-notify events the first instance already saw', async () => {
     const db = makeSharedSyncStateDb();
     const sent1: string[] = [];
-    const firstPoll = createOpensPoll(db, VAPID, TRACKING, {
+    const firstPoll = createOpensPoll(db, VAPID, TRACKING, OWN_ADDRESSES, {
       fetchImpl: fetchStubReturning([makeOpenEvent({ token: 'seed', occurredAt: 50 })]),
       sendImpl: (async () => ({ statusCode: 201 })) as unknown as SendImpl,
     });
@@ -148,7 +161,7 @@ describe('createOpensPoll — restart safety (persisted last-seen)', () => {
       sent1.push(payload);
       return { statusCode: 201 };
     });
-    const secondPoll = createOpensPoll(db, VAPID, TRACKING, {
+    const secondPoll = createOpensPoll(db, VAPID, TRACKING, OWN_ADDRESSES, {
       fetchImpl: fetchStubReturning([
         makeOpenEvent({ token: 'seed', occurredAt: 50 }),
         makeOpenEvent({ token: 'fresh', occurredAt: 150 }),
@@ -163,7 +176,7 @@ describe('createOpensPoll — restart safety (persisted last-seen)', () => {
     // A THIRD instance ("restart" again) must not re-notify either of the
     // two events already seen.
     const thirdSend = vi.fn(async () => ({ statusCode: 201 }));
-    const thirdPoll = createOpensPoll(db, VAPID, TRACKING, {
+    const thirdPoll = createOpensPoll(db, VAPID, TRACKING, OWN_ADDRESSES, {
       fetchImpl: fetchStubReturning([
         makeOpenEvent({ token: 'seed', occurredAt: 50 }),
         makeOpenEvent({ token: 'fresh', occurredAt: 150 }),
@@ -180,7 +193,7 @@ describe('createOpensPoll — down-state logging', () => {
   it('logs once when the tracking service goes down, not on every failed tick', async () => {
     const db = makeSharedSyncStateDb();
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const poll = createOpensPoll(db, VAPID, TRACKING, {
+    const poll = createOpensPoll(db, VAPID, TRACKING, OWN_ADDRESSES, {
       fetchImpl: failingFetchStub(),
       sendImpl: (async () => ({ statusCode: 201 })) as unknown as SendImpl,
     });
@@ -212,7 +225,7 @@ describe('createOpensPoll — down-state logging', () => {
       });
     }) as unknown as typeof fetch;
 
-    const poll = createOpensPoll(db, VAPID, TRACKING, {
+    const poll = createOpensPoll(db, VAPID, TRACKING, OWN_ADDRESSES, {
       fetchImpl,
       sendImpl: (async () => ({ statusCode: 201 })) as unknown as SendImpl,
     });
@@ -231,7 +244,7 @@ describe('createOpensPoll — down-state logging', () => {
   it('does not log a down-state line when the very first tick succeeds', async () => {
     const db = makeSharedSyncStateDb();
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const poll = createOpensPoll(db, VAPID, TRACKING, {
+    const poll = createOpensPoll(db, VAPID, TRACKING, OWN_ADDRESSES, {
       fetchImpl: fetchStubReturning([]),
       sendImpl: (async () => ({ statusCode: 201 })) as unknown as SendImpl,
     });
@@ -250,7 +263,7 @@ describe('createOpensPoll — notification filtering', () => {
   it('only dispatches for confirmed opens, reusing notifyOpens\'s own shouldNotifyOpen rule', async () => {
     const db = makeSharedSyncStateDb();
     const sendImpl = vi.fn(async () => ({ statusCode: 201 }));
-    const seedPoll = createOpensPoll(db, VAPID, TRACKING, {
+    const seedPoll = createOpensPoll(db, VAPID, TRACKING, OWN_ADDRESSES, {
       fetchImpl: fetchStubReturning([]),
       sendImpl: sendImpl as unknown as SendImpl,
     });
@@ -263,10 +276,41 @@ describe('createOpensPoll — notification filtering', () => {
     // "createOpensPoll — first-ever run" above for that one.
     await seedPoll.tick();
 
-    const poll = createOpensPoll(db, VAPID, TRACKING, {
+    const poll = createOpensPoll(db, VAPID, TRACKING, OWN_ADDRESSES, {
       fetchImpl: fetchStubReturning([
         makeOpenEvent({ token: 'a', occurredAt: 10, classification: 'open' }),
         makeOpenEvent({ token: 'b', occurredAt: 20, classification: 'mpp' }),
+      ]),
+      sendImpl: sendImpl as unknown as SendImpl,
+    });
+    await poll.tick();
+
+    expect(sendImpl).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * `ownAddresses` reaches `notifyOpens` from here and nowhere else, as a
+   * positional argument this module only forwards. Dropping it (or
+   * hard-coding `[]` at the forward) would leave both this file's other
+   * tests and every `shouldNotifyOpen` unit test green while production
+   * buzzed the phone for the user's own reads — the exact
+   * causally-inert-wiring shape this project has shipped before. Both
+   * events below are `'open'` and identical apart from the recipient, so
+   * only the forwarding can account for the difference.
+   */
+  it('forwards ownAddresses to notifyOpens: an open of mail sent to my own account never dispatches', async () => {
+    const db = makeSharedSyncStateDb();
+    const sendImpl = vi.fn(async () => ({ statusCode: 201 }));
+    const seedPoll = createOpensPoll(db, VAPID, TRACKING, OWN_ADDRESSES, {
+      fetchImpl: fetchStubReturning([]),
+      sendImpl: sendImpl as unknown as SendImpl,
+    });
+    await seedPoll.tick(); // baseline at 0, as above
+
+    const poll = createOpensPoll(db, VAPID, TRACKING, OWN_ADDRESSES, {
+      fetchImpl: fetchStubReturning([
+        makeOpenEvent({ token: 'own', occurredAt: 10, recipientEmail: 'owner@example.com' }),
+        makeOpenEvent({ token: 'external', occurredAt: 20, recipientEmail: 'stranger@example.org' }),
       ]),
       sendImpl: sendImpl as unknown as SendImpl,
     });
@@ -282,7 +326,7 @@ describe('createOpensPoll — start/stop cadence', () => {
     try {
       const db = makeSharedSyncStateDb();
       const fetchImpl = fetchStubReturning([]);
-      const poll = createOpensPoll(db, VAPID, TRACKING, {
+      const poll = createOpensPoll(db, VAPID, TRACKING, OWN_ADDRESSES, {
         fetchImpl,
         sendImpl: (async () => ({ statusCode: 201 })) as unknown as SendImpl,
       });
@@ -307,7 +351,7 @@ describe('createOpensPoll — start/stop cadence', () => {
     try {
       const db = makeSharedSyncStateDb();
       const fetchImpl = fetchStubReturning([]);
-      const poll = createOpensPoll(db, VAPID, TRACKING, {
+      const poll = createOpensPoll(db, VAPID, TRACKING, OWN_ADDRESSES, {
         fetchImpl,
         sendImpl: (async () => ({ statusCode: 201 })) as unknown as SendImpl,
       });
@@ -355,7 +399,7 @@ describe('createOpensPoll — re-entrancy guard (Fix 1)', () => {
       });
     }) as unknown as typeof fetch;
 
-    const poll = createOpensPoll(db, VAPID, TRACKING, {
+    const poll = createOpensPoll(db, VAPID, TRACKING, OWN_ADDRESSES, {
       fetchImpl,
       sendImpl: (async () => ({ statusCode: 201 })) as unknown as SendImpl,
     });
@@ -380,7 +424,7 @@ describe('createOpensPoll — re-entrancy guard (Fix 1)', () => {
     // stale guard that never got cleared.
     const db = makeSharedSyncStateDb();
     const fetchImpl = fetchStubReturning([]);
-    const poll = createOpensPoll(db, VAPID, TRACKING, {
+    const poll = createOpensPoll(db, VAPID, TRACKING, OWN_ADDRESSES, {
       fetchImpl,
       sendImpl: (async () => ({ statusCode: 201 })) as unknown as SendImpl,
     });
@@ -411,7 +455,7 @@ describe('createOpensPoll — stop() awaits an in-flight tick (Fix 2)', () => {
     // poll's tick reaches the notify+write path instead of the
     // first-ever-run branch (which returns early and would prove
     // nothing about awaiting an in-flight write).
-    const seedPoll = createOpensPoll(db, VAPID, TRACKING, {
+    const seedPoll = createOpensPoll(db, VAPID, TRACKING, OWN_ADDRESSES, {
       fetchImpl: fetchStubReturning([makeOpenEvent({ token: 'seed', occurredAt: 500 })]),
       sendImpl: (async () => ({ statusCode: 201 })) as unknown as SendImpl,
     });
@@ -429,7 +473,7 @@ describe('createOpensPoll — stop() awaits an in-flight tick (Fix 2)', () => {
       );
     }) as unknown as typeof fetch;
 
-    const poll = createOpensPoll(db, VAPID, TRACKING, {
+    const poll = createOpensPoll(db, VAPID, TRACKING, OWN_ADDRESSES, {
       fetchImpl,
       sendImpl: (async () => ({ statusCode: 201 })) as unknown as SendImpl,
     });
@@ -458,7 +502,7 @@ describe('createOpensPoll — stop() awaits an in-flight tick (Fix 2)', () => {
 
   it('resolves immediately when no tick was ever started', async () => {
     const db = makeSharedSyncStateDb();
-    const poll = createOpensPoll(db, VAPID, TRACKING, {
+    const poll = createOpensPoll(db, VAPID, TRACKING, OWN_ADDRESSES, {
       fetchImpl: fetchStubReturning([]),
       sendImpl: (async () => ({ statusCode: 201 })) as unknown as SendImpl,
     });

@@ -598,6 +598,15 @@ export function createPoolFromConfig(db: Db, config: SyncConfig): ConnectionPool
  * service (parseVapidConfig, parseTrackingConfig): a reader of the
  * service's own startup log should never have to guess why notifications
  * for opens aren't arriving.
+ *
+ * This is also the ONLY place the user's own account addresses meet the
+ * push layer. Exactly three fields exist on an `AccountConfig` and one of
+ * them is `appPassword`, so what crosses this boundary is the mapped
+ * `email` list and nothing else — the same structural refusal to spread a
+ * whole account object that `orderIdentities` (./identities.ts) documents.
+ * `shouldNotifyOpen` (../push/dispatch.ts) uses that list to keep a push
+ * from claiming someone "opened your mail" when the recipient was the
+ * user themselves.
  */
 export function createOpensPollFromConfig(db: Db, config: SyncConfig): OpensPoll | null {
   if (!config.vapidConfig || !config.trackingConfig) {
@@ -607,7 +616,12 @@ export function createOpensPollFromConfig(db: Db, config: SyncConfig): OpensPoll
     );
     return null;
   }
-  return createOpensPoll(db, config.vapidConfig, config.trackingConfig);
+  return createOpensPoll(
+    db,
+    config.vapidConfig,
+    config.trackingConfig,
+    config.accounts.map((account) => account.email),
+  );
 }
 
 export async function startServer(): Promise<{ close(): Promise<void> }> {
