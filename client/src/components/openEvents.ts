@@ -2,7 +2,8 @@ import type { OpenEvent, OpensResponse } from '../api';
 import { boundedToken, isDisplayable, readStateFor } from './ReadState';
 
 /**
- * Pure formatting and derivation logic for OpensRail.tsx, split out the
+ * Pure formatting and derivation logic for OpensView.tsx (named
+ * OpensRail.tsx before task 7.6 turned the rail into a page), split out the
  * same way client/src/components/inboxDates.ts is split out of
  * InboxList.tsx — so it never imports React, which is what keeps it
  * testable at all (client/CLAUDE.md's standing constraint: no test in

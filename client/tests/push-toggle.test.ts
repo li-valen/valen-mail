@@ -556,6 +556,7 @@ describe('the sw.js guards themselves (not vacuous)', () => {
 const REQUEST_PERMISSION = /requestPermission/;
 const SWITCH_ROLE = /role=["']switch["']/;
 const ARIA_CHECKED = /aria-checked=/;
+const CONTROLLED_SWITCH = /<Switch\b[\s\S]*?\bchecked=\{/;
 
 describe('PushToggle.tsx — semantics and the permission gesture', () => {
   it('never calls Notification.requestPermission itself', () => {
@@ -574,6 +575,23 @@ describe('PushToggle.tsx — semantics and the permission gesture', () => {
   it('tells an iOS user how to install rather than failing opaquely', () => {
     expect(pushToggleSource).toMatch(/Add to Home Screen/);
   });
+
+  /**
+   * Added in task 7.6, when the hand-rolled toggle was restyled onto the
+   * ported Plunk `Switch` atom (a wrapper around Radix's switch primitive).
+   *
+   * Radix routes `onCheckedChange` through `useControllableState`, which
+   * calls it SYNCHRONOUSLY inside the click handler only while the switch
+   * is controlled. Left uncontrolled, the identical callback is fired from
+   * a `React.useEffect` — one task later, after the user gesture has
+   * expired — and `Notification.requestPermission()` downstream is then
+   * refused silently by both Safari and Chrome. A future edit that drops
+   * the `checked` prop would look harmless and break push everywhere, so
+   * the prop is pinned here rather than left to review.
+   */
+  it('keeps the switch controlled, which is what keeps the permission prompt inside the gesture', () => {
+    expect(pushToggleSource).toMatch(CONTROLLED_SWITCH);
+  });
 });
 
 describe('the PushToggle guards themselves (not vacuous)', () => {
@@ -585,6 +603,11 @@ describe('the PushToggle guards themselves (not vacuous)', () => {
 
   it('flags a toggle with no switch semantics', () => {
     expect('<button type="button" className="push-toggle">On</button>').not.toMatch(SWITCH_ROLE);
+  });
+
+  it('flags an uncontrolled Switch, and passes a controlled one', () => {
+    expect('<Switch onCheckedChange={onToggle} />').not.toMatch(CONTROLLED_SWITCH);
+    expect('<Switch checked={isOn} onCheckedChange={onToggle} />').toMatch(CONTROLLED_SWITCH);
   });
 });
 

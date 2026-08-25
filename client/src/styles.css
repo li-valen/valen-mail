@@ -1,0 +1,195 @@
+/**
+ * Postbox's Tailwind v4 entry stylesheet.
+ *
+ * PROVENANCE. Ported from Plunk (github.com/useplunk/plunk, AGPL-3.0),
+ * file `apps/web/src/styles/globals.css`. The `@theme` block, the bare
+ * `:root` light palette, the `.dark` palette and the reduced-motion floor
+ * are that file's values verbatim. What was dropped and why:
+ *
+ *   - `@plugin '@tailwindcss/forms'` / `'@tailwindcss/typography'` —
+ *     neither package is installed here and neither is needed: the ported
+ *     Input atom styles itself, and Postbox renders no long-form prose.
+ *   - `@import 'tw-animate-css'` — only Plunk's Radix overlay atoms
+ *     (Tooltip/Dialog/Popover) use its `animate-in` utilities, and none of
+ *     those atoms were ported.
+ *   - `@source '../../../../packages/ui/…'` — Plunk's UI kit is a separate
+ *     workspace package it has to point Tailwind at. Ours lives in `src/`,
+ *     which Tailwind v4 already scans.
+ *   - The Radix overlay-motion choreography at the bottom of their file —
+ *     same reason as tw-animate-css: no Radix overlay is rendered here.
+ *
+ * DARK MODE — SHIPPED LIGHT-ONLY, DELIBERATELY. Plunk's globals define a
+ * complete `.dark` palette (kept verbatim below, so the token architecture
+ * stays faithful and a future dark pass has a starting point), but Plunk's
+ * own components do not consume it: `Button` is `bg-neutral-900`, `Card`
+ * is `bg-white`, `Badge` is `bg-neutral-100`. Applying `.dark` would swap
+ * the page ground to near-black while every card, button and badge stayed
+ * light — a half-dark page, which is worse than a deliberate light one.
+ * So nothing in this app ever adds the `.dark` class, and `:root` declares
+ * `color-scheme: light` so a viewer whose OS is dark still gets light form
+ * controls, scrollbars and canvas rather than a browser-darkened hybrid.
+ * tests/theme-tokens.test.ts pins both halves of this: the light palette is
+ * complete in bare `:root`, and the `.dark` block redefines exactly the
+ * same token set (never introduces one).
+ */
+
+@import 'tailwindcss';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+    --font-*: initial;
+    --font-sans: Inter, ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji',
+    'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+    --font-serif: ui-serif, Georgia, Cambria, 'Times New Roman', Times, serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+    'Courier New', monospace;
+
+    --color-border: hsl(var(--border));
+    --color-input: hsl(var(--input));
+    --color-ring: hsl(var(--ring));
+    --color-background: hsl(var(--background));
+    --color-foreground: hsl(var(--foreground));
+
+    --color-primary: hsl(var(--primary));
+    --color-primary-foreground: hsl(var(--primary-foreground));
+
+    --color-secondary: hsl(var(--secondary));
+    --color-secondary-foreground: hsl(var(--secondary-foreground));
+
+    --color-destructive: hsl(var(--destructive));
+    --color-destructive-foreground: hsl(var(--destructive-foreground));
+
+    --color-muted: hsl(var(--muted));
+    --color-muted-foreground: hsl(var(--muted-foreground));
+
+    --color-accent: hsl(var(--accent));
+    --color-accent-foreground: hsl(var(--accent-foreground));
+
+    --color-popover: hsl(var(--popover));
+    --color-popover-foreground: hsl(var(--popover-foreground));
+
+    --color-card: hsl(var(--card));
+    --color-card-foreground: hsl(var(--card-foreground));
+
+    --radius-lg: var(--radius);
+    --radius-md: calc(var(--radius) - 2px);
+    --radius-sm: calc(var(--radius) - 4px);
+
+    /* Decelerating curves for overlay motion: arrive with confidence, no bounce. */
+    --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+    --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+@layer base {
+    *,
+    ::after,
+    ::before,
+    ::backdrop,
+    ::file-selector-button {
+        border-color: var(--color-neutral-200, currentcolor);
+    }
+}
+
+@layer base {
+    :root {
+        /* The app never stamps `.dark`; telling the browser so keeps an
+           OS-dark viewer from getting darkened form controls on a light page. */
+        color-scheme: light;
+
+        --background: 0 0% 100%;
+        --foreground: 222.2 47.4% 11.2%;
+
+        --muted: 210 40% 96.1%;
+        --muted-foreground: 215.4 16.3% 46.9%;
+
+        --popover: 0 0% 100%;
+        --popover-foreground: 222.2 47.4% 11.2%;
+
+        --border: 214.3 31.8% 91.4%;
+        --input: 214.3 31.8% 91.4%;
+
+        --card: 0 0% 100%;
+        --card-foreground: 222.2 47.4% 11.2%;
+
+        --primary: 222.2 47.4% 11.2%;
+        --primary-foreground: 210 40% 98%;
+
+        --secondary: 210 40% 96.1%;
+        --secondary-foreground: 222.2 47.4% 11.2%;
+
+        --accent: 210 40% 96.1%;
+        --accent-foreground: 222.2 47.4% 11.2%;
+
+        --destructive: 0 100% 50%;
+        --destructive-foreground: 210 40% 98%;
+
+        --ring: 215.4 16.3% 46.9%;
+
+        --radius: 0.5rem;
+    }
+
+    .dark {
+        --background: 224 71% 4%;
+        --foreground: 213 31% 91%;
+
+        --muted: 223 47% 11%;
+        --muted-foreground: 215.4 16.3% 56.9%;
+
+        --accent: 216 34% 17%;
+        --accent-foreground: 210 40% 98%;
+
+        --popover: 224 71% 4%;
+        --popover-foreground: 215 20.2% 65.1%;
+
+        --border: 216 34% 17%;
+        --input: 216 34% 17%;
+
+        --card: 224 71% 4%;
+        --card-foreground: 213 31% 91%;
+
+        --primary: 210 40% 98%;
+        --primary-foreground: 222.2 47.4% 1.2%;
+
+        --secondary: 222.2 47.4% 11.2%;
+        --secondary-foreground: 210 40% 98%;
+
+        --destructive: 0 63% 31%;
+        --destructive-foreground: 210 40% 98%;
+
+        --ring: 215.4 16.3% 56.9%;
+
+        --radius: 0.5rem;
+    }
+}
+
+@layer base {
+    * {
+        @apply border-border;
+    }
+
+    /* Plunk's rule is `@apply bg-background text-neutral-800 overflow-hidden`.
+       The `overflow-hidden` is dropped: AppShell already pins the app to
+       `h-dvh` and scrolls its own content column, so there is no second
+       scrollbar to suppress — and LoginView is a `min-h-dvh` centred card
+       that MUST be able to scroll on a short viewport, which a body-level
+       `overflow-hidden` would prevent. */
+    body {
+        @apply bg-background text-neutral-800;
+        font-feature-settings: "rlig" 1, "calt" 1;
+    }
+}
+
+/* Plunk's own floor, kept verbatim: every transition and animation in the
+   app — the sidebar drawer slide, the switch thumb, hover colour fades —
+   collapses to nothing for a viewer who asked for reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}

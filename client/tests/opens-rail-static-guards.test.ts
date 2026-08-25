@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import readStateSource from '../src/components/ReadState.tsx?raw';
 import openEventsSource from '../src/components/openEvents.ts?raw';
-import opensRailSource from '../src/components/OpensRail.tsx?raw';
+// Task 7.6 renamed OpensRail.tsx -> OpensView.tsx when the opens rail
+// became a page the sidebar navigates to. The scanned surface is the same
+// three files; the forbidden-pattern list below is untouched.
+import opensViewSource from '../src/components/OpensView.tsx?raw';
 
 /**
  * Static guards on the two hard bans client/DESIGN.md §5.1 states for
@@ -22,7 +25,7 @@ import opensRailSource from '../src/components/OpensRail.tsx?raw';
  * actually catch the bug it exists to catch, not just always pass.
  */
 
-const SOURCE = `${readStateSource}\n${openEventsSource}\n${opensRailSource}`;
+const SOURCE = `${readStateSource}\n${openEventsSource}\n${opensViewSource}`;
 
 const DEVICE_CLASS_ACCESS = /\.deviceClass\b/;
 const OS_FIELD_ACCESS = /\.os\b/;

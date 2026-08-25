@@ -2,15 +2,40 @@ import { describe, expect, it } from 'vitest';
 // Vite's `?raw` suffix (declared in vite/client.d.ts) imports the file's
 // contents as a plain string, at both test-run and typecheck time — no
 // node:fs/node:url needed, keeping this file within the project's fixed
-// dependency list (client/CLAUDE.md; no @types/node).
-import themeCss from '../src/theme.css?raw';
+// dependency list (no @types/node).
+import stylesCss from '../src/styles.css?raw';
+import mainSource from '../src/main.tsx?raw';
 
 /**
- * Static guard on client/src/theme.css's three-block theme structure
- * (DESIGN.md §2.1). No test in this plan renders a component, so this is
- * the only automated check standing between a future edit and "a colour
- * defined only inside a media/data-theme block" — one theme's text
- * rendered on the other theme's ground in the unstamped default state.
+ * Static guard on the theme architecture.
+ *
+ * REWRITTEN FOR THE PLUNK RESTYLE (task 7.6). The previous version of this
+ * file guarded the hand-rolled three-block token system in src/theme.css:
+ * bare `:root`, plus `@media (prefers-color-scheme: dark)
+ * { :root:not([data-theme="light"]) }`, plus `:root[data-theme="dark"]`,
+ * with the rule that the two dark blocks may only ever REDEFINE tokens the
+ * bare `:root` already declared. That file no longer exists; src/styles.css
+ * is a Tailwind v4 entry stylesheet carrying Plunk's shadcn-style HSL
+ * palette (`--background`, `--muted`, `--border`, `--radius`, …) in a bare
+ * `:root` light block and a `.dark` block.
+ *
+ * The BUG being guarded against is unchanged, because it is a property of
+ * any two-palette stylesheet: a custom property whose only definition sits
+ * inside the dark block resolves to nothing in the light (default) state,
+ * which renders one theme's text on the other theme's ground. So the checks
+ * below still assert (a) the light palette is complete in bare `:root`, and
+ * (b) `.dark` redefines exactly that set and never introduces a token of
+ * its own.
+ *
+ * It additionally pins the two facts that make Postbox's light-only
+ * decision correct rather than accidental: `:root` declares
+ * `color-scheme: light` (so an OS-dark viewer gets light form controls
+ * instead of a browser-darkened hybrid), and no source file ever applies
+ * the `.dark` class — Plunk's own atoms hardcode `bg-white` /
+ * `bg-neutral-900`, so stamping `.dark` would produce a half-dark page.
+ *
+ * Finally it verifies the entry stylesheet is actually reachable from the
+ * app: a perfect palette in a file nobody imports styles nothing.
  *
  * This file only parses CSS text; it asserts nothing about the DOM.
  */
@@ -21,9 +46,9 @@ interface CssRule {
 }
 
 /** Splits `css` into its top-level `selector { body }` rules via brace
- *  depth-counting — sufficient for this file, which nests at most one
- *  level (`@media { :root:not(...) { ... } }`) and never puts a brace
- *  inside a string or comment. */
+ *  depth-counting — sufficient for this file, which nests at most two
+ *  levels (`@layer base { :root { … } }`) and never puts a brace inside a
+ *  string or comment. */
 function parseTopLevelRules(css: string): readonly CssRule[] {
   const rules: CssRule[] = [];
   let selectorStart = 0;
@@ -68,152 +93,208 @@ function extractCustomProperties(body: string): ReadonlySet<string> {
   return names;
 }
 
-interface ThemeBlocks {
+interface PaletteBlocks {
   /** Union of every custom property declared in a bare, unqualified
-   *  `:root { … }` rule at the top level of the file. */
-  readonly bareRoot: ReadonlySet<string>;
-  /** Custom properties inside
-   *  `@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { … } }`. */
-  readonly mediaDark: ReadonlySet<string>;
-  /** Custom properties inside `:root[data-theme="dark"] { … }`. */
-  readonly dataThemeDark: ReadonlySet<string>;
+   *  `:root { … }` rule, at the top level or inside an `@layer`. */
+  readonly light: ReadonlySet<string>;
+  /** Custom properties declared in a bare `.dark { … }` rule. Empty if the
+   *  stylesheet has no dark block at all, which is a legal shape. */
+  readonly dark: ReadonlySet<string>;
 }
 
-/** Parses the three-block structure DESIGN.md §2.1 mandates out of a CSS
- *  source string. Exported implicitly via module scope so both the real
- *  file and the synthetic fixtures below run through the identical logic —
- *  the guard the real file needs is only as good as this function. */
-function parseThemeBlocks(css: string): ThemeBlocks {
-  const clean = stripComments(css);
-  const topLevel = parseTopLevelRules(clean);
+/**
+ * Collects the light and dark palettes out of a CSS source string,
+ * descending through `@layer`/`@media` wrappers so it does not care
+ * whether the palette sits at the top level or inside `@layer base`.
+ *
+ * Deliberately ignores `@theme { … }` — that block holds Tailwind's own
+ * mapping of theme keys onto `hsl(var(--token))`, not the palette values,
+ * and it has no dark counterpart by design.
+ */
+function parsePaletteBlocks(css: string): PaletteBlocks {
+  const light = new Set<string>();
+  const dark = new Set<string>();
 
-  const bareRoot = new Set<string>();
-  let mediaDark = new Set<string>();
-  let dataThemeDark = new Set<string>();
-
-  for (const rule of topLevel) {
-    const selector = normalizeSelector(rule.selector);
-
-    if (selector === ':root') {
-      for (const name of extractCustomProperties(rule.body)) bareRoot.add(name);
-      continue;
-    }
-
-    if (selector === ':root[data-theme="dark"]') {
-      dataThemeDark = new Set([...dataThemeDark, ...extractCustomProperties(rule.body)]);
-      continue;
-    }
-
-    if (selector.startsWith('@media') && selector.includes('prefers-color-scheme') && selector.includes('dark')) {
-      const nested = parseTopLevelRules(rule.body);
-      for (const nestedRule of nested) {
-        const nestedSelector = normalizeSelector(nestedRule.selector);
-        if (nestedSelector === ':root:not([data-theme="light"])') {
-          mediaDark = new Set([...mediaDark, ...extractCustomProperties(nestedRule.body)]);
-        }
+  function walk(source: string): void {
+    for (const rule of parseTopLevelRules(source)) {
+      const selector = normalizeSelector(rule.selector);
+      if (selector === ':root') {
+        for (const name of extractCustomProperties(rule.body)) light.add(name);
+        continue;
+      }
+      if (selector === '.dark') {
+        for (const name of extractCustomProperties(rule.body)) dark.add(name);
+        continue;
+      }
+      if (selector.startsWith('@layer') || selector.startsWith('@media')) {
+        walk(rule.body);
       }
     }
   }
 
-  return { bareRoot, mediaDark, dataThemeDark };
+  walk(stripComments(css));
+  return { light, dark };
 }
 
-function findMissingFromBareRoot(bareRoot: ReadonlySet<string>, other: ReadonlySet<string>): string[] {
-  return [...other].filter((name) => !bareRoot.has(name));
+function findMissingFromLight(light: ReadonlySet<string>, other: ReadonlySet<string>): string[] {
+  return [...other].filter((name) => !light.has(name));
 }
 
-describe('theme.css token structure (client/DESIGN.md §2.1)', () => {
-  const source = themeCss;
-  const blocks = parseThemeBlocks(source);
+/** The palette tokens every ported atom reads through Tailwind's `@theme`
+ *  mapping. If one of these disappears, `focus-visible:ring-ring`,
+ *  `border-border` and friends silently resolve to nothing. */
+const REQUIRED_TOKENS = [
+  '--background',
+  '--foreground',
+  '--muted',
+  '--muted-foreground',
+  '--border',
+  '--input',
+  '--ring',
+  '--card',
+  '--card-foreground',
+  '--primary',
+  '--primary-foreground',
+  '--secondary',
+  '--secondary-foreground',
+  '--accent',
+  '--accent-foreground',
+  '--destructive',
+  '--destructive-foreground',
+  '--popover',
+  '--popover-foreground',
+  '--radius',
+] as const;
 
-  // Sanity: if these are empty, the parser silently failed to find the
-  // blocks it's supposed to check, which would make every assertion below
+describe('src/styles.css palette structure', () => {
+  const source = stylesCss;
+  const blocks = parsePaletteBlocks(source);
+
+  // Sanity: if this is empty, the parser silently failed to find the block
+  // it is supposed to check, which would make every assertion below
   // vacuously true. A parser regression must fail loudly, not pass quietly.
-  it('finds a non-empty bare :root block', () => {
-    expect(blocks.bareRoot.size).toBeGreaterThan(0);
-  });
-  it('finds a non-empty @media (prefers-color-scheme: dark) block', () => {
-    expect(blocks.mediaDark.size).toBeGreaterThan(0);
-  });
-  it('finds a non-empty :root[data-theme="dark"] block', () => {
-    expect(blocks.dataThemeDark.size).toBeGreaterThan(0);
+  it('finds a non-empty bare :root palette', () => {
+    expect(blocks.light.size).toBeGreaterThan(0);
   });
 
-  it('defines every dark-media token in bare :root first', () => {
-    const missing = findMissingFromBareRoot(blocks.bareRoot, blocks.mediaDark);
+  // Non-vacuity guard for the set-equality test below: if the parser stopped
+  // finding the `.dark` block, that test would early-return and pass while
+  // checking nothing. Postbox ships the ported dark palette (unapplied), so
+  // it must be found. A future task that genuinely deletes the block updates
+  // this line deliberately rather than losing the check by accident.
+  it('finds the ported .dark palette block', () => {
+    expect(blocks.dark.size).toBeGreaterThan(0);
+  });
+
+  it('declares every token the ported atoms depend on, in bare :root', () => {
+    const missing = REQUIRED_TOKENS.filter((name) => !blocks.light.has(name));
     expect(missing).toEqual([]);
   });
 
-  it('defines every [data-theme="dark"] token in bare :root first', () => {
-    const missing = findMissingFromBareRoot(blocks.bareRoot, blocks.dataThemeDark);
+  it('never lets the .dark block introduce a token bare :root has not defined', () => {
+    const missing = findMissingFromLight(blocks.light, blocks.dark);
     expect(missing).toEqual([]);
   });
 
-  it('redefines the identical token set in both dark blocks (DESIGN.md §2.3: block 3 duplicates block 2)', () => {
-    expect([...blocks.dataThemeDark].sort()).toEqual([...blocks.mediaDark].sort());
+  it('redefines the identical token set in .dark, if a .dark block exists at all', () => {
+    if (blocks.dark.size === 0) return;
+    expect([...blocks.dark].sort()).toEqual([...blocks.light].sort());
   });
 
-  it('sets an explicit, non-transparent body background token', () => {
-    expect(source).toMatch(/body\s*\{[^}]*background:\s*var\(--bg-page\)/);
+  it('pins the light-only decision: :root declares color-scheme: light', () => {
+    expect(source).toMatch(/:root\s*\{[\s\S]*?color-scheme:\s*light/);
+  });
+
+  it('gives body an explicit, non-transparent background', () => {
+    expect(source).toMatch(/body\s*\{[\s\S]*?@apply[^;]*\bbg-background\b/);
   });
 });
 
-describe('parseThemeBlocks (the checker itself, against synthetic fixtures)', () => {
-  // Proves the guard above is not vacuous: it must FAIL a file that has the
-  // exact bug it exists to catch (DESIGN.md §2.1's "THE BUG THIS PREVENTS")
-  // — a token whose only definition sits inside the media block.
-  it('flags a token that is only ever defined inside the dark-media block', () => {
-    const buggyCss = `
-      :root {
-        --fg-primary: black;
-      }
-      @media (prefers-color-scheme: dark) {
-        :root:not([data-theme="light"]) {
-          --fg-primary: white;
-          --leaked-only-in-dark: red;
-        }
-      }
-      :root[data-theme="dark"] {
-        --fg-primary: white;
-        --leaked-only-in-dark: red;
-      }
-    `;
-    const blocks = parseThemeBlocks(buggyCss);
-    const missing = findMissingFromBareRoot(blocks.bareRoot, blocks.mediaDark);
-    expect(missing).toEqual(['--leaked-only-in-dark']);
+describe('the entry stylesheet is reachable from the app', () => {
+  it('is imported by src/main.tsx', () => {
+    expect(mainSource).toMatch(/import\s+['"]\.\/styles\.css['"]/);
   });
 
-  it('flags the same bug in the [data-theme="dark"] block', () => {
+  it('pulls in Tailwind', () => {
+    expect(stylesCss).toMatch(/@import\s+['"]tailwindcss['"]/);
+  });
+});
+
+describe('no source file ever stamps the .dark class (Postbox ships light-only)', () => {
+  // Plunk's atoms hardcode `bg-white` / `bg-neutral-900` / `bg-neutral-100`
+  // rather than reading the semantic tokens, so applying `.dark` would swap
+  // the page ground to near-black and leave every card, button and badge
+  // light. A deliberate single look beats a broken second one.
+  const sources = import.meta.glob('../src/**/*.{ts,tsx}', {
+    eager: true,
+    query: '?raw',
+    import: 'default',
+  }) as Record<string, string>;
+
+  const DARK_CLASS_STAMP =
+    /classList\.(add|toggle)\(\s*['"]dark['"]|className\s*=\s*['"][^'"]*\bdark\b/;
+
+  it('finds source files to scan (the glob is not empty)', () => {
+    expect(Object.keys(sources).length).toBeGreaterThan(5);
+  });
+
+  it('never adds `dark` to an element class list', () => {
+    const offenders = Object.entries(sources)
+      .filter(([, text]) => DARK_CLASS_STAMP.test(text))
+      .map(([path]) => path);
+    expect(offenders).toEqual([]);
+  });
+
+  it('the stamp regex is not vacuous', () => {
+    expect('document.documentElement.classList.add("dark");').toMatch(DARK_CLASS_STAMP);
+    expect('<div className="dark bg-background">').toMatch(DARK_CLASS_STAMP);
+    expect('<div className="rounded-lg border">').not.toMatch(DARK_CLASS_STAMP);
+  });
+});
+
+describe('parsePaletteBlocks (the checker itself, against synthetic fixtures)', () => {
+  // Proves the guard above is not vacuous: it must FAIL a file that has the
+  // exact bug it exists to catch — a token whose only definition sits
+  // inside the dark block.
+  it('flags a token that is only ever defined inside .dark', () => {
     const buggyCss = `
-      :root {
-        --fg-primary: black;
-      }
-      :root[data-theme="dark"] {
-        --fg-primary: white;
-        --leaked-only-in-dark-attr: red;
+      @layer base {
+        :root {
+          --foreground: 0 0% 0%;
+        }
+        .dark {
+          --foreground: 0 0% 100%;
+          --leaked-only-in-dark: 0 100% 50%;
+        }
       }
     `;
-    const blocks = parseThemeBlocks(buggyCss);
-    const missing = findMissingFromBareRoot(blocks.bareRoot, blocks.dataThemeDark);
-    expect(missing).toEqual(['--leaked-only-in-dark-attr']);
+    const blocks = parsePaletteBlocks(buggyCss);
+    expect(findMissingFromLight(blocks.light, blocks.dark)).toEqual(['--leaked-only-in-dark']);
   });
 
   it('passes a correctly structured fixture with no bug', () => {
     const goodCss = `
-      :root {
-        --fg-primary: black;
-      }
-      @media (prefers-color-scheme: dark) {
-        :root:not([data-theme="light"]) {
-          --fg-primary: white;
+      @layer base {
+        :root {
+          --foreground: 0 0% 0%;
+        }
+        .dark {
+          --foreground: 0 0% 100%;
         }
       }
-      :root[data-theme="dark"] {
-        --fg-primary: white;
+    `;
+    const blocks = parsePaletteBlocks(goodCss);
+    expect(findMissingFromLight(blocks.light, blocks.dark)).toEqual([]);
+  });
+
+  it('descends into @layer and @media wrappers rather than missing the palette', () => {
+    const nested = `
+      @media (min-width: 100px) {
+        @layer base {
+          :root { --nested-token: 1; }
+        }
       }
     `;
-    const blocks = parseThemeBlocks(goodCss);
-    expect(findMissingFromBareRoot(blocks.bareRoot, blocks.mediaDark)).toEqual([]);
-    expect(findMissingFromBareRoot(blocks.bareRoot, blocks.dataThemeDark)).toEqual([]);
+    expect([...parsePaletteBlocks(nested).light]).toEqual(['--nested-token']);
   });
 });

@@ -1,28 +1,30 @@
-import { useState } from 'react';
-import { X } from 'lucide-react';
+import { useCallback, useState } from 'react';
 import LoginView from './LoginView';
+import AppShell from './AppShell';
+import type { AccountSummary, ViewId } from './AppShell';
 import InboxList from './components/InboxList';
-import OpensRail from './components/OpensRail';
+import OpensView from './components/OpensView';
 import PushToggle from './components/PushToggle';
+import { Alert, AlertDescription } from './ui/Alert';
+import { Button } from './ui/Button';
+import { Card } from './ui/Card';
+import { Skeleton } from './ui/Skeleton';
 import { useSessionGate } from './useSessionGate';
-import './shell.css';
 
 /**
- * The app shell: an inbox region and a rail region, per client/DESIGN.md
- * §4.1's grid ("toolbar rail" / "inbox rail"). Task 4 fills the inbox with
- * InboxList; Task 5 fills the rail with OpensRail.
+ * The app: an auth gate in front of Plunk's dashboard shell (see
+ * AppShell.tsx for the port's provenance).
  *
- * The toolbar is still an empty landmark: DESIGN.md §6 component #2 specs
- * an account filter, theme toggle, and rail toggle for it, none of which
- * this task builds — the account is shown per-row as a label, not as a
- * toolbar filter control (task-4-brief.md: "all four accounts are always
- * merged").
- *
- * Task 3.5 adds the auth gate in front of it. Three things it must keep
- * apart, because collapsing any two is a defect: a browser with no session
- * gets the login view, a service that cannot be reached gets an in-place
- * error with a retry, and neither is rendered as a generic error page.
+ * Three things it must keep apart, because collapsing any two is a defect:
+ * a browser with no session gets the login view, a service that cannot be
+ * reached gets an in-place error with a retry, and neither is rendered as
+ * a generic error page. In particular a non-401 NEVER produces a login
+ * prompt — that would teach the user to type their token at anything that
+ * asks (the rule itself lives in useSessionGate.ts/session.ts; this file
+ * only renders its three outcomes).
  */
+
+const SKELETON_ROW_COUNT = 6;
 
 interface SessionErrorProps {
   readonly message: string;
@@ -32,92 +34,102 @@ interface SessionErrorProps {
 
 /**
  * A failure that a sign-in cannot fix, rendered in place at the top of the
- * inbox with one retry control (DESIGN.md §7.4) — never a modal, never a
- * red banner that pushes content down and disappears. Task 4 owns the
- * richer per-account sync-failure surface; this is the shell-level case.
+ * content column with one retry control — never a modal, never a banner
+ * that pushes content down and then disappears on its own.
  *
- * Amendment 1 ("density & ergonomics") adds `onDismiss`: this and the
- * notifications banner (PushToggle.tsx) were the two banners flagged as
- * "not dismissible, takes prime space" — see App()'s own comment on the
- * dismiss state for why dismissal does not also remove the retry link.
+ * `onDismiss` exists because this banner and the notifications note were
+ * the two surfaces flagged as "not dismissible, takes prime space".
+ * Dismissing does not remove the retry: it removes the whole banner, and
+ * the banner returns if a later attempt fails with a different message.
  */
 function SessionError({ message, onRetry, onDismiss }: SessionErrorProps) {
   return (
-    <div className="shell__banner" role="alert">
-      <p className="shell__banner-text">
-        {message} Postbox has not loaded any mail.{' '}
-        <button type="button" className="shell__retry" onClick={onRetry}>
+    <Alert variant="destructive" className="mb-6">
+      <AlertDescription className="flex flex-wrap items-center gap-3">
+        <span className="flex-1 min-w-[12rem]">{message} Postbox has not loaded any mail.</span>
+        <Button variant="outline" size="sm" onClick={onRetry}>
           Try again
-        </button>
-      </p>
-      <button type="button" className="shell__dismiss" onClick={onDismiss} aria-label="Dismiss">
-        <X size={14} strokeWidth={1.5} aria-hidden="true" />
-      </button>
-    </div>
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onDismiss}>
+          Dismiss
+        </Button>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+/** The content column while the session probe is still in flight: the same
+ *  shaped skeleton the inbox itself uses, so the layout does not jump when
+ *  the real list replaces it. Never a spinner. */
+function ShellSkeleton() {
+  return (
+    <Card aria-hidden="true">
+      <div className="divide-y divide-neutral-100">
+        {Array.from({ length: SKELETON_ROW_COUNT }, (_, index) => (
+          <div key={index} className="flex h-11 items-center gap-3 px-4">
+            <Skeleton className="h-3 w-32 shrink-0" />
+            <Skeleton className="h-3 flex-1" />
+            <Skeleton className="h-3 w-10 shrink-0" />
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }
 
 export default function App() {
   const { gate, signIn, retry } = useSessionGate();
-  // Amendment 1: component-local, not persisted (the task's own spec for
-  // this banner's dismiss state) — keyed on the message text rather than
+  const [view, setView] = useState<ViewId>('inbox');
+  const [accounts, setAccounts] = useState<readonly AccountSummary[]>([]);
+  // Component-local, not persisted — keyed on the message text rather than
   // a plain boolean, so a retry that fails with a DIFFERENT message still
   // shows; only a repeat of the exact message the user already dismissed
   // stays hidden.
   const [dismissedErrorMessage, setDismissedErrorMessage] = useState<string | null>(null);
 
+  // Stable identity: InboxList lists this in an effect's dependency array.
+  const handleAccountsChange = useCallback((next: readonly AccountSummary[]) => {
+    setAccounts(next);
+  }, []);
+
   // Replaces the shell rather than overlaying it: there is nothing behind
-  // this to look at, and a modal over an empty grid would only imply there
-  // is.
+  // this to look at, and a modal over an empty shell would only imply
+  // there is.
   if (gate.status === 'login') {
     return <LoginView onSubmit={signIn} />;
   }
 
+  const isAuthorized = gate.status === 'authorized';
+
   return (
-    <div className="shell">
-      <header className="toolbar" aria-label="Toolbar">
-        {/* Task 4+: AccountFilter, ThemeToggle, rail toggle
-            (client/DESIGN.md §6, component #2 Toolbar). */}
-        {/* Task 6. Gated on `authorized` like InboxList and OpensRail,
-            not merely on the shell rendering: every call it makes
-            (/api/push/key, /api/push/subscribe) needs the session cookie,
-            so a toggle offered while the session is still being checked —
-            or after it failed — is a control whose only possible outcome
-            is a 401 rendered as "could not subscribe". */}
-        {gate.status === 'authorized' && <PushToggle />}
-      </header>
+    <AppShell
+      view={view}
+      onViewChange={setView}
+      accounts={accounts}
+      isBusy={gate.status === 'checking'}
+      // Gated on `authorized`, not merely on the shell rendering: every
+      // call PushToggle makes (/api/push/key, /api/push/subscribe) needs
+      // the session cookie, so a toggle offered while the session is still
+      // being checked — or after it failed — is a control whose only
+      // possible outcome is a 401 rendered as "could not subscribe".
+      sidebarFooter={isAuthorized ? <PushToggle /> : undefined}
+    >
+      {gate.status === 'error' && gate.message !== dismissedErrorMessage && (
+        <SessionError
+          message={gate.message}
+          onRetry={retry}
+          onDismiss={() => setDismissedErrorMessage(gate.message)}
+        />
+      )}
 
-      <main className="inbox" aria-label="Inbox" aria-busy={gate.status === 'checking'}>
-        <div className="inbox__inner">
-          {/* Visually hidden, not absent: day rules render as <h2> inside
-              InboxList, and with no <h1> anywhere in the shell a screen
-              reader's document outline started at level 2. DESIGN.md's
-              layout calls for no visible page title (client/DESIGN.md has
-              no chrome for one), so this gives the outline a real root
-              without adding anything to look at. */}
-          <h1 className="visually-hidden">Inbox</h1>
-          {gate.status === 'error' && gate.message !== dismissedErrorMessage && (
-            <SessionError
-              message={gate.message}
-              onRetry={retry}
-              onDismiss={() => setDismissedErrorMessage(gate.message)}
-            />
-          )}
-          {gate.status === 'authorized' && <InboxList />}
-        </div>
-      </main>
+      {gate.status === 'checking' && <ShellSkeleton />}
 
-      {/*
-        OpensRail (Task 5) renders its own `<aside class="rail">` — the
-        one place `grid-area: rail` is claimed — plus the <1080px
-        collapsed strip and its expanded sheet as siblings of it, all
-        three sharing one fetch. See OpensRail.tsx's own doc comment.
-
-        Self-classified events are suppressed from the rail's list but
-        counted, shown as one muted "N views from you" line rather than
-        dropped silently (task-5-brief.md Amendment 2).
-      */}
-      {gate.status === 'authorized' && <OpensRail />}
-    </div>
+      {isAuthorized &&
+        (view === 'inbox' ? (
+          <InboxList onAccountsChange={handleAccountsChange} />
+        ) : (
+          <OpensView />
+        ))}
+    </AppShell>
   );
 }

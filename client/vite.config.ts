@@ -3,17 +3,22 @@
 // is what lets `tsc --noEmit` accept the `test: {...}` block below.
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
+// Tailwind v4 as a Vite plugin rather than a PostCSS config: this is a Vite
+// app, the plugin is the first-party path, and it means no postcss.config.js
+// and no @tailwindcss/postcss in the dependency list.
+import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   // The sync service serves these as static files, which is what keeps the
   // client on ONE origin with the API — no CORS, no second bearer token.
   build: { outDir: '../sync/public', emptyOutDir: true },
   server: { proxy: { '/api': 'http://127.0.0.1:8080' } },
   // css: true — vitest's own default (`css.include: []`) stubs every CSS
-  // import to an empty module, which silently defeats
-  // tests/theme-tokens.test.ts's `theme.css?raw` import (see
-  // task-3-report.md, "Font subsetting" sibling note on this fix).
+  // import to an empty module. Nothing under src/ imports a stylesheet by
+  // path any more (Tailwind replaced the per-component CSS files), but
+  // tests/theme-tokens.test.ts still reads src/styles.css via `?raw`, and
+  // leaving this on keeps that independent of how vitest treats CSS.
   //
   // env.TZ pins the test run to UTC (task-4-brief.md Amendment 2).
   // tests/inbox.test.ts's groupByDay fixtures (Aug 24 10:00Z / 08:00Z vs
