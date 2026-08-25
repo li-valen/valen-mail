@@ -1,4 +1,4 @@
-import { ChevronDown, CloudOff, Radio } from 'lucide-react';
+import { CloudOff, Radio } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { OpenEvent } from '../api';
 import type { OpensLoadState } from '../useOpensFeed';
@@ -6,8 +6,8 @@ import { Card, CardHeader } from '../ui/Card';
 import { Badge } from '../ui/Badge';
 import { EmptyState } from '../ui/EmptyState';
 import { Skeleton } from '../ui/Skeleton';
-import { ReadState, readStateFor } from './ReadState';
-import { describeEvent, formatRelativeTime, formatSelfCountLine } from './openEvents';
+import { ReadState } from './ReadState';
+import { formatOpenRowSentence, selfCountLine } from './openEvents';
 
 /**
  * The Recent Opens feed body, and the place the honesty requirement
@@ -44,6 +44,24 @@ import { describeEvent, formatRelativeTime, formatSelfCountLine } from './openEv
  * that actually renders open events — OpensView.tsx and OpensRail.tsx
  * are both thin wrappers around it) for the same two hard bans it always
  * has: `deviceClass`/`os` never render, no checkmark-shaped icon.
+ *
+ * RESTYLED, task V1b, to the Superhuman/Mailspring convention. The user
+ * reviewed the labelled/badged/details-and-summary-explained design this replaced
+ * and directed, verbatim: "make it so I can see WHICH email gets opened
+ * instead of just showing me things got opened... don't show the MPP mail
+ * thing... i dont need any liek side notes. Do it like superhuman or
+ * mailspring does it." Concretely: every row is now ONE always-visible
+ * line — `[mark] {recipientEmail} opened "{subject}" · {relative time}` —
+ * built by `formatOpenRowSentence` (openEvents.ts); the MPP/PREFETCH/
+ * SCANNER token, the word "unconfirmable", the "· permanent" suffix, and
+ * every details/summary disclosure is gone from the render tree entirely,
+ * not hidden. The honesty model is NOT deleted — the classification
+ * pipeline (`readStateFor`) and push notifications (confirmed-only,
+ * untouched, out of this file's scope) are unchanged — it has one fewer
+ * surviving visual channel: `<ReadState>`'s mark (colour + shape) plus its
+ * `title` tooltip, the row's own text being byte-identical in form between
+ * a confirmed and an unconfirmable event by construction. See OpenEntry's
+ * own doc comment below for the full reasoning.
  */
 
 const SKELETON_ENTRY_COUNT = 4;
@@ -98,8 +116,8 @@ function OpensFeedBody({ load, now, compact }: OpensFeedBodyProps) {
         </p>
         <div className="divide-y divide-neutral-100" aria-hidden="true">
           {Array.from({ length: SKELETON_ENTRY_COUNT }, (_, index) => (
-            <div key={index} className="flex items-center gap-3 px-4 py-3">
-              <Skeleton className="h-5 w-16 shrink-0 rounded-full" />
+            <div key={index} className="flex items-center gap-3 px-4 py-2">
+              <Skeleton className="h-2.5 w-2.5 shrink-0 rounded-full" />
               <Skeleton className="h-3 flex-1" />
             </div>
           ))}
@@ -132,7 +150,7 @@ function OpensFeedBody({ load, now, compact }: OpensFeedBodyProps) {
   if (displayable.length === 0) {
     return (
       <div className="space-y-3">
-        {selfCount > 0 && <SelfCount count={selfCount} />}
+        <SelfCount count={selfCount} />
         <Panel compact={compact}>
           <EmptyState
             icon={Radio}
@@ -148,8 +166,10 @@ function OpensFeedBody({ load, now, compact }: OpensFeedBodyProps) {
     <div className="space-y-3">
       {/* self events are never a row, but never silently discarded either —
           zero self events render nothing here rather than "0 views from
-          you". */}
-      {selfCount > 0 && <SelfCount count={selfCount} />}
+          you". `SelfCount` itself owns that gate now (`selfCountLine`,
+          openEvents.ts), so this call site does not repeat the `> 0`
+          check. */}
+      <SelfCount count={selfCount} />
       <Panel compact={compact}>
         <CardHeader className="flex-row items-center justify-between space-y-0 border-b border-neutral-200 p-4">
           {/* Plunk's CardTitle is a <div>; this needs to be a real heading
@@ -180,8 +200,16 @@ function OpensFeedBody({ load, now, compact }: OpensFeedBodyProps) {
   );
 }
 
+/**
+ * Renders nothing (not an empty line, not "0 views from you") when
+ * `count` is zero — `selfCountLine` (openEvents.ts) owns that gate; this
+ * component just defers to it rather than re-checking `count > 0` itself,
+ * so both call sites above can pass `selfCount` through unconditionally.
+ */
 function SelfCount({ count }: { readonly count: number }) {
-  return <p className="px-1 text-xs text-neutral-500">{formatSelfCountLine(count)}</p>;
+  const line = selfCountLine(count);
+  if (line === null) return null;
+  return <p className="px-1 text-xs text-neutral-500">{line}</p>;
 }
 
 interface OpenEntryProps {
@@ -190,76 +218,62 @@ interface OpenEntryProps {
 }
 
 /**
- * One event in the feed, with the classification's full explanatory note
- * revealed on demand via `<details>/<summary>`.
+ * One event in the feed — task V1b (the Superhuman/Mailspring restyle)
+ * collapsed this from a two-tier, details-and-summary-disclosing row (a dominant
+ * two-line confirmed sentence; a collapsed one-line unconfirmable summary
+ * with its explanation one tap away) to ONE always-visible, information-
+ * dense line, identical in STRUCTURE for every displayable classification:
  *
- * A **confirmed** row keeps two visible lines (who + time · lag) —
- * confirmed is rare and valuable, and stays visually dominant. An
- * **unconfirmable** row (mpp/prefetch/scanner) collapses to ONE visible
- * line — badge, relative time, plus a compact `· permanent` suffix for mpp
- * (the ceiling fact must stay visible, not buried) — because four
- * consecutive MPP events would otherwise repeat the same three-line
- * explanation four times. The distinct per-cause explanation
- * (`state.title`), the ceiling copy (`copy.headline`/`copy.sub`), and the
- * absolute clock/lag meta (`copy.meta`) all still exist — they live in the
- * `<details>` note, closed by default, one tap or click away. Nothing is
- * deleted, only relocated.
+ *   [mark] {recipientEmail} opened "{subject}" · {relative time}
  *
- * `<details>/<summary>` rather than a floating popover: it is a native
- * disclosure widget with keyboard support and expanded/collapsed state
- * built in, it works identically on a phone, and it pushes the following
- * rows down in normal flow instead of needing to escape a scroll
- * container.
+ * This is a deliberate, informed product decision, not a regression of the
+ * honesty model. The user reviewed the labelled/badged/explained design
+ * this replaced and asked, verbatim, to "see WHICH email gets opened
+ * instead of just showing me things got opened... don't show the MPP mail
+ * thing... i dont need any liek side notes. Do it like superhuman or
+ * mailspring does it." The three-tone classification pipeline underneath
+ * (`readStateFor`, ReadState.tsx) is completely unchanged; what changed is
+ * which of its fields ever reach the screen as visible text.
+ *
+ * The MPP/PREFETCH/SCANNER token, the word "unconfirmable", the
+ * "· permanent" suffix, and every explanation paragraph this row used to
+ * reveal via details/summary are gone — not hidden, not collapsed, gone from
+ * the render tree entirely. `describeEvent` (openEvents.ts) still exists
+ * and is still tested — its `headline`/`sub`/`meta` strings are simply no
+ * longer read by this component; `formatOpenRowSentence` is what this row
+ * actually renders now. The one surviving visual distinction is
+ * `<ReadState>`'s mark: green for confirmed, neutral for everything else,
+ * with the per-cause explanation as a hover tooltip only (`title`,
+ * ReadState.tsx) — this row's own text is byte-identical in FORM between
+ * an `open` row and an `mpp` row, by construction:
+ * `formatOpenRowSentence` never reads `event.classification` at all.
+ *
+ * `subject` (new here — the previous design never rendered it, even
+ * though `OpenEvent.subject` always carried it) is the "which email" the
+ * user asked for. Rendered quoted when present; when `event.subject` is
+ * `null`, the whole `"..."` fragment is omitted by `formatOpenRowSentence`
+ * — never the literal text "null", never empty quotes.
  *
  * NEVER a device or a location. `deviceClass` and `os` exist on
  * `OpenEvent` and are deliberately not read here or anywhere —
  * tests/opens-rail-static-guards.test.ts fails the build if they are.
  *
- * XSS: `subject` is never rendered at all. `recipientEmail` is
- * attacker-influenced — any sender picks the address their own tracking
- * pixel points at — and is only ever interpolated as JSX text (via
- * `describeEvent`'s returned string), which React escapes by default; this
- * file never touches `dangerouslySetInnerHTML`.
+ * XSS: both `subject` and `recipientEmail` are attacker-influenced — any
+ * sender picks the subject line and the address their own tracking pixel
+ * points at. `formatOpenRowSentence` (openEvents.ts) returns a single
+ * plain string built by template-literal concatenation, never markup, and
+ * it is interpolated here as ONE JSX text child (`{...}`), which React
+ * escapes by default; this file never touches `dangerouslySetInnerHTML`.
  */
 function OpenEntry({ event, now }: OpenEntryProps) {
-  const state = readStateFor(event.classification);
-  const copy = describeEvent(event);
-  const isConfirmed = state.tone === 'confirmed';
-
   return (
     <li className="transition-colors hover:bg-neutral-50">
-      <details className="group">
-        <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset [&::-webkit-details-marker]:hidden">
-          <ReadState classification={event.classification} />
-          {isConfirmed ? (
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm text-neutral-900">{copy.headline}</span>
-              <span className="block truncate font-mono text-xs text-neutral-500">{copy.meta}</span>
-            </span>
-          ) : (
-            <span className="min-w-0 flex-1 truncate font-mono text-xs text-neutral-500">
-              {formatRelativeTime(event.occurredAt, now)}
-              {state.permanent ? ' · permanent' : ''}
-            </span>
-          )}
-          <ChevronDown
-            className="h-4 w-4 shrink-0 text-neutral-400 transition-transform duration-200 group-open:rotate-180"
-            aria-hidden="true"
-          />
-        </summary>
-        <div className="space-y-1 px-4 pb-3 text-sm leading-relaxed text-neutral-600 sm:pl-[4.5rem]">
-          {isConfirmed ? (
-            <p>{state.title}</p>
-          ) : (
-            <>
-              <p className="text-neutral-900">{copy.headline}</p>
-              {copy.sub !== null && <p>{copy.sub}</p>}
-              <p>{state.title}</p>
-              <p className="font-mono text-xs text-neutral-500">{copy.meta}</p>
-            </>
-          )}
-        </div>
-      </details>
+      <div className="flex items-center gap-3 px-4 py-2">
+        <ReadState classification={event.classification} />
+        <span className="min-w-0 flex-1 truncate text-sm text-neutral-900">
+          {formatOpenRowSentence(event, now)}
+        </span>
+      </div>
     </li>
   );
 }

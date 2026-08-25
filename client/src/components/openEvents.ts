@@ -101,6 +101,21 @@ export function formatSelfCountLine(count: number): string {
   return count === 1 ? '1 view from you' : `${count} views from you`;
 }
 
+/**
+ * The self-count line's own visibility rule — `null` means "render
+ * nothing", never the literal string "0 views from you". Pulled out of
+ * OpensFeed.tsx's JSX conditional (task V1b) so the rule the component's
+ * `SelfCount` now defers to is itself testable without rendering a
+ * component (client/CLAUDE.md's standing constraint) — the same reason
+ * every other display decision in this file (`describeEvent`,
+ * `deriveRailView`, `formatOpenRowSentence` below) is a plain function
+ * rather than inline JSX. `formatSelfCountLine` itself is untouched; this
+ * only adds the "should it render at all" gate in front of it.
+ */
+export function selfCountLine(count: number): string | null {
+  return count > 0 ? formatSelfCountLine(count) : null;
+}
+
 export interface EventCopy {
   readonly headline: string;
   readonly sub: string | null;
@@ -148,6 +163,54 @@ export function describeEvent(event: OpenEvent): EventCopy {
     sub: null,
     meta: `${clock} · ${lag} · ${boundedToken(state.token)}`,
   };
+}
+
+/**
+ * The ENTIRE visible sentence for one row in the Superhuman/Mailspring
+ * restyle (task V1b): `"{recipientEmail} opened "{subject}" · {relative
+ * time}"`. This replaces `describeEvent` as what `OpensFeed.tsx` actually
+ * renders — `describeEvent` itself is untouched (contract frozen; still
+ * exercised by its own tests in this file), it is simply no longer read by
+ * the component, per the task brief's explicit allowance for that.
+ *
+ * The user's own directive: "make it so I can see WHICH email gets opened
+ * instead of just showing me things got opened... don't show the MPP mail
+ * thing... Do it like superhuman or mailspring does it." Two consequences
+ * fall out of that directly:
+ *
+ *   1. `subject` — never rendered before this task, even though
+ *      `OpenEvent.subject` always carried it — is now the sentence's own
+ *      "which email" fragment. Rendered quoted when present; when
+ *      `event.subject` is `null`, the ENTIRE `"..."` fragment is
+ *      omitted — never the literal text "null", never empty quotes. The
+ *      trailing-space-then-quote construction below (`' "..."'` appended
+ *      to `'opened'`, vs `''` appended) is what keeps a null subject from
+ *      leaving a stray double space or a dangling quote mark behind.
+ *
+ *   2. This function takes NO classification-derived branch at all — it
+ *      cannot special-case `mpp`/`prefetch`/`scanner` even by accident,
+ *      because it never reads `event.classification` in the first place.
+ *      That is what makes "an mpp row and an open row render the same
+ *      sentence form" a structural guarantee rather than a convention two
+ *      call sites have to remember to keep in sync: every displayable
+ *      classification runs through this exact same code path. The one
+ *      surviving distinction between them — the mark's tone and its
+ *      hover-tooltip explanation — lives entirely in `<ReadState>`
+ *      (ReadState.tsx), never here.
+ *
+ * `recipientEmail` and `subject` are both attacker-influenced (any sender
+ * picks the recipient address their own tracking pixel points at, and
+ * writes their own subject line), but this function only ever returns a
+ * plain, unescaped string — never markup. `OpensFeed.tsx` interpolates the
+ * result as a single JSX text child (`{formatOpenRowSentence(...)}`),
+ * which React escapes on render; this module has no dependency on React
+ * and could not call `dangerouslySetInnerHTML` even if something later
+ * tried.
+ */
+export function formatOpenRowSentence(event: OpenEvent, now: number): string {
+  const relativeTime = formatRelativeTime(event.occurredAt, now);
+  const subjectFragment = event.subject !== null ? ` "${event.subject}"` : '';
+  return `${event.recipientEmail} opened${subjectFragment} · ${relativeTime}`;
 }
 
 export interface OpensPartition {

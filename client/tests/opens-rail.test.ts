@@ -4,6 +4,8 @@ import {
   formatLag,
   formatRelativeTime,
   formatSelfCountLine,
+  formatOpenRowSentence,
+  selfCountLine,
   describeEvent,
   partitionOpens,
   deriveRailView,
@@ -16,6 +18,16 @@ import type { OpenEvent, OpensResponse } from '../src/api';
  * The two functions the task's own report explicitly asks to be checked
  * for vacuousness live here: `partitionOpens` (self suppressed AND
  * counted) and `deriveRailView` (unavailable told apart from empty).
+ *
+ * `formatOpenRowSentence` and `selfCountLine` (bottom of this file) are
+ * task V1b additions — the Superhuman/Mailspring restyle's row sentence
+ * and the self-count line's visibility gate, respectively. Everything
+ * ABOVE this point (`describeEvent` included) is untouched by V1b: its
+ * contract is frozen, and OpensFeed.tsx simply stopped reading some of the
+ * fields it returns. See tests/opens-feed-presentation.test.ts for the
+ * companion raw-source assertions that prove OpensFeed.tsx/ReadState.tsx
+ * actually stopped rendering those fields, which no pure-function test
+ * here can prove on its own.
  */
 
 function buildEvent(overrides: Partial<OpenEvent> & { readonly token: string }): OpenEvent {
@@ -213,5 +225,79 @@ describe('deriveRailView — unavailable told apart from empty', () => {
       expect(view.selfCount).toBe(1);
       expect(view.displayable).toHaveLength(1);
     }
+  });
+});
+
+// task V1b — the Superhuman/Mailspring restyle. `formatOpenRowSentence`
+// builds the ENTIRE visible text of one row now: "{recipientEmail} opened
+// "{subject}" · {relative time}". `ROW_NOW` is 5 minutes after every
+// fixture event's default `occurredAt` (1_700_000_060_000), chosen so the
+// expected strings below read as plain "5m ago" rather than a computed
+// offset — matching this file's existing `formatRelativeTime` fixtures.
+const ROW_NOW = 1_700_000_060_000 + 5 * 60_000;
+
+describe('formatOpenRowSentence — subject is the "which email" the user asked for', () => {
+  it('renders the subject, quoted, when present', () => {
+    const event = buildEvent({ token: 'a', recipientEmail: 'kate@example.com', subject: 'Re: invoice' });
+    expect(formatOpenRowSentence(event, ROW_NOW)).toBe('kate@example.com opened "Re: invoice" · 5m ago');
+  });
+
+  // The mutation the task brief asks to be run and reported: force the
+  // `"..."` fragment to always render (as if `subjectFragment` were
+  // unconditional) and confirm this specific assertion is what catches it.
+  it('omits the subject fragment entirely when null — never the literal text "null", never empty quotes', () => {
+    const event = buildEvent({ token: 'b', recipientEmail: 'kate@example.com', subject: null });
+    const sentence = formatOpenRowSentence(event, ROW_NOW);
+    expect(sentence).toBe('kate@example.com opened · 5m ago');
+    expect(sentence).not.toContain('null');
+    expect(sentence).not.toContain('""');
+  });
+
+  it('reflects a different subject rather than a hardcoded placeholder', () => {
+    const a = formatOpenRowSentence(buildEvent({ token: 'c', subject: 'Q3 numbers' }), ROW_NOW);
+    const b = formatOpenRowSentence(buildEvent({ token: 'd', subject: 'Dinner Friday?' }), ROW_NOW);
+    expect(a).toContain('"Q3 numbers"');
+    expect(b).toContain('"Dinner Friday?"');
+    expect(a).not.toBe(b);
+  });
+});
+
+describe('formatOpenRowSentence — mpp and open share the exact same sentence form', () => {
+  it('an open row and an mpp row both contain "opened"', () => {
+    const open = formatOpenRowSentence(buildEvent({ token: 'e', classification: 'open' }), ROW_NOW);
+    const mpp = formatOpenRowSentence(buildEvent({ token: 'f', classification: 'mpp' }), ROW_NOW);
+    expect(open).toContain('opened');
+    expect(mpp).toContain('opened');
+  });
+
+  // Stronger than the substring check above: given the SAME recipient,
+  // subject and timestamps, an open row and an mpp row are BYTE-IDENTICAL
+  // — not just similarly shaped — because this function never reads
+  // `event.classification` at all. This would fail immediately if a
+  // future edit special-cased even a single character by classification.
+  it('produces a byte-identical sentence for open vs. mpp given the same recipient/subject/time', () => {
+    const shared = { recipientEmail: 'kate@example.com', subject: 'Re: invoice', occurredAt: 1_700_000_060_000 };
+    const open = formatOpenRowSentence(buildEvent({ token: 'g', classification: 'open', ...shared }), ROW_NOW);
+    const mpp = formatOpenRowSentence(buildEvent({ token: 'h', classification: 'mpp', ...shared }), ROW_NOW);
+    expect(open).toBe(mpp);
+  });
+
+  it('never renders a classification token or the word "unconfirmable", for any classification', () => {
+    for (const classification of ['open', 'mpp', 'prefetch', 'scanner', 'self', 'a-future-classifier-value']) {
+      const sentence = formatOpenRowSentence(buildEvent({ token: `i-${classification}`, classification }), ROW_NOW);
+      expect(sentence).not.toMatch(/MPP|PREFETCH|SCANNER|unconfirmable/i);
+    }
+  });
+});
+
+describe('selfCountLine — the self-count line renders for selfCount>0, nothing for 0', () => {
+  it('is null at zero — not the string "0 views from you"', () => {
+    expect(selfCountLine(0)).toBeNull();
+  });
+
+  it('renders formatSelfCountLine\'s singular/plural text for any positive count', () => {
+    expect(selfCountLine(1)).toBe('1 view from you');
+    expect(selfCountLine(2)).toBe('2 views from you');
+    expect(selfCountLine(1)).toBe(formatSelfCountLine(1));
   });
 });

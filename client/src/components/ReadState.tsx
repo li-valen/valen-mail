@@ -1,5 +1,3 @@
-import { Badge } from '../ui/Badge';
-
 /**
  * The three-tone read-state vocabulary — the centrepiece: Postbox typesets
  * uncertainty at the same size, weight and contrast as certainty, so
@@ -12,10 +10,17 @@ import { Badge } from '../ui/Badge';
  * event's classification, and is handled by useOpensFeed.ts/openEvents.ts's
  * `deriveRailView` (via `advanceOpensPoll`), not by this file.
  *
- * NOTHING BELOW THE PRESENTATION LAYER CHANGED IN THE PLUNK RESTYLE.
- * `readStateFor`, `isDisplayable` and `boundedToken` keep the exact
- * contracts tests/read-state.test.ts pins; only `ReadState` (the
- * component) and `StateMark` (its silhouette) were reskinned.
+ * NOTHING BELOW THE PRESENTATION LAYER HAS EVER CHANGED, ACROSS EITHER
+ * RESTYLE. `readStateFor`, `isDisplayable` and `boundedToken` keep the
+ * exact contracts tests/read-state.test.ts pins; only `ReadState` (the
+ * component) and `StateMark` (its silhouette) get reskinned. The Plunk
+ * restyle reskinned both once already; task V1b (the Superhuman/
+ * Mailspring convention — "don't show the MPP mail thing... do it like
+ * superhuman or mailspring does it") reskinned `ReadState` a second time,
+ * dropping the visible mono token (`Badge` + "OPEN"/"MPP"/...) down to
+ * just the mark, coloured by tone, with the classification's explanation
+ * as a hover `title` tooltip instead of badge text. `StateMark` itself —
+ * the actual silhouette geometry — is untouched by V1b.
  */
 export type ReadStateTone = 'confirmed' | 'unknown';
 
@@ -173,10 +178,12 @@ interface StateMarkProps {
  *   - unconfirmable                       → error bar (two caps + a stem)
  *   - unconfirmable, permanent (mpp only) → error bar + a terminal cap
  *
- * `currentColor` fill/stroke: the enclosing Badge sets the text colour
- * (green for confirmed, neutral for unconfirmable), so this SVG never
- * names a colour of its own. Purely decorative next to the mono token
- * text beside it (the real screen-reader path), so it is `aria-hidden`.
+ * `currentColor` fill/stroke: the enclosing element sets the text colour
+ * (green for confirmed, neutral for unconfirmable — a `<span>` since task
+ * V1b, previously Plunk's `Badge` atom), so this SVG never names a colour
+ * of its own. Purely decorative — the enclosing `title` attribute is the
+ * explanatory path now that the mono token text beside it is gone — so
+ * this stays `aria-hidden`.
  */
 function StateMark({ classification }: StateMarkProps) {
   const state = readStateFor(classification);
@@ -231,19 +238,38 @@ export interface ReadStateProps {
 }
 
 /**
- * `<ReadState classification={...} />`. Renders the mark plus the mono
- * token inside Plunk's `Badge` atom (AGPL-3.0,
- * `packages/ui/src/components/atoms/Badge.tsx`): `variant="success"` — the
- * only green in the product — for confirmed, `variant="neutral"` for every
- * unconfirmable state. The two never differ by colour alone; the mark
- * silhouette beside the token differs too, and the token word itself is
- * the plain-text path.
+ * `<ReadState classification={...} />`. Task V1b (the Superhuman/
+ * Mailspring restyle) reduced this from Plunk's `Badge` atom carrying a
+ * visible mono token ("OPEN"/"MPP"/"PREFETCH"/"SCANNER") down to JUST the
+ * mark — `StateMark`'s silhouette, wrapped in a `currentColor`-setting
+ * `<span>` — green for confirmed, neutral (`text-neutral-400`) for every
+ * unconfirmable state. The two never differ by colour alone: the mark
+ * SHAPE differs too (see `StateMark` above — a filled disc vs an error
+ * bar), which is what keeps this legible for colour-blind users once the
+ * token word is gone.
  *
- * `readStateFor`'s `title` (the full explanatory sentence) is NOT rendered
- * here as visible text: the row itself stays terse, and the longer note is
- * progressive disclosure the row's own `<details>` reveals on demand.
- * Rendering it here too would either duplicate it (announced twice to a
- * screen reader) or force every row to carry a paragraph.
+ * The user's own directive drove the token's removal: "don't show the MPP
+ * mail thing... Do it like superhuman or mailspring does it." The token
+ * text, and the word "unconfirmable", no longer render anywhere in this
+ * product — not hidden, not truncated, gone from the tree. `readStateFor`
+ * itself is untouched; `boundedToken` still exists and is still tested,
+ * simply no longer called from here (nothing here needs to bound a token
+ * this component no longer displays).
+ *
+ * `readStateFor`'s `title` (the full per-cause explanation — "Apple Mail
+ * Privacy Protection downloads every image the moment mail arrives...")
+ * moves from the (now-deleted) row `<details>` disclosure to a native
+ * `title` attribute on the mark itself: hover-only, not a second visible
+ * text channel. This is what makes an `open` row and an `mpp` row's VISIBLE
+ * text byte-identical in form (`formatOpenRowSentence`,
+ * openEvents.ts) — the mark is the one place the distinction still lives.
+ *
+ * `data-tone` carries the same confirmed/unknown distinction as a plain DOM
+ * attribute, independent of the Tailwind class string — the one thing
+ * tests/opens-feed-presentation.test.ts's static source scan can assert on
+ * without rendering a component (client/CLAUDE.md's standing constraint;
+ * see that test file's own doc comment for why this is the only tool
+ * available here).
  *
  * There is deliberately no tick, tickbox or verified-badge glyph anywhere
  * in this component set — that mark is the lie this product exists to
@@ -251,19 +277,14 @@ export interface ReadStateProps {
  */
 export function ReadState({ classification }: ReadStateProps) {
   const state = readStateFor(classification);
-  const displayToken = boundedToken(state.token);
-  // Only set `title` when it would tell the inspector something the
-  // visible text does not already say — a redundant native tooltip on
-  // every ordinary "OPEN"/"MPP" badge would be noise, not a feature.
-  const fullTokenTitle = displayToken === state.token ? undefined : state.token;
+  const toneClassName = state.tone === 'confirmed' ? 'text-green-600' : 'text-neutral-400';
   return (
-    <Badge
-      variant={state.tone === 'confirmed' ? 'success' : 'neutral'}
-      className="shrink-0 gap-1.5 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide"
-      title={fullTokenTitle}
+    <span
+      className={`inline-flex shrink-0 items-center ${toneClassName}`}
+      title={state.title}
+      data-tone={state.tone}
     >
       <StateMark classification={classification} />
-      {displayToken}
-    </Badge>
+    </span>
   );
 }
