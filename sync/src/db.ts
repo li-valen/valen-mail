@@ -86,12 +86,63 @@ export interface SyncStateInput {
   readonly backfillDone: boolean;
 }
 
+/**
+ * One (account, native folder) pair — the output of translating a logical
+ * folder name ('sent') into what `messages.folder` actually holds for ONE
+ * account. Plain data: this module has no idea what 'sent' means or where
+ * the native name came from (that is ./api/inbox.ts's job, one layer up,
+ * reading the discovery imap/folders.ts produced) — it only knows how to
+ * match rows against a list of these.
+ */
+export interface NativeFolderPair {
+  readonly accountId: string;
+  readonly folder: string;
+}
+
+/**
+ * Resolved folder filter for getUnifiedInbox (Plan 5 Task 2), already
+ * translated from the API's logical folder name ('inbox' | 'sent' |
+ * 'spam' | 'trash' | 'starred') into whatever this query actually needs
+ * to match against `messages`:
+ *
+ *  - 'all': no folder restriction at all — every synced folder. This is
+ *    NOT one of the API's five logical values; it exists for callers that
+ *    pre-date folder filtering (this module's own pre-Plan-5 tests) and
+ *    genuinely want the old unfiltered behaviour. The live API always
+ *    resolves to one of the three kinds below instead.
+ *  - 'literal': `messages.folder = folder` exactly. Used for 'inbox' —
+ *    INBOX is the one folder name RFC 3501 lets this service hardcode
+ *    (see imap/folders.ts's own doc comment), so it needs no per-account
+ *    resolution at all.
+ *  - 'pairs': `(account_id, folder)` must match one of the given pairs.
+ *    Used for 'sent' | 'spam' | 'trash': Gmail localises these names per
+ *    account (`[Gmail]/Sent Mail` vs `[Gmail]/Отправленные`), so which
+ *    native folder means "sent" can only be answered per account, from
+ *    what that account's own IMAP LIST discovered. An account absent from
+ *    `pairs` — its kind was never discovered, or an `account` filter
+ *    excluded it — simply contributes no rows; an empty `pairs` array
+ *    matches zero rows rather than being treated as "no filter".
+ *  - 'starred': not a folder at all — matches the `\Flagged` flag across
+ *    every synced folder instead (Plan 5: Starred is virtual and is never
+ *    synced as its own mailbox — see imap/folders.ts).
+ */
+export type InboxFolderFilter =
+  | { readonly kind: 'all' }
+  | { readonly kind: 'literal'; readonly folder: string }
+  | { readonly kind: 'pairs'; readonly pairs: readonly NativeFolderPair[] }
+  | { readonly kind: 'starred' };
+
 export interface Db {
   applySchema(): Promise<void>;
   query(text: string, values?: readonly unknown[]): Promise<any[]>;
   upsertMessage(message: MessageInput): Promise<void>;
   upsertAttachment(attachment: AttachmentInput): Promise<void>;
-  getUnifiedInbox(options: { limit: number; cursor: InboxCursor | null }): Promise<any[]>;
+  getUnifiedInbox(options: {
+    limit: number;
+    cursor: InboxCursor | null;
+    folder: InboxFolderFilter;
+    accountId: string | null;
+  }): Promise<any[]>;
   getThread(threadId: string): Promise<any[]>;
   /**
    * NOT YET WIRED: no production caller. `sync_state` exists as the
@@ -157,26 +208,113 @@ interface InboxFilter {
   readonly values: readonly unknown[];
 }
 
-function buildInboxFilter(cursor: InboxCursor | null): InboxFilter {
-  if (!cursor) return { where: '', values: [] };
+/**
+ * Appends the cursor's clause (if any) to `clauses`/`values` in place.
+ *
+ * Placeholder numbers are derived from `values.push(...)`'s own return
+ * value (the new array length) rather than hardcoded — Plan 5 Task 2 added
+ * two more clauses that can each contribute a variable number of
+ * parameters ahead of or behind this one, so a hardcoded $1/$2/$3 here
+ * would silently misnumber the moment folder/account filtering also
+ * pushed values. Reading the index off `push`'s return immediately after
+ * each push is what keeps every clause correct regardless of what runs
+ * before or after it.
+ */
+function pushCursorClause(clauses: string[], values: unknown[], cursor: InboxCursor | null): void {
+  if (!cursor) return;
 
   if (cursor.accountId !== null && cursor.uid !== null) {
-    return {
-      where:
-        `where (coalesce(m.date, '-infinity'::timestamptz), m.account_id, m.uid) ` +
-        `< (coalesce($1::timestamptz, '-infinity'::timestamptz), $2::text, $3::bigint)`,
-      values: [cursor.date, cursor.accountId, cursor.uid],
-    };
+    const dateIdx = values.push(cursor.date);
+    const acctIdx = values.push(cursor.accountId);
+    const uidIdx = values.push(cursor.uid);
+    clauses.push(
+      `(coalesce(m.date, '-infinity'::timestamptz), m.account_id, m.uid) ` +
+      `< (coalesce($${dateIdx}::timestamptz, '-infinity'::timestamptz), $${acctIdx}::text, $${uidIdx}::bigint)`,
+    );
+    return;
   }
 
   if (cursor.date !== null) {
-    return {
-      where: `where coalesce(m.date, '-infinity'::timestamptz) < $1::timestamptz`,
-      values: [cursor.date],
-    };
+    const dateIdx = values.push(cursor.date);
+    clauses.push(`coalesce(m.date, '-infinity'::timestamptz) < $${dateIdx}::timestamptz`);
+  }
+}
+
+/**
+ * Appends the folder clause (Plan 5 Task 2) to `clauses`/`values` in
+ * place. Every branch is fully parameterized — including the 'pairs'
+ * branch's (account_id, folder) mapping, which is exactly the
+ * logical-to-native-folder translation this task exists to make real
+ * rather than hardcoded. See InboxFolderFilter's own doc comment for what
+ * each kind means.
+ *
+ * `unnest($n::text[], $m::text[])` zips the two arrays positionally into
+ * (account_id, folder) rows — standard Postgres, not string-built SQL: the
+ * number of accounts never changes the SHAPE of the query, only the
+ * length of the two array parameters, which is what keeps this safe
+ * against however many accounts are configured (bounded by
+ * config.ts's MAX_ACCOUNTS regardless).
+ *
+ * An empty `pairs` array (no account has a discovered native folder for
+ * this kind) renders as the literal `false` — the query still runs and
+ * still returns 200 with zero rows, not a WHERE-less scan of the whole
+ * table and not a thrown error.
+ */
+function pushFolderClause(clauses: string[], values: unknown[], folder: InboxFolderFilter): void {
+  if (folder.kind === 'all') return;
+
+  if (folder.kind === 'starred') {
+    // A fixed literal, never derived from request input, so it needs no
+    // parameter placeholder — see the 'pairs' branch below for the clause
+    // that actually carries user-influenced values.
+    clauses.push(`'\\Flagged' = any(m.flags)`);
+    return;
   }
 
-  return { where: '', values: [] };
+  if (folder.kind === 'literal') {
+    const idx = values.push(folder.folder);
+    clauses.push(`m.folder = $${idx}`);
+    return;
+  }
+
+  if (folder.pairs.length === 0) {
+    clauses.push('false');
+    return;
+  }
+  const accountIds = folder.pairs.map((pair) => pair.accountId);
+  const nativeFolders = folder.pairs.map((pair) => pair.folder);
+  const acctIdx = values.push(accountIds);
+  const folderIdx = values.push(nativeFolders);
+  clauses.push(
+    `exists (` +
+      `select 1 from unnest($${acctIdx}::text[], $${folderIdx}::text[]) as pair(account_id, folder) ` +
+      `where pair.account_id = m.account_id and pair.folder = m.folder` +
+    `)`,
+  );
+}
+
+/** Appends the `account` filter (Plan 5 Task 2) — independent of, and
+ *  composable with, whichever folder clause pushFolderClause added. */
+function pushAccountClause(clauses: string[], values: unknown[], accountId: string | null): void {
+  if (accountId === null) return;
+  const idx = values.push(accountId);
+  clauses.push(`m.account_id = $${idx}`);
+}
+
+function buildInboxFilter(
+  cursor: InboxCursor | null,
+  folder: InboxFolderFilter,
+  accountId: string | null,
+): InboxFilter {
+  const clauses: string[] = [];
+  const values: unknown[] = [];
+
+  pushCursorClause(clauses, values, cursor);
+  pushFolderClause(clauses, values, folder);
+  pushAccountClause(clauses, values, accountId);
+
+  const where = clauses.length > 0 ? `where ${clauses.join(' and ')}` : '';
+  return { where, values };
 }
 
 export function openDb(databaseUrl: string): Db {
@@ -231,8 +369,8 @@ export function openDb(databaseUrl: string): Db {
       );
     },
 
-    async getUnifiedInbox({ limit, cursor }) {
-      const filter = buildInboxFilter(cursor);
+    async getUnifiedInbox({ limit, cursor, folder, accountId }) {
+      const filter = buildInboxFilter(cursor, folder, accountId);
       const limitPlaceholder = `$${filter.values.length + 1}`;
       const result = await pool.query(
         `${MESSAGE_SELECT} ${filter.where} ${INBOX_ORDER} limit ${limitPlaceholder}`,

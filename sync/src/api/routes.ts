@@ -1,10 +1,11 @@
 import { timingSafeEqual } from 'node:crypto';
-import type { Db, InboxCursor } from '../db';
+import type { Db } from '../db';
 import type { ConnectionPool } from '../imap/pool';
 import type { AccountConfig, TrackingConfig } from '../config';
 import { fetchBudgetedPart, parsePositiveInt, resolveConnection } from './fetch-part.ts';
 import { fetchOpens } from './opens.ts';
-import { MAX_LIMIT, DEFAULT_LIMIT } from './limits.ts';
+import { parseLimit } from './limits.ts';
+import { handleInbox } from './inbox.ts';
 import {
   buildClearedSessionCookie,
   buildSessionCookie,
@@ -88,83 +89,6 @@ function decodeSegments(raw: readonly string[]): readonly string[] | Response {
     decoded.push(result);
   }
   return decoded;
-}
-
-/**
- * Clamps `limit` to [1, MAX_LIMIT] and falls back to DEFAULT_LIMIT for
- * anything that isn't a usable positive number — a missing param, a
- * non-numeric string, NaN, or a negative value — so a malformed or hostile
- * query string is handled rather than thrown on (Resolution 2).
- */
-function parseLimit(raw: string | null): number {
-  if (raw === null) return DEFAULT_LIMIT;
-  const requested = Number(raw);
-  if (!Number.isFinite(requested)) return DEFAULT_LIMIT;
-  return Math.min(Math.max(1, Math.floor(requested)), MAX_LIMIT);
-}
-
-/** Ignores an unparsable `before` value rather than throwing — an
- *  unfiltered inbox read is a safe fallback for a malformed date. */
-function parseBeforeDate(raw: string | null): Date | null {
-  if (!raw) return null;
-  const date = new Date(raw);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-/**
- * Builds the unified inbox's keyset cursor from the query string.
- *
- * Two accepted shapes, deliberately:
- *  - `before` + `beforeAccount` + `beforeUid` — the full compound cursor.
- *    Lossless: it addresses an exact position in the total order, so rows
- *    that share a second-resolution Gmail timestamp with the previous
- *    page's last row are still returned.
- *  - `before` alone — backward tolerance for a client written against the
- *    old bare-timestamp API. It still filters correctly; it just remains
- *    tie-lossy, which is what that client already had.
- *
- * `beforeAccount`/`beforeUid` with no `before` is the NULL-date tail: those
- * rows sort last and have no timestamp to key on, so the cursor carries a
- * null date and the row comparison substitutes '-infinity'.
- */
-function parseInboxCursor(url: URL): InboxCursor | null {
-  const date = parseBeforeDate(url.searchParams.get('before'));
-  const accountId = url.searchParams.get('beforeAccount');
-  const uidRaw = url.searchParams.get('beforeUid');
-  const uid = uidRaw === null ? null : parsePositiveInt(uidRaw);
-
-  if (accountId && uid !== null) return { date, accountId, uid };
-  if (date !== null) return { date, accountId: null, uid: null };
-  return null;
-}
-
-interface NextCursor {
-  readonly before: string | null;
-  readonly beforeAccount: string;
-  readonly beforeUid: string;
-}
-
-/**
- * The cursor a client should send to get the next page, or null when this
- * page is the last one. Emitting it (rather than expecting the client to
- * reconstruct it from the final row) is what makes lossless pagination the
- * default rather than something a client has to know to opt into.
- *
- * A short page means there is nothing after it. A full page might also be
- * the last one, in which case the client makes one extra request that
- * returns zero messages — the standard keyset trade, and strictly better
- * than the alternative of over-fetching by one row on every page.
- */
-function nextCursorFrom(rows: readonly Record<string, unknown>[], limit: number): NextCursor | null {
-  if (rows.length < limit) return null;
-  const last = rows[rows.length - 1];
-  if (!last || last.account_id === undefined || last.uid === undefined) return null;
-  const date = last.date;
-  return {
-    before: date instanceof Date ? date.toISOString() : null,
-    beforeAccount: String(last.account_id),
-    beforeUid: String(last.uid),
-  };
 }
 
 /**
@@ -296,13 +220,6 @@ async function handleHealth(pool: ConnectionPool): Promise<Response> {
   // contents by construction, not just by convention.
   const accounts = [...pool.status.entries()].map(([id, status]) => ({ id, status }));
   return json({ ok: true, accounts });
-}
-
-async function handleInbox(db: Db, url: URL): Promise<Response> {
-  const limit = parseLimit(url.searchParams.get('limit'));
-  const cursor = parseInboxCursor(url);
-  const messages = await db.getUnifiedInbox({ limit, cursor });
-  return json({ messages, nextCursor: nextCursorFrom(messages, limit) }, 200, PRIVATE_NO_STORE);
 }
 
 /**
@@ -599,7 +516,7 @@ export function createRouter(
     }
 
     if (path === '/api/inbox') {
-      return handleInbox(db, url);
+      return handleInbox(db, pool, accounts, url);
     }
 
     if (path === '/api/opens') {

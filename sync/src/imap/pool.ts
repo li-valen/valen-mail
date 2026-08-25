@@ -217,6 +217,15 @@ export class ConnectionPool {
   // accumulating one dead entry per attempt forever.
   private readonly foldersByConnection = new WeakMap<ImapConnection, DiscoveredFolders>();
 
+  // Plan 5 Task 2: the SAME discovery, keyed by account id rather than by
+  // connection instance, so the API layer (./api/inbox.ts) can translate a
+  // logical folder name ('sent') into the native path to query. A plain
+  // Map, not a WeakMap: a caller here wants "whatever this account's
+  // folders currently resolve to", surviving a reconnect between two API
+  // requests, unlike foldersByConnection's per-socket cache. Never
+  // cleared, same as `statuses` below — bounded by MAX_ACCOUNTS (10).
+  private readonly foldersByAccount = new Map<string, DiscoveredFolders>();
+
   // Fix round 2, Fix A: every detached dispatch chain currently running
   // (Fix round 1, Fix 5 made dispatch fire-and-forget from syncOnce(), so
   // more than one of these can be live per account at once during a mail
@@ -274,6 +283,26 @@ export class ConnectionPool {
    */
   getConnection(accountId: string): ImapConnection | undefined {
     return this.connections.get(accountId);
+  }
+
+  /**
+   * The most recently discovered folder mapping for one account, or
+   * `undefined` if it has never completed a LIST since this process
+   * started (never connected yet, every attempt so far failed first, or
+   * the id is unknown to this pool).
+   *
+   * `undefined` here and "discovered, but this kind is absent" (a real
+   * `null` field on DiscoveredFolders) are deliberately not distinguished
+   * by the caller (./api/inbox.ts's resolveFolderFilter): both mean "no
+   * native folder to query for this kind right now", and Plan 5 Task 2's
+   * contract is that either one degrades to an empty result, never a 500.
+   *
+   * Nothing inside this class needs this — like getConnection above, it
+   * exists for the API layer, so it can read the pool's own discovery
+   * instead of issuing a second LIST.
+   */
+  getDiscoveredFolders(accountId: string): DiscoveredFolders | undefined {
+    return this.foldersByAccount.get(accountId);
   }
 
   /**
@@ -538,6 +567,7 @@ export class ConnectionPool {
 
     const folders = await discoverFolders(() => connection.listMailboxes());
     this.foldersByConnection.set(connection, folders);
+    this.foldersByAccount.set(accountId, folders);
 
     const missing = missingFolderKinds(folders);
     if (missing.length > 0) {

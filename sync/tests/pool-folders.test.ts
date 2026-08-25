@@ -4,6 +4,7 @@ import { ImapConnection } from '../src/imap/connection';
 import type { Db, MessageInput } from '../src/db';
 import {
   ACCOUNT_A,
+  ACCOUNT_B,
   createFakeClient,
   createFakeDb,
   createPoolHarness,
@@ -237,6 +238,73 @@ describe('ConnectionPool — multi-folder sync cycle', () => {
       ['INBOX', 1],
       ['[Gmail]/Sent Mail', 2],
     ]);
+  });
+});
+
+describe('ConnectionPool — getDiscoveredFolders (Plan 5 Task 2)', () => {
+  const harness = createPoolHarness();
+  const launch = harness.launch;
+
+  afterEach(async () => {
+    await harness.stop();
+  });
+
+  it('returns undefined before this account has completed a sync cycle', () => {
+    const db = createFakeDb();
+    const pool = new ConnectionPool([ACCOUNT_A], db, () =>
+      new ImapConnection(ACCOUNT_A, () => createFakeClient().client),
+    );
+
+    // Never launched: no LIST has happened for "a" yet.
+    expect(pool.getDiscoveredFolders('a')).toBeUndefined();
+  });
+
+  it('returns undefined for an account id this pool does not know at all', () => {
+    const db = createFakeDb();
+    const pool = new ConnectionPool([ACCOUNT_A], db, () =>
+      new ImapConnection(ACCOUNT_A, () => createFakeClient().client),
+    );
+
+    expect(pool.getDiscoveredFolders('does-not-exist')).toBeUndefined();
+  });
+
+  it('exposes each account\'s own discovery once its first cycle has run, keyed by account id', async () => {
+    // Two accounts, two genuinely different discoveries — proving this is
+    // keyed per account rather than one shared "the last account to sync"
+    // value. "a" is Gmail-English-shaped; "b" deliberately is not.
+    const fakeA = createFakeClient({
+      folders: [
+        { path: 'INBOX', specialUse: '\\Inbox', messages: [{ uid: 1, envelope: envelope('i') }] },
+        { path: '[Gmail]/Sent Mail', specialUse: '\\Sent' },
+        { path: '[Gmail]/Spam', specialUse: '\\Junk' },
+        { path: '[Gmail]/Trash', specialUse: '\\Trash' },
+      ],
+    });
+    const fakeB = createFakeClient({
+      folders: [
+        { path: 'INBOX', specialUse: '\\Inbox', messages: [{ uid: 1, envelope: envelope('i') }] },
+        { path: 'Envoyés', specialUse: '\\Sent' },
+        { path: 'Indésirables', specialUse: '\\Junk' },
+        // No \Trash entry at all for "b" — its Trash was never discovered.
+      ],
+    });
+    const db = createFakeDb();
+    const pool = new ConnectionPool([ACCOUNT_A, ACCOUNT_B], db, (account) =>
+      new ImapConnection(account, () => (account.id === 'a' ? fakeA.client : fakeB.client)),
+    );
+
+    launch(pool);
+    await wait(50);
+
+    expect(pool.getDiscoveredFolders('a')).toEqual({
+      inbox: 'INBOX', sent: '[Gmail]/Sent Mail', spam: '[Gmail]/Spam', trash: '[Gmail]/Trash',
+    });
+    // "b" resolves to its OWN native names — not "a"'s, and not undefined —
+    // and a real null (discovered-as-absent), not a missing field, for the
+    // one kind its server never flagged.
+    expect(pool.getDiscoveredFolders('b')).toEqual({
+      inbox: 'INBOX', sent: 'Envoyés', spam: 'Indésirables', trash: null,
+    });
   });
 });
 

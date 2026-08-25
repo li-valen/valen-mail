@@ -1,4 +1,5 @@
 import { vi } from 'vitest';
+import type { DiscoveredFolders } from '../../src/imap/folders';
 
 /**
  * Shared fakes for the API router suites.
@@ -83,22 +84,31 @@ export interface BudgetCall {
  * Every call is recorded so a test can assert the wiring itself, not just
  * the status code — a route that skipped the lock or the budget entirely
  * would still return 200 without these.
+ *
+ * `discoveredFolders` stands in for ConnectionPool.getDiscoveredFolders
+ * (Plan 5 Task 2) — a plain `{accountId: DiscoveredFolders}` map, since the
+ * fake pool has no real per-connection discovery to run. An account absent
+ * from it gets `undefined` back, exactly like a real pool that has not
+ * finished that account's first sync cycle yet.
  */
 export function makeFakePool(options: {
   statuses?: readonly (readonly [string, string])[];
   connections?: Record<string, unknown>;
   budgetAllowed?: boolean;
   remaining?: number;
+  discoveredFolders?: Readonly<Record<string, DiscoveredFolders>>;
 } = {}) {
   const lockKeys: string[] = [];
   const reserved: BudgetCall[] = [];
   const recorded: BudgetCall[] = [];
   const statuses = new Map<string, string>(options.statuses ?? [['primary', 'connected']]);
   const connections = options.connections ?? {};
+  const discoveredFolders = options.discoveredFolders ?? {};
 
   const pool = {
     status: statuses,
     getConnection: (id: string) => connections[id],
+    getDiscoveredFolders: (id: string) => discoveredFolders[id],
     async withAccountLock<T>(accountId: string, fn: () => Promise<T>): Promise<T> {
       lockKeys.push(accountId);
       return fn();

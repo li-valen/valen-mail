@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createRouter } from '../src/api/routes';
+import type { AccountConfig } from '../src/config';
 import {
   AUTH as auth,
   TOKEN,
@@ -267,6 +268,158 @@ describe('router / inbox limit and cursor parsing', () => {
   it('emits no nextCursor on a short (final) page', async () => {
     const response = await router(new Request('http://x/api/inbox?limit=50', { headers: auth }));
     const body = await readJson<{ nextCursor: unknown }>(response);
+    expect(body.nextCursor).toBeNull();
+  });
+});
+
+describe('router / inbox folder and account filtering (Plan 5 Task 2)', () => {
+  const ACCOUNT_HARVARD: AccountConfig = {
+    id: 'harvard', email: 'harvard@example.com', appPassword: 'h'.repeat(16), isPrimary: true,
+  };
+  const ACCOUNT_PERSONAL: AccountConfig = {
+    id: 'personal', email: 'personal@example.com', appPassword: 'p'.repeat(16), isPrimary: false,
+  };
+  const ACCOUNTS: readonly AccountConfig[] = [ACCOUNT_HARVARD, ACCOUNT_PERSONAL];
+
+  function routerWith(options: {
+    db?: ReturnType<typeof makeFakeDb>;
+    discoveredFolders?: Record<string, unknown>;
+    accounts?: readonly AccountConfig[];
+  } = {}) {
+    const db = options.db ?? makeFakeDb();
+    const pool = makeFakePool({ discoveredFolders: options.discoveredFolders as never }).pool;
+    return createRouter(db, pool, TOKEN, null, undefined, null, undefined, options.accounts ?? ACCOUNTS);
+  }
+
+  it('defaults to folder=inbox and account=all (accountId null) when neither param is given', async () => {
+    const seen: Array<{ folder: unknown; accountId: unknown }> = [];
+    const db = makeFakeDb({
+      getUnifiedInbox: async (options: { folder: unknown; accountId: unknown }) => {
+        seen.push(options);
+        return [];
+      },
+    });
+    const r = routerWith({ db });
+
+    const response = await r(new Request('http://x/api/inbox', { headers: auth }));
+    expect(response.status).toBe(200);
+    expect(seen[0]?.folder).toEqual({ kind: 'literal', folder: 'INBOX' });
+    expect(seen[0]?.accountId).toBeNull();
+  });
+
+  it('rejects an unknown folder value with a fixed 400', async () => {
+    const r = routerWith();
+    const response = await r(new Request('http://x/api/inbox?folder=archive', { headers: auth }));
+    expect(response.status).toBe(400);
+    const body = await readJson<{ error: string }>(response);
+    expect(body.error).toBe('invalid folder');
+  });
+
+  it('rejects an unknown account id with a fixed 400 — never an empty 200 for a typo', async () => {
+    const seen: unknown[] = [];
+    const db = makeFakeDb({ getUnifiedInbox: async (options: unknown) => { seen.push(options); return []; } });
+    const r = routerWith({ db });
+
+    const response = await r(new Request('http://x/api/inbox?account=nope', { headers: auth }));
+    expect(response.status).toBe(400);
+    const body = await readJson<{ error: string }>(response);
+    expect(body.error).toBe('invalid account');
+    // The db must never even be asked — an invalid filter is refused before
+    // any query is built, not silently turned into a query that matches
+    // nothing.
+    expect(seen).toHaveLength(0);
+  });
+
+  it('resolves folder=sent through the pool\'s own discovery, including a non-Gmail-shaped native name', async () => {
+    const seen: Array<{ folder: unknown }> = [];
+    const db = makeFakeDb({
+      getUnifiedInbox: async (options: { folder: unknown }) => {
+        seen.push(options);
+        return [];
+      },
+    });
+    const r = routerWith({
+      db,
+      discoveredFolders: {
+        harvard: { inbox: 'INBOX', sent: '[Gmail]/Sent Mail', spam: null, trash: null },
+        personal: { inbox: 'INBOX', sent: 'Envoyés', spam: null, trash: null },
+      },
+    });
+
+    const response = await r(new Request('http://x/api/inbox?folder=sent', { headers: auth }));
+    expect(response.status).toBe(200);
+    expect(seen[0]?.folder).toEqual({
+      kind: 'pairs',
+      pairs: [
+        { accountId: 'harvard', folder: '[Gmail]/Sent Mail' },
+        { accountId: 'personal', folder: 'Envoyés' },
+      ],
+    });
+  });
+
+  it('composes folder and account filters: pairs narrow to the one named account, and accountId is also passed', async () => {
+    const seen: Array<{ folder: unknown; accountId: unknown }> = [];
+    const db = makeFakeDb({
+      getUnifiedInbox: async (options: { folder: unknown; accountId: unknown }) => {
+        seen.push(options);
+        return [];
+      },
+    });
+    const r = routerWith({
+      db,
+      discoveredFolders: {
+        harvard: { inbox: 'INBOX', sent: '[Gmail]/Sent Mail', spam: '[Gmail]/Spam', trash: null },
+        personal: { inbox: 'INBOX', sent: 'Envoyés', spam: 'Indésirables', trash: null },
+      },
+    });
+
+    const response = await r(
+      new Request('http://x/api/inbox?folder=spam&account=personal', { headers: auth }),
+    );
+    expect(response.status).toBe(200);
+    expect(seen[0]?.folder).toEqual({ kind: 'pairs', pairs: [{ accountId: 'personal', folder: 'Indésirables' }] });
+    expect(seen[0]?.accountId).toBe('personal');
+  });
+
+  it('passes a starred filter through untouched by any account/folder discovery', async () => {
+    const seen: Array<{ folder: unknown }> = [];
+    const db = makeFakeDb({
+      getUnifiedInbox: async (options: { folder: unknown }) => {
+        seen.push(options);
+        return [];
+      },
+    });
+    const r = routerWith({ db }); // no discoveredFolders at all
+
+    const response = await r(new Request('http://x/api/inbox?folder=starred', { headers: auth }));
+    expect(response.status).toBe(200);
+    expect(seen[0]?.folder).toEqual({ kind: 'starred' });
+  });
+
+  it('an account whose target folder was never discovered still answers 200 with an empty array, not a 500', async () => {
+    // "harvard" has discovered a Trash; "personal" has not (Trash disabled
+    // by policy, or this process simply has not synced it yet) — either
+    // way, MUST degrade to an empty result, never throw.
+    const db = makeFakeDb({
+      getUnifiedInbox: async (options: { folder: { kind: string; pairs?: readonly unknown[] } }) => {
+        if (options.folder.kind === 'pairs' && options.folder.pairs?.length === 0) return [];
+        throw new Error('unexpected non-empty pairs for this test');
+      },
+    });
+    const r = routerWith({
+      db,
+      discoveredFolders: {
+        harvard: { inbox: 'INBOX', sent: null, spam: null, trash: '[Gmail]/Trash' },
+        // "personal" has no entry at all.
+      },
+    });
+
+    const response = await r(
+      new Request('http://x/api/inbox?folder=trash&account=personal', { headers: auth }),
+    );
+    expect(response.status).toBe(200);
+    const body = await readJson<{ messages: unknown[]; nextCursor: unknown }>(response);
+    expect(body.messages).toEqual([]);
     expect(body.nextCursor).toBeNull();
   });
 });
