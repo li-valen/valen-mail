@@ -70,15 +70,39 @@ export interface OpensPoll {
    *  Calling this a second time on an already-started poll is a no-op —
    *  it does not create a second overlapping timer. */
   start(): void;
-  /** Stops the interval. Safe to call whether or not start() was ever
-   *  called. Does not wait for an in-flight tick to finish — the tick
-   *  itself never throws (see tick()'s own doc comment), so there is
-   *  nothing for a caller to await here beyond clearing the timer. */
+  /**
+   * Stops the interval, THEN awaits whatever tick is currently in
+   * flight, if any (Fix round 1, Fix 2). Safe to call whether or not
+   * start() was ever called.
+   *
+   * This is not about a tick throwing — `tick()` (below) already
+   * guarantees it never rejects. It's about `db`: server.ts's
+   * createShutdown() calls `db.close()` immediately after this resolves,
+   * and a tick still mid-flight at that moment would call
+   * `setSyncState`/`getSyncState`/`notifyOpens`'s own db reads against a
+   * pool that is being (or has just been) torn down. Concretely: pushes
+   * for that cycle's events could already have been SENT, but the
+   * watermark write that would have recorded them as seen either fails
+   * against the closing db or races it — the whole batch re-notifies on
+   * the next start (see the at-least-once note on `notifyOpens`'s call
+   * site below).
+   */
   stop(): Promise<void>;
-  /** Runs one poll cycle immediately, outside the timer. This is the unit
-   *  under test for every behavioural property (down-state transitions,
-   *  first-run baseline, persistence, notify filtering) — only the
-   *  cadence itself needs start()/stop() and a timer. */
+  /**
+   * Runs one poll cycle, outside the timer. This is the unit under test
+   * for every behavioural property (down-state transitions, first-run
+   * baseline, persistence, notify filtering).
+   *
+   * Fix round 1, Fix 1: this is ALSO the re-entrancy guard. If a tick is
+   * already running (from start()'s timer or a previous direct call to
+   * this method), calling this again returns the SAME in-flight promise
+   * rather than starting a second, overlapping tick — a tick slower than
+   * OPENS_POLL_INTERVAL_MS (fetch, up to REQUEST_TIMEOUT_MS, plus
+   * `events x subscriptions` serial sends at up to sendPush's own 5s
+   * timeout each) would otherwise overlap the next timer firing, and both
+   * would read the same pre-write `lastSeen` and dispatch the same
+   * events — duplicate pushes for the same open.
+   */
   tick(): Promise<void>;
 }
 
@@ -118,12 +142,23 @@ export function createOpensPoll(
   // was ever observed to be down, so there is nothing to report "back up"
   // from.
   let wasUp = true;
+  // Fix round 1, Fix 1 + Fix 2: the currently-running tick, if any. Both
+  // runTick()'s re-entrancy guard and stop()'s "wait for it to finish"
+  // behaviour are the same piece of state — see each one's own comment
+  // for which hazard it closes.
+  let inFlightTick: Promise<void> | null = null;
 
   async function tick(): Promise<void> {
     const result = await fetchOpens(OPENS_POLL_PAGE_SIZE, {
       baseUrl: tracking.baseUrl,
       token: tracking.readToken,
       fetchImpl: deps.fetchImpl,
+      // Fix round 1, Fix 6: fetchOpens logs its own per-call failure
+      // reason unconditionally, which is correct for a live HTTP request
+      // but would mean a line every OPENS_POLL_INTERVAL_MS for as long
+      // as the tracking service stays down. This poll's own up/down
+      // transition logging below is the only outage record it wants.
+      quiet: true,
     });
 
     if (!result.ok) {
@@ -168,42 +203,89 @@ export function createOpensPoll(
     const freshEvents = result.opens.filter((event) => event.occurredAt > lastSeen);
     if (freshEvents.length === 0) return;
 
+    // Fix round 1, Fix 7 — two asymmetries, stated where they live:
+    //
+    // 1. At-least-once, not exactly-once. If this process crashes (or is
+    //    killed) between notifyOpens() sending the pushes below and
+    //    writeLastSeenOccurredAt() persisting the new watermark, the next
+    //    tick re-reads the OLD `lastSeen`, sees the same `freshEvents`
+    //    again, and re-sends them. This is the opposite of imap/pool.ts's
+    //    new-mail path, which is at-most-once (a message the pool decided
+    //    was "new" and then failed to dispatch for is never retried — see
+    //    dispatchNewMessages()'s own comment). Send-then-persist was
+    //    chosen deliberately: persist-then-send would risk the reverse
+    //    failure (watermark advanced, pushes never sent) on the exact
+    //    same crash, which is silent — nothing left anywhere logs "this
+    //    open was never notified". A duplicate buzz is a known, tolerable
+    //    cost; a silently skipped one is not.
+    // 2. The comparison below is strictly-greater (`>`), not
+    //    greater-or-equal. An event whose `occurredAt` ties EXACTLY with
+    //    the persisted watermark, arriving after that watermark was
+    //    already written (a same-millisecond open, an edge only
+    //    plausible with clock coarseness or two events genuinely sharing
+    //    a millisecond), is permanently skipped — it can never be
+    //    "strictly newer than itself" on a later tick. Using `>=` would
+    //    fix that at the cost of re-notifying the LAST already-sent event
+    //    on every subsequent tick forever, which is worse.
     await notifyOpens(db, vapid, freshEvents, deps.sendImpl);
 
     const newest = newestOccurredAt(freshEvents);
     if (newest !== null) await writeLastSeenOccurredAt(db, newest);
   }
 
-  /** Never lets a tick's own failure escape to whatever scheduled it —
-   *  every await inside tick() is already wrapped by fetchOpens's and
-   *  notifyOpens's own never-throw contracts, but this is the backstop:
-   *  a poll cycle failing must not take down the setInterval callback
-   *  (an uncaught rejection there is merely logged by Node, not fatal,
-   *  but silently logging via Node's own default handler is worse than
-   *  this module choosing its own message) or reject a caller's direct
-   *  `await poll.tick()` in a test. */
-  async function safeTick(): Promise<void> {
-    try {
-      await tick();
-    } catch (error) {
-      console.error('push: opens poll cycle failed', error);
-    }
+  /**
+   * Runs one tick, guarded against overlapping itself (Fix round 1, Fix
+   * 1) and never letting a tick's own failure escape to whatever
+   * scheduled it (the original backstop this function already provided —
+   * every await inside tick() is wrapped by fetchOpens's and
+   * notifyOpens's own never-throw contracts, but this catches anything
+   * that still slips through, so a poll cycle failing can never take
+   * down the setInterval callback or reject a caller's direct `await
+   * poll.tick()`).
+   *
+   * Re-entrancy: if `inFlightTick` is already set, a tick is currently
+   * running — this returns THAT promise rather than starting a second
+   * one. Without this, a tick slower than OPENS_POLL_INTERVAL_MS (a slow
+   * fetch, or `events x subscriptions` serial sends each up to
+   * sendPush's own 5s timeout) would overlap the next interval firing:
+   * both ticks would read the same pre-write `lastSeen`, both would see
+   * the same fresh events, and both would dispatch — duplicate pushes for
+   * events the first tick was already in the middle of notifying for.
+   * `start()`'s own `if (timer) return` guard only prevents a SECOND
+   * TIMER; it says nothing about two ticks from the SAME timer
+   * overlapping, which is the actual hazard here.
+   */
+  function runTick(): Promise<void> {
+    if (inFlightTick) return inFlightTick;
+    const promise = tick()
+      .catch((error) => {
+        console.error('push: opens poll cycle failed', error);
+      })
+      .finally(() => {
+        inFlightTick = null;
+      });
+    inFlightTick = promise;
+    return promise;
   }
 
   return {
     start() {
       if (timer) return; // already running — not a second overlapping timer.
       timer = setInterval(() => {
-        void safeTick();
+        void runTick();
       }, OPENS_POLL_INTERVAL_MS);
-      void safeTick();
+      void runTick();
     },
     async stop() {
       if (timer) {
         clearInterval(timer);
         timer = null;
       }
+      // Fix round 1, Fix 2: await whatever tick is currently in flight —
+      // see this method's own doc comment on the `OpensPoll` interface
+      // above for why (db-after-close, not an escaping rejection).
+      await (inFlightTick ?? Promise.resolve());
     },
-    tick: safeTick,
+    tick: runTick,
   };
 }

@@ -47,6 +47,14 @@ export interface FakeClientOptions {
   /** Injected between the download starting and its first chunk, so a test
    *  can hold an on-demand fetch open while it observes what else runs. */
   readonly downloadGate?: Promise<void>;
+  /** Initial UIDVALIDITY the fake mailbox reports. Defaults to 1. A test
+   *  simulating a real UIDVALIDITY change uses the returned handle's
+   *  `setUidValidity()` rather than a second option — a live IMAP server
+   *  changes this value on an already-open connection mid-session, not at
+   *  connect time, so the fake needs to be mutable the same way `messages`
+   *  is (see the `mailbox` getter's own comment on why it recomputes
+   *  rather than snapshots). */
+  readonly uidValidity?: number;
 }
 
 /**
@@ -105,6 +113,7 @@ export function createFakeClient(options: FakeClientOptions = {}) {
   const getMailboxLock = vi.fn(async () => ({ release: () => {} }));
 
   const messages = options.messages ?? [];
+  let uidValidity = options.uidValidity ?? 1;
 
   const fetch = vi.fn(function* fetchImpl() {
     for (const message of messages) yield message;
@@ -149,7 +158,7 @@ export function createFakeClient(options: FakeClientOptions = {}) {
       // reflect it, or resolveUidSpan() would keep computing a span from
       // the stale original highest UID and never fetch the new message.
       const highestUid = messages.reduce((max, m) => Math.max(max, m.uid), 0);
-      return { path: 'INBOX', uidValidity: 1, uidNext: highestUid + 1, exists: messages.length };
+      return { path: 'INBOX', uidValidity, uidNext: highestUid + 1, exists: messages.length };
     },
   };
 
@@ -165,6 +174,9 @@ export function createFakeClient(options: FakeClientOptions = {}) {
       for (const handler of existsListeners) handler({});
     },
     existsListenerCount: () => existsListeners.size,
+    setUidValidity: (value: number) => {
+      uidValidity = value;
+    },
   };
 }
 

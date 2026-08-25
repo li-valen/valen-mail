@@ -181,4 +181,65 @@ describe('fetchOpens', () => {
     const serialized = JSON.stringify(errors);
     expect(serialized).not.toContain(secretToken);
   });
+
+  // ---------------------------------------------------------------------
+  // Fix round 1
+  // ---------------------------------------------------------------------
+
+  describe('quiet (Fix 6)', () => {
+    it('suppresses the unreachable log when quiet is true', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const fetchStub = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+      const out = await fetchOpens(50, { ...BASE, fetchImpl: fetchStub, quiet: true });
+      expect(out).toEqual({ ok: false, reason: 'unreachable' });
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('suppresses the non-2xx log when quiet is true', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const fetchStub = vi.fn().mockResolvedValue(new Response('nope', { status: 503 }));
+      const out = await fetchOpens(50, { ...BASE, fetchImpl: fetchStub, quiet: true });
+      expect(out).toEqual({ ok: false, reason: 'upstream_error' });
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('suppresses the invalid-JSON-body log when quiet is true', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const fetchStub = vi.fn().mockResolvedValue(new Response('{not json', { status: 200 }));
+      const out = await fetchOpens(50, { ...BASE, fetchImpl: fetchStub, quiet: true });
+      expect(out).toEqual({ ok: false, reason: 'upstream_error' });
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('still logs by default (quiet omitted) — the existing /api/opens route behaviour is unchanged', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const fetchStub = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+      await fetchOpens(50, { ...BASE, fetchImpl: fetchStub });
+      expect(spy).toHaveBeenCalled();
+    });
+
+    it('quiet does not suppress the "dropped N events" log — that is a data-quality signal, not a downtime one', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const fetchStub = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ opens: [{ token: 'x' }] }), { status: 200 }),
+      );
+      const out = await fetchOpens(50, { ...BASE, fetchImpl: fetchStub, quiet: true });
+      expect(out).toEqual({ ok: true, opens: [] });
+      expect(spy).toHaveBeenCalled();
+    });
+  });
+
+  describe('non-finite occurredAt (Fix 7)', () => {
+    it('drops an event whose occurredAt is Infinity (JSON "1e400") rather than passing it through', async () => {
+      // JSON.parse('1e400') is valid JSON syntax that overflows to
+      // Infinity — typeof alone would let it through as "a number".
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const fetchStub = vi.fn().mockResolvedValue(
+        new Response('{"opens":[{"token":"x","occurredAt":1e400}]}', { status: 200 }),
+      );
+      const out = await fetchOpens(50, { ...BASE, fetchImpl: fetchStub });
+      expect(out).toEqual({ ok: true, opens: [] });
+      spy.mockRestore();
+    });
+  });
 });

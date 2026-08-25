@@ -24,6 +24,20 @@ export interface FetchResult {
   readonly messages: readonly MessageInput[];
   readonly attachments: ReadonlyMap<number, readonly AttachmentMeta[]>;
   readonly bytesDownloaded: number;
+  /**
+   * The mailbox's UIDVALIDITY at the moment of this fetch, or `null` when
+   * the mailbox was never actually opened (the `range.limit <= 0`
+   * short-circuit below, which no production caller triggers).
+   *
+   * Task 7 / Fix round 1: imap/pool.ts keys its new-mail high-water mark
+   * on this value alongside the UID itself. UIDVALIDITY changing means
+   * the server has renumbered the mailbox — a UID from before the change
+   * means something different from the same UID after it, most commonly
+   * lower, which would otherwise make `uid > previousMax` false for every
+   * message for the rest of the process's life and silently stop all
+   * new-mail notifications until the next restart happened to re-baseline.
+   */
+  readonly uidValidity: bigint | null;
 }
 
 /**
@@ -69,7 +83,12 @@ export const HEADER_FETCH_OPTIONS = {
  */
 export const ESTIMATED_BYTES_PER_HEADER_FETCH = 2048;
 
-const EMPTY_RESULT: FetchResult = { messages: [], attachments: new Map(), bytesDownloaded: 0 };
+const EMPTY_RESULT: FetchResult = {
+  messages: [],
+  attachments: new Map(),
+  bytesDownloaded: 0,
+  uidValidity: null,
+};
 
 export interface UidSpan {
   readonly lowestUid: number;
@@ -150,8 +169,15 @@ export async function fetchHeaders(
       throw new Error(`account "${connection.accountId}": failed to open mailbox "${folder}"`);
     }
 
+    // Captured once the mailbox is genuinely open, so every return below
+    // this point (including the empty-span case) reports the real value
+    // rather than EMPTY_RESULT's `null` — the mailbox WAS opened, and its
+    // UIDVALIDITY is known, even when there is nothing to fetch this
+    // cycle.
+    const mailboxUidValidity = BigInt(mailbox.uidValidity);
+
     const span = resolveUidSpan(range, Number(mailbox.uidNext) - 1);
-    if (!span) return EMPTY_RESULT;
+    if (!span) return { ...EMPTY_RESULT, uidValidity: mailboxUidValidity };
 
     const messages: MessageInput[] = [];
     const attachments = new Map<number, readonly AttachmentMeta[]>();
@@ -182,7 +208,7 @@ export async function fetchHeaders(
       bytesDownloaded += ESTIMATED_BYTES_PER_HEADER_FETCH;
     }
 
-    return { messages, attachments, bytesDownloaded };
+    return { messages, attachments, bytesDownloaded, uidValidity: mailboxUidValidity };
   } finally {
     // Released unconditionally: Task 7 keeps these connections alive for
     // the process lifetime, so a lock leaked here on a thrown error would

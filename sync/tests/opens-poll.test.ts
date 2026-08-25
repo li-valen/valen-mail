@@ -4,6 +4,7 @@ import type { OpenEvent } from '../src/api/opens';
 import type { TrackingConfig } from '../src/config';
 import type { VapidConfig } from '../src/push/vapid';
 import type { SendImpl } from '../src/push/send';
+import type { Db } from '../src/db';
 import { makeFakeDb } from './helpers/api-fakes.ts';
 
 /**
@@ -52,7 +53,7 @@ function failingFetchStub(): typeof fetch {
  *  second poll instance reading the SAME persisted row a first instance
  *  already wrote to, exactly as a real restart would read the same
  *  Postgres row a previous process wrote. */
-function makeSharedSyncStateDb() {
+function makeSharedSyncStateDb(): Db {
   const rows = new Map<string, { uidValidity: bigint | null; lastSeenUid: bigint; backfillDone: boolean }>();
   const subscriptions: Array<{ endpoint: string; p256dh: string; auth: string }> = [
     { endpoint: 'https://push.example/a', p256dh: 'p', auth: 'a' },
@@ -68,7 +69,7 @@ function makeSharedSyncStateDb() {
     setSyncState: async (accountId: string, folder: string, state: unknown) => {
       rows.set(`${accountId}|${folder}`, state as { uidValidity: bigint | null; lastSeenUid: bigint; backfillDone: boolean });
     },
-  });
+  }) as unknown as Db;
 }
 
 afterEach(() => {
@@ -247,7 +248,14 @@ describe('createOpensPoll — notification filtering', () => {
       fetchImpl: fetchStubReturning([]),
       sendImpl: sendImpl as unknown as SendImpl,
     });
-    await seedPoll.tick(); // establish baseline at "nothing yet" (lastSeen null -> no events -> no write, still null)
+    // Fix round 1, Fix 7: this comment used to claim lastSeen stays null
+    // here — it does not. The first-ever-run branch writes the baseline
+    // EVEN with zero events (newestOccurredAt(result.opens) ?? 0), so
+    // this seed tick persists lastSeen = 0. A reader who trusted the old
+    // wording could "simplify" away the `?? 0` and silently break the
+    // empty-mailbox-at-startup case this test doesn't even cover — see
+    // "createOpensPoll — first-ever run" above for that one.
+    await seedPoll.tick();
 
     const poll = createOpensPoll(db, VAPID, TRACKING, {
       fetchImpl: fetchStubReturning([
@@ -310,5 +318,144 @@ describe('createOpensPoll — start/stop cadence', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 1
+// ---------------------------------------------------------------------------
+
+describe('createOpensPoll — re-entrancy guard (Fix 1)', () => {
+  /**
+   * Mutation check target: if runTick()'s `if (inFlightTick) return
+   * inFlightTick;` guard were deleted, the second `poll.tick()` call
+   * below would start a SECOND `fetchOpens` call while the first is still
+   * hanging on `gate`, and `fetchCalls` would read 2, not 1, before the
+   * gate is ever released.
+   */
+  it('a second tick started while one is in flight does not start a second fetchOpens call', async () => {
+    const db = makeSharedSyncStateDb();
+    let releaseFetch!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseFetch = resolve;
+    });
+    let fetchCalls = 0;
+    const fetchImpl = vi.fn(async () => {
+      fetchCalls += 1;
+      await gate;
+      return new Response(JSON.stringify({ opens: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+
+    const poll = createOpensPoll(db, VAPID, TRACKING, {
+      fetchImpl,
+      sendImpl: (async () => ({ statusCode: 201 })) as unknown as SendImpl,
+    });
+
+    const firstTick = poll.tick();
+    const secondTick = poll.tick();
+
+    // Both calls returned before the gate was ever released — the second
+    // one must not have triggered its own fetch.
+    expect(fetchCalls).toBe(1);
+
+    releaseFetch();
+    await Promise.all([firstTick, secondTick]);
+
+    // Still just the one call, even after both promises have settled.
+    expect(fetchCalls).toBe(1);
+  });
+
+  it('a tick started by the timer after the previous one finished is a genuinely new tick', async () => {
+    // The inverse of the guard test above: once a tick has actually
+    // completed, the NEXT one must run for real, not be swallowed by a
+    // stale guard that never got cleared.
+    const db = makeSharedSyncStateDb();
+    const fetchImpl = fetchStubReturning([]);
+    const poll = createOpensPoll(db, VAPID, TRACKING, {
+      fetchImpl,
+      sendImpl: (async () => ({ statusCode: 201 })) as unknown as SendImpl,
+    });
+
+    await poll.tick();
+    await poll.tick();
+
+    expect((fetchImpl as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2);
+  });
+});
+
+describe('createOpensPoll — stop() awaits an in-flight tick (Fix 2)', () => {
+  /**
+   * Mutation check target: if stop() dropped the `await (inFlightTick ??
+   * Promise.resolve())` line, `stopResolved` would flip to `true` before
+   * `releaseFetch()` is ever called — the assertion right after the
+   * microtask/macrotask flush would fail.
+   *
+   * This is also the property Fix 2 actually cares about: server.ts
+   * calls `db.close()` immediately after `stop()` resolves, so proving
+   * stop() waits for the tick's own db write (asserted at the end here)
+   * is the real hazard, not merely "the promise eventually resolves".
+   */
+  it('does not resolve until the in-flight tick — and its db write — has completed', async () => {
+    const db = makeSharedSyncStateDb();
+
+    // Seed a real baseline first, via a non-hanging poll, so the SECOND
+    // poll's tick reaches the notify+write path instead of the
+    // first-ever-run branch (which returns early and would prove
+    // nothing about awaiting an in-flight write).
+    const seedPoll = createOpensPoll(db, VAPID, TRACKING, {
+      fetchImpl: fetchStubReturning([makeOpenEvent({ token: 'seed', occurredAt: 500 })]),
+      sendImpl: (async () => ({ statusCode: 201 })) as unknown as SendImpl,
+    });
+    await seedPoll.tick();
+
+    let releaseFetch!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseFetch = resolve;
+    });
+    const fetchImpl = vi.fn(async () => {
+      await gate;
+      return new Response(
+        JSON.stringify({ opens: [makeOpenEvent({ token: 'x', occurredAt: 999 })] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as unknown as typeof fetch;
+
+    const poll = createOpensPoll(db, VAPID, TRACKING, {
+      fetchImpl,
+      sendImpl: (async () => ({ statusCode: 201 })) as unknown as SendImpl,
+    });
+
+    poll.start(); // fires an immediate tick, which hangs on `gate`
+
+    let stopResolved = false;
+    const stopPromise = poll.stop().then(() => {
+      stopResolved = true;
+    });
+
+    // Flush pending microtasks/macrotasks without releasing the gate.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(stopResolved).toBe(false); // stop() must still be waiting on the tick
+
+    releaseFetch();
+    await stopPromise;
+    expect(stopResolved).toBe(true);
+
+    // By the time stop() resolved, the in-flight tick's watermark write
+    // must have already landed — the literal sentinel key opens-poll.ts
+    // uses internally for its one sync_state row.
+    const state = await db.getSyncState('__opens_poll__', '__opens_poll__');
+    expect(state?.lastSeenUid).toBe(999n);
+  });
+
+  it('resolves immediately when no tick was ever started', async () => {
+    const db = makeSharedSyncStateDb();
+    const poll = createOpensPoll(db, VAPID, TRACKING, {
+      fetchImpl: fetchStubReturning([]),
+      sendImpl: (async () => ({ statusCode: 201 })) as unknown as SendImpl,
+    });
+    await expect(poll.stop()).resolves.toBeUndefined();
   });
 });

@@ -264,6 +264,40 @@ describe('notifyNewMail', () => {
     expect(sendImpl).toHaveBeenCalledTimes(4); // 2 messages x 2 subscriptions
   });
 
+  // Fix round 1, Fix 8: dispatchToAll's per-subscription independence
+  // (sendPush's own doc comment: "one dead device among several must not
+  // abort the rest") was only ever proven with a SINGLE subscription.
+  // This drives it with two, where the first one's own DELETE (the
+  // prune write pruneSubscription attempts after a 410) itself fails —
+  // proving the loop survives both the send failure AND a failing prune
+  // write, not just "sendPush itself never throws".
+  it('a pruning failure for one subscription mid-loop does not stop the send to the next subscription', async () => {
+    const db = makeFakeDb({
+      query: async (text: string) => {
+        if (text.includes('select endpoint')) {
+          return [subscriptionRow('https://push.example/dead'), subscriptionRow('https://push.example/alive')];
+        }
+        if (text.includes('delete from push_subscriptions')) {
+          throw new Error('db unavailable');
+        }
+        throw new Error(`unexpected query: ${text}`);
+      },
+    });
+    const sent: string[] = [];
+    const sendImpl: SendImpl = async (subscription, _payload) => {
+      if (subscription.endpoint === 'https://push.example/dead') {
+        throw Object.assign(new Error('gone'), { statusCode: 410 });
+      }
+      sent.push(subscription.endpoint);
+      return { statusCode: 201 };
+    };
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await notifyNewMail(db, VAPID, [makeMessage({ date: new Date() })], sendImpl);
+    errorSpy.mockRestore();
+
+    expect(sent).toEqual(['https://push.example/alive']);
+  });
+
   it('never logs or otherwise carries a subscription endpoint, which is a credential', async () => {
     const errors: unknown[] = [];
     const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
@@ -306,5 +340,37 @@ describe('notifyOpens', () => {
     const sendImpl = vi.fn(async () => ({ statusCode: 201 }));
     await notifyOpens(db, VAPID, [makeOpenEvent()], sendImpl as unknown as SendImpl);
     expect(sendImpl).not.toHaveBeenCalled();
+  });
+
+  // Fix round 1, Fix 8: the notifyNewMail describe block above has the
+  // equivalent proof for its own caller — dispatchToAll is a helper
+  // shared by both, and its "one dead subscription mid-loop does not
+  // abort the rest" contract deserves proof from both callers, not an
+  // assumption that proving it once transfers.
+  it('a pruning failure for one subscription mid-loop does not stop the send to the next subscription', async () => {
+    const db = makeFakeDb({
+      query: async (text: string) => {
+        if (text.includes('select endpoint')) {
+          return [subscriptionRow('https://push.example/dead'), subscriptionRow('https://push.example/alive')];
+        }
+        if (text.includes('delete from push_subscriptions')) {
+          throw new Error('db unavailable');
+        }
+        throw new Error(`unexpected query: ${text}`);
+      },
+    });
+    const sent: string[] = [];
+    const sendImpl: SendImpl = async (subscription, _payload) => {
+      if (subscription.endpoint === 'https://push.example/dead') {
+        throw Object.assign(new Error('gone'), { statusCode: 410 });
+      }
+      sent.push(subscription.endpoint);
+      return { statusCode: 201 };
+    };
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await notifyOpens(db, VAPID, [makeOpenEvent()], sendImpl);
+    errorSpy.mockRestore();
+
+    expect(sent).toEqual(['https://push.example/alive']);
   });
 });

@@ -481,11 +481,15 @@ describe('createOpensPollFromConfig — the wiring', () => {
   it('returns a poll wired to the given trackingConfig', async () => {
     // Same DNS-avoiding trick push.test.ts's "still passes trackingConfig
     // through" test uses: a malformed baseUrl makes fetchOpens throw
-    // inside its own `new URL(...)` and log 'tracking service
-    // unreachable' without ever touching the network. Only a poll truly
-    // wired to THIS trackingConfig would produce that exact log line —
-    // dropping or transposing the argument would either not compile
-    // (caught elsewhere) or reach a different, unrelated code path.
+    // inside its own `new URL(...)` without ever touching the network.
+    //
+    // Fix round 1, Fix 6: fetchOpens's own per-call log is now suppressed
+    // by the poll (`quiet: true`) — that used to be exactly the log line
+    // this test asserted on, and Fix 6 deliberately silenced it, so this
+    // now asserts on the poll's OWN down-transition log instead. That log
+    // only fires if the malformed `baseUrl` genuinely reached fetchOpens
+    // and produced a failed result — still proof the wiring is real, not
+    // a fossil of a suppressed message.
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const db = makeFakeDb();
     const config: SyncConfig = {
@@ -501,7 +505,9 @@ describe('createOpensPollFromConfig — the wiring', () => {
 
     expect(
       errorSpy.mock.calls.some((call) =>
-        call.some((arg) => typeof arg === 'string' && arg.includes('tracking service unreachable')),
+        call.some(
+          (arg) => typeof arg === 'string' && arg.includes('opens poll') && arg.includes('down'),
+        ),
       ),
     ).toBe(true);
   });

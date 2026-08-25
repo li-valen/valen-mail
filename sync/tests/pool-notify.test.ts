@@ -144,7 +144,7 @@ describe('ConnectionPool — onNewMessages backfill guard and injected-callback 
     const msgs: FakeFetchMessage[] = [{ uid: 501, envelope: { messageId: '<m1@x>' } }];
     const fakeA = createFakeClient({ messages: msgs });
     const db = createFakeDb();
-    const onNewMessages = vi.fn(() => {
+    const onNewMessages = vi.fn((_accountId: string, _messages: readonly MessageInput[]) => {
       throw new Error('push dispatch boom');
     });
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -183,6 +183,16 @@ describe('ConnectionPool — onNewMessages backfill guard and injected-callback 
     await wait(50);
     expect(db.upserts.some((m) => m.uid === 503)).toBe(true);
 
+    // Fix round 1, Fix 8: the high-water mark itself must have advanced
+    // past 502 even though the hook threw on that cycle — trackNewMessages
+    // commits the mark synchronously, inside the mutex, before
+    // dispatchNewMessages() (and therefore the hook) ever runs. If a hook
+    // failure somehow rolled the mark back, this third call would report
+    // [502, 503] again instead of just the genuinely new [503].
+    expect(onNewMessages).toHaveBeenCalledTimes(2);
+    const [, thirdCycleMessages] = onNewMessages.mock.calls[1] as [string, readonly MessageInput[]];
+    expect(thirdCycleMessages.map((m) => m.uid)).toEqual([503]);
+
     consoleErrorSpy.mockRestore();
   });
 
@@ -210,6 +220,113 @@ describe('ConnectionPool — onNewMessages backfill guard and injected-callback 
 
     expect(onNewMessages).toHaveBeenCalledTimes(1);
     expect(pool.status.get('a')).toBe('connected');
+    consoleErrorSpy.mockRestore();
+  });
+});
+
+/**
+ * Fix round 1, Fix 3 — the high-water mark keyed on UIDVALIDITY.
+ *
+ * `maxSeenUid` alone is monotonic by construction (each cycle seeds its
+ * `currentMax` reduction with `previousMax`), which is exactly the
+ * property that breaks when the SERVER renumbers the mailbox: a real
+ * Gmail UIDVALIDITY change can restart UIDs from a lower value, and
+ * `uid > previousMax` then reads false for every message for the rest of
+ * the process's life — a silent, permanent stop to new-mail notifications
+ * for that account until something happens to restart the process.
+ */
+describe('ConnectionPool — UIDVALIDITY re-baseline (Fix round 1, Fix 3)', () => {
+  const harness = createPoolHarness();
+  const launch = harness.launch;
+
+  afterEach(async () => {
+    await harness.stop();
+  });
+
+  /**
+   * Mutation check target: if the `uidValidityChanged` branch in
+   * trackNewMessages() were deleted (falling back to plain UID
+   * comparison against the stale `previousMax`), the second cycle below
+   * would still report zero calls (502 -> 5 is a lower UID, so `5 >
+   * 501` is false — the OLD bug this fix closes silences it by
+   * accident), but the run() at the end asserting uid 6 notifies would
+   * then ALSO stay silent forever (`6 > 501` is still false) — proving
+   * the fix is what actually resumes notifications under the new
+   * numbering, not a coincidence of the first assertion alone.
+   */
+  it('a UIDVALIDITY change fires zero callbacks and resets the mark; the next cycle under the new numbering notifies normally', async () => {
+    const msgs: FakeFetchMessage[] = [{ uid: 501, envelope: { messageId: '<m1@x>' } }];
+    const fakeA = createFakeClient({ messages: msgs, uidValidity: 100 });
+    const db = createFakeDb();
+    const onNewMessages = vi.fn();
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const pool = new ConnectionPool(
+      [ACCOUNT_A],
+      db,
+      () => new ImapConnection(ACCOUNT_A, () => fakeA.client),
+      onNewMessages,
+    );
+
+    launch(pool);
+    await wait(50); // first cycle: baseline at uid 501, UIDVALIDITY 100, no call
+
+    // The server renumbers the mailbox: UIDVALIDITY changes AND UIDs
+    // restart lower — the actual failure mode a UID-only mark breaks on.
+    fakeA.setUidValidity(200);
+    msgs.length = 0;
+    msgs.push({ uid: 5, envelope: { messageId: '<new1@x>' } });
+    fakeA.triggerExists();
+    await wait(50); // second cycle: UIDVALIDITY changed -> re-baseline, zero calls
+
+    expect(onNewMessages).not.toHaveBeenCalled();
+    const loggedChange = consoleErrorSpy.mock.calls.some((call) =>
+      call.some(
+        (arg) =>
+          typeof arg === 'string' && arg.includes('"a"') && arg.includes('UIDVALIDITY changed'),
+      ),
+    );
+    expect(loggedChange).toBe(true);
+
+    // A yet-higher UID under the NEW numbering, on the very next cycle,
+    // must notify normally.
+    msgs.push({ uid: 6, envelope: { messageId: '<new2@x>' } });
+    fakeA.triggerExists();
+    await wait(50);
+
+    expect(onNewMessages).toHaveBeenCalledTimes(1);
+    const [accountId, messages] = onNewMessages.mock.calls[0] as [string, readonly MessageInput[]];
+    expect(accountId).toBe('a');
+    expect(messages.map((m) => m.uid)).toEqual([6]);
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('a stable UIDVALIDITY across cycles never triggers the re-baseline log', async () => {
+    const msgs: FakeFetchMessage[] = [{ uid: 501, envelope: { messageId: '<m1@x>' } }];
+    const fakeA = createFakeClient({ messages: msgs, uidValidity: 100 });
+    const db = createFakeDb();
+    const onNewMessages = vi.fn();
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const pool = new ConnectionPool(
+      [ACCOUNT_A],
+      db,
+      () => new ImapConnection(ACCOUNT_A, () => fakeA.client),
+      onNewMessages,
+    );
+
+    launch(pool);
+    await wait(50);
+
+    msgs.push({ uid: 502, envelope: { messageId: '<m2@x>' } });
+    fakeA.triggerExists();
+    await wait(50);
+
+    expect(onNewMessages).toHaveBeenCalledTimes(1);
+    const loggedChange = consoleErrorSpy.mock.calls.some((call) =>
+      call.some((arg) => typeof arg === 'string' && arg.includes('UIDVALIDITY changed')),
+    );
+    expect(loggedChange).toBe(false);
+
     consoleErrorSpy.mockRestore();
   });
 });

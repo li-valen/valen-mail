@@ -48,6 +48,22 @@ export interface FetchOpensDeps {
   readonly baseUrl: string;
   readonly token: string;
   readonly fetchImpl?: typeof fetch;
+  /**
+   * Suppresses this function's own per-call failure logs (unreachable,
+   * non-2xx, or a body that wasn't valid JSON). Default `false` — the
+   * existing caller, GET /api/opens (routes.ts's handleOpens), wants a
+   * log per request: each failed request there is its own incident for
+   * whoever is watching that log.
+   *
+   * push/opens-poll.ts (Fix round 1, Fix 6) is a different kind of
+   * caller: it ticks on a fixed interval regardless of whether anything
+   * changed, so a log line on every failed call would mean one line a
+   * minute for as long as the tracking service stays down — exactly the
+   * "must not spam logs at 1/min" the poll's own down-state logic exists
+   * to avoid. It passes `quiet: true` and keeps its own
+   * up->down/down->up transition lines as the only outage record.
+   */
+  readonly quiet?: boolean;
 }
 
 function clampLimit(limit: number): number {
@@ -67,7 +83,21 @@ function clampLimit(limit: number): number {
 function isValidOpenEvent(value: unknown): value is OpenEvent {
   if (typeof value !== 'object' || value === null) return false;
   const record = value as Record<string, unknown>;
-  return typeof record.token === 'string' && typeof record.occurredAt === 'number';
+  return (
+    typeof record.token === 'string' &&
+    typeof record.occurredAt === 'number' &&
+    // Fix round 1, Fix 7: `JSON.parse` happily turns the numeric literal
+    // `1e400` into `Infinity` (valid JSON syntax, just an out-of-range
+    // double) — `typeof` alone lets it through. Downstream,
+    // push/opens-poll.ts's `writeLastSeenOccurredAt` does
+    // `BigInt(Math.trunc(occurredAt))`, and `BigInt(Infinity)` throws a
+    // RangeError. `safeTick()` catches that (so it's not a crash), but
+    // it would otherwise reproduce as a fresh log-line-per-tick failure
+    // mode for as long as that one poisoned event kept being read back —
+    // cheaper to reject it here, at the boundary, than to discover it
+    // downstream.
+    Number.isFinite(record.occurredAt)
+  );
 }
 
 /**
@@ -132,14 +162,14 @@ export async function fetchOpens(limit: number, deps: FetchOpensDeps): Promise<O
       signal: controller.signal,
     });
   } catch (error) {
-    console.error('opens: tracking service unreachable', error);
+    if (!deps.quiet) console.error('opens: tracking service unreachable', error);
     return { ok: false, reason: 'unreachable' };
   } finally {
     clearTimeout(timer);
   }
 
   if (!response.ok) {
-    console.error(`opens: tracking service returned ${response.status}`);
+    if (!deps.quiet) console.error(`opens: tracking service returned ${response.status}`);
     return { ok: false, reason: 'upstream_error' };
   }
 
@@ -147,7 +177,9 @@ export async function fetchOpens(limit: number, deps: FetchOpensDeps): Promise<O
     const body: unknown = await response.json();
     return { ok: true, opens: parseOpensBody(body) };
   } catch (error) {
-    console.error('opens: tracking service returned a body that was not valid JSON', error);
+    if (!deps.quiet) {
+      console.error('opens: tracking service returned a body that was not valid JSON', error);
+    }
     return { ok: false, reason: 'upstream_error' };
   }
 }

@@ -226,6 +226,11 @@ export class ConnectionPool {
   // see trackNewMessages().
   private readonly firstCycleDone = new Set<string>();
   private readonly maxSeenUid = new Map<string, number>();
+  // Fix round 1, Fix 3: the UIDVALIDITY the mark above was computed
+  // against. A change here means the server renumbered the mailbox, which
+  // invalidates `maxSeenUid` the same way a first cycle does — see
+  // trackNewMessages()'s own comment.
+  private readonly seenUidValidity = new Map<string, bigint>();
 
   // Lets a backoff sleep (up to MAX_BACKOFF_MS) be cut short the instant
   // stop() is called, instead of stop() having to wait out whatever delay
@@ -515,16 +520,40 @@ export class ConnectionPool {
       }
       await this.budget.record(accountId, result.bytesDownloaded);
 
-      return this.trackNewMessages(accountId, result.messages);
+      return this.trackNewMessages(accountId, result.messages, result.uidValidity);
     });
 
-    // Deliberately outside the mutex.run() above: dispatchNewMessages()
-    // may call a hook that reaches a push service over the network, and
-    // holding the same per-account key syncOnce()/withAccountLock()/the
-    // liveness probe all share for that long would delay an on-demand API
-    // fetch or the next liveness probe behind a slow or hung push send,
-    // for a reason unrelated to any of them.
-    await this.dispatchNewMessages(accountId, newMessages);
+    // Deliberately outside the mutex.run() above, AND deliberately NOT
+    // awaited (Fix round 1, Fix 5). Both matter for the same underlying
+    // reason: dispatchNewMessages() may call a hook that reaches a push
+    // service over the network, and this pool has no idea how long that
+    // takes.
+    //
+    // Not holding the mutex here was already true before this fix — it's
+    // what keeps a slow push send from queuing an on-demand API fetch or
+    // the next liveness probe behind it (they share this account's mutex
+    // key with syncOnce()).
+    //
+    // NOT AWAITING is the fix: awaiting here made the IDLE loop's
+    // time-to-next-IDLE scale directly with push-service latency. Each
+    // cycle fetches at most HEADER_FETCH_LIMIT (50) messages, and
+    // sendPush bounds each individual send to REQUEST_TIMEOUT_MS (send.ts,
+    // 5s) — so with even one stored subscription and a hung push service,
+    // a fully-awaited dispatch could take up to 50 x 5s = ~250s, well past
+    // IDLE_LIVENESS_CHECK_INTERVAL_MS (180s). That would starve the
+    // liveness probe and delay noticing genuinely new mail for a reason
+    // that has nothing to do with push at all — the exact kind of coupling
+    // this pool's own backoff/liveness machinery exists to avoid.
+    //
+    // Detaching it is safe because the mark trackNewMessages() computed is
+    // already committed to maxSeenUid/seenUidValidity by this point, and
+    // dispatchNewMessages() never throws (its own try/catch) — so `void`
+    // here drops nothing but the wait. Per-cycle dispatch work stays
+    // individually bounded (50 messages x each send's own 5s cap) even
+    // when a slow cycle's dispatch is still running while the NEXT cycle's
+    // dispatch starts; they just don't block each other or the sync loop
+    // any more.
+    void this.dispatchNewMessages(accountId, newMessages);
   }
 
   /**
@@ -533,19 +562,29 @@ export class ConnectionPool {
    * observed for this account — and returns only those. An account's
    * first cycle always returns an empty array, no matter how many
    * messages it fetched: that cycle only establishes the high-water mark,
-   * it never reports anything as new. This is what makes "a fresh service
-   * start against an existing mailbox produces zero new-mail
-   * notifications" true — the ~50 newest messages a brand-new process
-   * finds already in the mailbox are indistinguishable at this layer from
-   * "have always been there" (which, restart after restart, they are).
+   * it never reports anything as new.
    *
-   * `firstCycleDone`/`maxSeenUid` are in-memory and reset on every process
-   * restart BY DESIGN — this pool has no durable resume point today (spec
-   * 9 / L9's known limitation: the newest-50 poll, not a backfill), so
-   * there is no reliable persisted watermark to compare against anyway.
-   * The in-memory guard turns that same limitation into the correct
-   * behaviour for notifications specifically: every restart re-earns "new"
-   * from a clean baseline instead of trusting stale state.
+   * LIMITATION, stated plainly (Fix round 1, Fix 4 — the previous wording
+   * here ("indistinguishable from have always been there") was not
+   * accurate and is corrected): this is not just "old mail is silently
+   * skipped". Mail that arrives WHILE THE SERVICE IS DOWN — a 10-minute
+   * outage, a deploy, a crash-restart loop — is genuinely new and the
+   * account's own recipient has never seen a notification for it, but the
+   * first cycle after the restart folds it into the baseline exactly like
+   * mail that has sat in the inbox for months. There is no signal at this
+   * layer (a UID and a fetch timestamp) that can tell those two cases
+   * apart. This is the accepted trade-off Amendment 3 makes: missing some
+   * notifications after a restart is safe-direction and tolerable;
+   * buzzing for the newest ~50 messages on every single restart is not.
+   *
+   * `firstCycleDone`/`maxSeenUid`/`seenUidValidity` are in-memory and
+   * reset on every process restart BY DESIGN — this pool has no durable
+   * resume point today (spec 9 / L9's known limitation: the newest-50
+   * poll, not a backfill), so there is no reliable persisted watermark to
+   * compare against anyway. The in-memory guard turns that same
+   * limitation into the correct behaviour for notifications specifically:
+   * every restart re-earns "new" from a clean baseline instead of
+   * trusting stale state.
    *
    * On a LATER cycle, only messages whose UID exceeds the account's
    * previous high-water mark count as new. This is also what stops the
@@ -553,6 +592,16 @@ export class ConnectionPool {
    * -triggered re-poll (every IDLE_LIVENESS_CHECK_INTERVAL_MS at most) or
    * a flag change re-fetches UIDs already at or below the mark, and they
    * are filtered out here rather than by whatever the hook does with them.
+   *
+   * Fix round 1, Fix 3: the mark is also invalidated on a UIDVALIDITY
+   * change, and re-baselined exactly like a first cycle (report nothing
+   * this cycle, log one line, resume comparing on the NEXT cycle). Without
+   * this, a UIDVALIDITY change where the server starts numbering from a
+   * lower value makes `uid > previousMax` false for every message for the
+   * rest of the process's life — a silent, permanent stop to every
+   * new-mail notification for that account until something happens to
+   * restart the process. A real Gmail UIDVALIDITY change is rare enough
+   * that logging it is a signal, not spam.
    *
    * Runs unconditionally, whether or not a hook is configured — the
    * bookkeeping itself must stay correct so that installing a hook later
@@ -563,15 +612,33 @@ export class ConnectionPool {
   private trackNewMessages(
     accountId: string,
     messages: readonly MessageInput[],
+    uidValidity: bigint | null,
   ): readonly MessageInput[] {
     const isFirstCycle = !this.firstCycleDone.has(accountId);
     this.firstCycleDone.add(accountId);
 
-    const previousMax = this.maxSeenUid.get(accountId) ?? -Infinity;
+    const previousUidValidity = this.seenUidValidity.get(accountId);
+    const uidValidityChanged =
+      !isFirstCycle &&
+      uidValidity !== null &&
+      previousUidValidity !== undefined &&
+      uidValidity !== previousUidValidity;
+
+    if (uidValidityChanged) {
+      console.error(
+        `account "${accountId}": mailbox UIDVALIDITY changed (${previousUidValidity} -> ` +
+          `${uidValidity}) — re-establishing the new-mail baseline instead of comparing UIDs ` +
+          'against the stale numbering',
+      );
+    }
+    if (uidValidity !== null) this.seenUidValidity.set(accountId, uidValidity);
+
+    const startsNewBaseline = isFirstCycle || uidValidityChanged;
+    const previousMax = startsNewBaseline ? -Infinity : this.maxSeenUid.get(accountId) ?? -Infinity;
     const currentMax = messages.reduce((max, message) => Math.max(max, message.uid), previousMax);
     this.maxSeenUid.set(accountId, currentMax);
 
-    if (isFirstCycle) return [];
+    if (startsNewBaseline) return [];
     return messages.filter((message) => message.uid > previousMax);
   }
 
@@ -586,12 +653,18 @@ export class ConnectionPool {
    * This is the sanctioned use of catch-and-continue: the error IS
    * handled — logged with the account id, with the sync work for this
    * cycle already fully committed before this method is even called — not
-   * silently discarded. Letting it reject uncaught would surface as
-   * syncOnce() rejecting, and runAccount()'s outer catch would then treat
-   * a dead push subscription (or any other hook failure) exactly like a
-   * dead IMAP connection: mark the account 'reconnecting' and corrupt the
-   * backoff ladder F1 exists to protect, over a fault that has nothing to
-   * do with IMAP at all.
+   * silently discarded. Letting it reject uncaught would surface as an
+   * unhandled rejection: syncOnce() (Fix round 1, Fix 5) deliberately does
+   * NOT await this method any more — see its call site's own comment —
+   * so nothing propagates this failure anywhere for runAccount()'s outer
+   * catch to even see. That is what this try/catch actually guards
+   * against now: not "corrupting the backoff ladder" (that was only a
+   * risk while this WAS awaited by syncOnce), but an unhandled promise
+   * rejection with no caller left to observe it at all.
+   *
+   * Always returns a resolved promise, never a rejected one — which is
+   * what makes calling this without `await` at the syncOnce() call site
+   * safe.
    */
   private async dispatchNewMessages(
     accountId: string,
