@@ -31,6 +31,46 @@ function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 }
 
+describe('opening a message strips the shell back to the message, below lg:', () => {
+  const shell = stripComments(appShellSource);
+
+  it('takes the prop that says a message is open', () => {
+    // App.tsx's `selected !== null`. The shell cannot infer this: the
+    // reader REPLACES the list inside `children`, so from out here the two
+    // states look identical.
+    expect(shell).toMatch(/readonly isReading\?: boolean;/);
+    expect(stripComments(appShellSource)).toMatch(/isReading = false,/);
+  });
+
+  it('hides the search bar and hamburger while reading, on phones only', () => {
+    // The user, with Postbox beside Gmail on an iPhone: "When you click
+    // into an email on ios remove the inbox and like all the junk at the
+    // top besides title and email." The reader carries its own back
+    // control, so a nav bar above it spends 64px offering a second way off
+    // the same screen.
+    expect(shell).toMatch(/isReading && 'hidden lg:block'/);
+  });
+
+  it('moves the notch inset onto the content column when that bar goes', () => {
+    // The header is what normally pads for the cutout. Hiding it without
+    // this renders the subject line behind the status bar.
+    expect(shell).toMatch(/isReading && 'pt-\[var\(--safe-top\)\] lg:pt-0'/);
+  });
+
+  it('hides the folder heading VISUALLY but keeps it for the outline', () => {
+    // "Inbox" is junk on a phone showing one message. It is also the
+    // document's h1, and deleting it would start a screen reader's outline
+    // at the message's own h2.
+    expect(shell).toMatch(/isReading && 'sr-only'/);
+  });
+
+  it('withdraws the floating Compose button while reading', () => {
+    // Gmail does the same. It would also collide with the reader's own
+    // actions, and the reserved space it implies would be a gap.
+    expect(shell).toMatch(/const showComposeFab = view !== 'compose' && !isReading;/);
+  });
+});
+
 describe('the reader\'s controls, under a thumb', () => {
   const view = stripComments(messageViewSource);
 

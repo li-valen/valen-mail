@@ -300,6 +300,23 @@ export interface AppShellProps {
    *  established, so assistive tech knows the emptiness is temporary. */
   readonly isBusy?: boolean;
   /**
+   * True while the reader has REPLACED the list — App.tsx's
+   * `selected !== null`.
+   *
+   * Below `lg:` this strips the shell back to the message, which is what
+   * the user asked for after putting Postbox beside Gmail on a phone:
+   * *"When you click into an email on ios remove the inbox and like all
+   * the junk at the top besides title and email."* On a 393px screen the
+   * search field, the folder heading and the reader's own chrome were
+   * stacking to roughly a third of the viewport before a single line of
+   * the message.
+   *
+   * Above `lg:` it changes NOTHING. There is room for the search field and
+   * the selection on a desktop, and losing them on the way into a message
+   * would be a regression rather than a simplification.
+   */
+  readonly isReading?: boolean;
+  /**
    * A ref onto the ONE scrolling element in this layout — the `<main>`
    * below. `<main>` scrolls, not the document (`h-dvh` + `flex-1
    * overflow-y-auto`), so `window.scrollY` is always 0 here and any
@@ -340,6 +357,7 @@ export default function AppShell({
   searchValue,
   onSearchChange,
   sidebarFooter,
+  isReading = false,
   isBusy = false,
   contentRef,
   composeRef,
@@ -352,7 +370,7 @@ export default function AppShell({
    *  reserves the space it occupies and the two must not disagree — space
    *  reserved with no button is a gap, and a button with no space reserved
    *  covers the last row. */
-  const showComposeFab = view !== 'compose';
+  const showComposeFab = view !== 'compose' && !isReading;
 
   // Every sidebar control closes the drawer after acting: below `lg:` the
   // sidebar covers the content it just changed, so leaving it open would
@@ -570,7 +588,17 @@ export default function AppShell({
             bar is unchanged (the inset is 0 there). The horizontal pair
             is for landscape, where the cutout is on the left or right
             edge and would otherwise clip the menu button. */}
-        <header className="h-[calc(4rem+var(--safe-top))] shrink-0 border-b border-neutral-200 bg-card pt-[var(--safe-top)] pl-[var(--safe-left)] pr-[var(--safe-right)] dark:border-border">
+        {/* HIDDEN BELOW `lg:` WHILE READING. The reader carries its own
+            back control, so a nav bar above it is a second way to leave
+            the same screen taking 64px to say so. Gmail does the same:
+            opening a message replaces the search bar with the message's
+            own actions. Above `lg:` the bar is untouched. */}
+        <header
+          className={cn(
+            'h-[calc(4rem+var(--safe-top))] shrink-0 border-b border-neutral-200 bg-card pt-[var(--safe-top)] pl-[var(--safe-left)] pr-[var(--safe-right)] dark:border-border',
+            isReading && 'hidden lg:block',
+          )}
+        >
           <div className="mx-auto flex h-full max-w-5xl items-center gap-3 px-4 sm:px-6 lg:px-8">
             <button
               type="button"
@@ -629,6 +657,11 @@ export default function AppShell({
           ref={contentRef}
           className={cn(
             'flex-1 overflow-y-auto overflow-x-hidden pl-[var(--safe-left)] pr-[var(--safe-right)]',
+            // The header above normally supplies the notch inset. With it
+            // hidden, this column is what sits under the cutout, so it
+            // takes the inset over — otherwise the subject line renders
+            // behind the status bar.
+            isReading && 'pt-[var(--safe-top)] lg:pt-0',
             // Room for the floating Compose button to sit over, so the last
             // row of a list — or the last line of a message — can still be
             // scrolled clear of it. Only while that button is actually
@@ -658,8 +691,18 @@ export default function AppShell({
                 is the only visible answer to "which folder am I in?" —
                 the one place a filtered view could otherwise look
                 identical to an unfiltered empty one. */}
-            <div className="mb-4 lg:mb-0">
-              <h1 className="truncate text-base font-semibold text-neutral-900 dark:text-foreground lg:sr-only">
+            {/* While reading, this goes `sr-only` rather than away: the
+                folder name is junk on a phone that is showing one message
+                — the user said so — but it is still the document's `h1`,
+                and deleting it would start a screen reader's outline at
+                the message's own `<h2>`. Hidden, kept, announced. */}
+            <div className={cn(isReading ? 'lg:mb-0' : 'mb-4 lg:mb-0')}>
+              <h1
+                className={cn(
+                  'truncate text-base font-semibold text-neutral-900 dark:text-foreground lg:sr-only',
+                  isReading && 'sr-only',
+                )}
+              >
                 {heading}
               </h1>
             </div>
