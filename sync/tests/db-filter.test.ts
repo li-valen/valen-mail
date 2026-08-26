@@ -163,3 +163,102 @@ describe('buildInboxFilter — search composes with the existing filters', () =>
     expect(filter.values).toEqual(['INBOX', 'work']);
   });
 });
+
+/**
+ * The two options getConversationPage adds, and the two failures they
+ * prevent.
+ *
+ * That query composes TWO filters into ONE statement: the outer one
+ * narrows candidate rows (`m`), the inner one re-applies the same folder
+ * and search narrowing to the sibling probe (`sib`) that decides whether
+ * a row is its conversation's newest message. Both failures below produce
+ * a query that RUNS and returns wrong rows, which is exactly the class of
+ * bug a suite has to catch because nothing at runtime will.
+ */
+describe('buildInboxFilter — alias and offset', () => {
+  it('defaults to `m` at offset 0, so every pre-existing caller is untouched', () => {
+    const filter = buildInboxFilter({
+      cursor: null,
+      folder: { kind: 'literal', folder: 'INBOX' },
+      accountId: 'work',
+    });
+    expect(filter.where).toBe('where m.folder = $1 and m.account_id = $2');
+  });
+
+  it('writes every clause against the alias it was given', () => {
+    // Without this, the sibling subquery's folder test would be written
+    // against the OUTER row — which it already satisfies — so every
+    // sibling would match and every conversation would collapse to
+    // nothing but its very newest message across ALL folders.
+    const filter = buildInboxFilter({
+      cursor: { date: new Date('2026-08-01T00:00:00Z'), accountId: 'work', uid: 42 },
+      folder: { kind: 'literal', folder: 'INBOX' },
+      accountId: 'work',
+      search: 'invoice',
+      alias: 'sib',
+    });
+
+    expect(filter.where).not.toContain('m.');
+    expect(filter.where).toContain('sib.folder');
+    expect(filter.where).toContain('sib.account_id');
+    expect(filter.where).toContain('sib.subject ilike');
+    expect(filter.where).toContain('coalesce(sib.date');
+  });
+
+  it('aliases the starred flag test and the (account, folder) pair test too', () => {
+    const starred = buildInboxFilter({
+      cursor: null,
+      folder: { kind: 'starred' },
+      accountId: null,
+      alias: 'sib',
+    });
+    expect(starred.where).toBe('where $1 = any(sib.flags)');
+
+    const pairs = buildInboxFilter({
+      cursor: null,
+      folder: { kind: 'pairs', pairs: [{ accountId: 'work', folder: '[Gmail]/Sent Mail' }] },
+      accountId: null,
+      alias: 'sib',
+    });
+    expect(pairs.where).toContain('pair.account_id = sib.account_id');
+    expect(pairs.where).toContain('pair.folder = sib.folder');
+    expect(pairs.where).not.toContain('m.');
+  });
+
+  it('continues placeholder numbering from `offset` rather than restarting at $1', () => {
+    // The second filter in a composed statement MUST NOT reuse $1: it
+    // would silently read the FIRST filter's bound value, so a search for
+    // "invoice" inside the sibling probe would compare against whatever
+    // the outer cursor happened to bind. Still a valid query, still a 200.
+    const filter = buildInboxFilter({
+      cursor: null,
+      folder: { kind: 'literal', folder: 'INBOX' },
+      accountId: 'work',
+      search: 'invoice',
+      alias: 'sib',
+      offset: 3,
+    });
+
+    expect(filter.where).toBe(
+      'where sib.folder = $4 and sib.account_id = $5 and ' +
+        '(sib.subject ilike $6 or sib.from_name ilike $6 or ' +
+        'sib.from_email ilike $6 or sib.snippet ilike $6)',
+    );
+    // The VALUES array is still 0-based and self-contained; only the
+    // placeholder numbers are shifted, because the caller concatenates
+    // this array after the first filter's.
+    expect(filter.values).toEqual(['INBOX', 'work', '%invoice%']);
+  });
+
+  it('offsets the cursor placeholders as well', () => {
+    const filter = buildInboxFilter({
+      cursor: { date: new Date('2026-08-01T00:00:00Z'), accountId: 'work', uid: 42 },
+      folder: ALL_FOLDERS,
+      accountId: null,
+      offset: 2,
+    });
+    expect(filter.where).toContain('$3::timestamptz');
+    expect(filter.where).toContain('$4::text');
+    expect(filter.where).toContain('$5::bigint');
+  });
+});

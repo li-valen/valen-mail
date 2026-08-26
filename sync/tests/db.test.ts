@@ -181,6 +181,194 @@ maybe('db', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // Conversation grouping and thread pagination (getConversationPage)
+  // ---------------------------------------------------------------------------
+
+  describe('conversation pages', () => {
+    /** One message, with only the fields these cases actually read. */
+    async function put(row: {
+      accountId: string;
+      uid: number;
+      threadId: string | null;
+      date: Date | null;
+      folder?: string;
+      subject?: string;
+      flags?: readonly string[];
+    }) {
+      await db.upsertMessage({
+        accountId: row.accountId,
+        uid: row.uid,
+        folder: row.folder ?? 'INBOX',
+        messageId: `<c${row.uid}@x>`,
+        threadId: row.threadId,
+        subject: row.subject ?? `c${row.uid}`,
+        fromName: 'C',
+        fromEmail: 'c@x.com',
+        toEmails: [],
+        ccEmails: [],
+        date: row.date,
+        snippet: null,
+        flags: [...(row.flags ?? [])],
+        labels: [],
+        hasAttach: false,
+        sizeBytes: 1,
+      });
+    }
+
+    const INBOX = { kind: 'literal', folder: 'INBOX' } as const;
+
+    beforeAll(async () => {
+      await db.query('delete from messages where account_id like $1', ['test-%']);
+      // A four-message conversation on test-a, spread out in time...
+      await put({ accountId: 'test-a', uid: 10, threadId: 'T1', date: new Date('2026-05-01T00:00:00Z') });
+      await put({ accountId: 'test-a', uid: 11, threadId: 'T1', date: new Date('2026-05-09T00:00:00Z') });
+      await put({ accountId: 'test-a', uid: 12, threadId: 'T1', date: new Date('2026-05-20T00:00:00Z') });
+      await put({ accountId: 'test-a', uid: 13, threadId: 'T1', date: new Date('2026-06-01T00:00:00Z') });
+      // ...with unrelated singletons interleaved through the same span, so
+      // a page of conversations is genuinely not a page of messages.
+      await put({ accountId: 'test-a', uid: 20, threadId: 'T2', date: new Date('2026-05-05T00:00:00Z') });
+      await put({ accountId: 'test-a', uid: 21, threadId: 'T3', date: new Date('2026-05-15T00:00:00Z') });
+      // The SAME thread id on a DIFFERENT account. Gmail allocates
+      // X-GM-THRID per mailbox, so this is an ordinary collision, not a
+      // contrived one.
+      await put({ accountId: 'test-b', uid: 10, threadId: 'T1', date: new Date('2026-04-01T00:00:00Z') });
+      await put({ accountId: 'test-b', uid: 11, threadId: 'T1', date: new Date('2026-04-02T00:00:00Z') });
+      // A thread whose NEWEST message is in Sent, not INBOX.
+      await put({ accountId: 'test-a', uid: 30, threadId: 'T4', date: new Date('2026-03-01T00:00:00Z') });
+      await put({
+        accountId: 'test-a', uid: 31, threadId: 'T4', folder: '[Gmail]/Sent Mail',
+        date: new Date('2026-03-05T00:00:00Z'),
+      });
+      // Two messages with NO thread id at all.
+      await put({ accountId: 'test-a', uid: 40, threadId: null, date: new Date('2026-02-01T00:00:00Z') });
+      await put({ accountId: 'test-a', uid: 41, threadId: null, date: new Date('2026-02-02T00:00:00Z') });
+    });
+
+    it('returns one representative per conversation, newest message first', async () => {
+      const page = await db.getConversationPage({
+        limit: 100, cursor: null, folder: INBOX, accountId: 'test-a',
+      });
+      // T1 (4 msgs), T2, T3, T4-in-inbox, and the two unthreaded rows.
+      expect(page.representatives.map((r: any) => Number(r.uid))).toEqual([13, 21, 20, 30, 41, 40]);
+    });
+
+    it('brings back EVERY message of the conversations on the page', async () => {
+      const page = await db.getConversationPage({
+        limit: 1, cursor: null, folder: INBOX, accountId: 'test-a',
+      });
+      expect(page.representatives).toHaveLength(1);
+      // One conversation asked for, four messages delivered — the whole
+      // point of the route.
+      expect(page.messages.map((m: any) => Number(m.uid))).toEqual([13, 12, 11, 10]);
+    });
+
+    it('never merges two accounts’ threads that share a Gmail thread id', async () => {
+      // THE COLLISION. test-a and test-b both hold thread "T1". Keyed on
+      // thread_id alone this is one conversation of six messages, and
+      // archiving the row the user sees would archive mail from an account
+      // they were not even looking at.
+      const page = await db.getConversationPage({
+        limit: 100, cursor: null, folder: INBOX, accountId: null,
+      });
+      const t1 = page.representatives.filter((r: any) => r.thread_id === 'T1');
+      expect(t1.map((r: any) => r.account_id).sort()).toEqual(['test-a', 'test-b']);
+
+      const aMembers = page.messages.filter(
+        (m: any) => m.thread_id === 'T1' && m.account_id === 'test-a',
+      );
+      expect(aMembers).toHaveLength(4);
+    });
+
+    it('keeps the member lookup keyed by account as well as thread', async () => {
+      // The half of the collision the representative test above cannot
+      // see. Ask for ONE conversation across ALL accounts: the newest is
+      // test-a's T1. Its members must be test-a's four messages and
+      // nothing else — with the account dropped from the member key,
+      // test-b's two unrelated "T1" messages ride along, get counted in
+      // the row's badge, and get archived when the user archives the row.
+      const page = await db.getConversationPage({
+        limit: 1, cursor: null, folder: INBOX, accountId: null,
+      });
+      expect(page.messages.map((m: any) => `${m.account_id}:${m.uid}`)).toEqual([
+        'test-a:13', 'test-a:12', 'test-a:11', 'test-a:10',
+      ]);
+    });
+
+    it('scopes a conversation to the FILTER, not to the whole mailbox', async () => {
+      // T4's newest message is in Sent. Under folder=inbox the
+      // conversation is its INBOX message alone — and it must still
+      // appear. Omitting the folder narrowing from the sibling probe makes
+      // uid 30 look like it has a newer sibling and drops the whole
+      // conversation out of the inbox silently.
+      const page = await db.getConversationPage({
+        limit: 100, cursor: null, folder: INBOX, accountId: 'test-a',
+      });
+      const t4 = page.messages.filter((m: any) => m.thread_id === 'T4');
+      expect(t4.map((m: any) => Number(m.uid))).toEqual([30]);
+    });
+
+    it('treats every message with no thread id as its own conversation', async () => {
+      // Not one giant null bucket: two unthreaded messages are two rows.
+      const page = await db.getConversationPage({
+        limit: 100, cursor: null, folder: INBOX, accountId: 'test-a',
+      });
+      const unthreaded = page.representatives.filter((r: any) => r.thread_id === null);
+      expect(unthreaded.map((r: any) => Number(r.uid)).sort((a, b) => a - b)).toEqual([40, 41]);
+    });
+
+    it('pages by conversation: the next page resumes AFTER the whole thread', async () => {
+      const first = await db.getConversationPage({
+        limit: 2, cursor: null, folder: INBOX, accountId: 'test-a',
+      });
+      const last: any = first.representatives[first.representatives.length - 1];
+      const second = await db.getConversationPage({
+        limit: 100,
+        cursor: { date: last.date, accountId: last.account_id, uid: Number(last.uid) },
+        folder: INBOX,
+        accountId: 'test-a',
+      });
+      // Nothing from the first page reappears — in particular none of T1's
+      // three older messages, which is exactly what a message-paginated
+      // cursor would have handed back.
+      const firstUids = new Set(first.messages.map((m: any) => String(m.uid)));
+      for (const message of second.messages as any[]) {
+        expect(firstUids.has(String(message.uid))).toBe(false);
+      }
+      expect(second.representatives.map((r: any) => Number(r.uid))).toEqual([20, 30, 41, 40]);
+    });
+
+    it('narrows a conversation to the MATCHING messages under a search', async () => {
+      await put({
+        accountId: 'test-a', uid: 12, threadId: 'T1',
+        date: new Date('2026-05-20T00:00:00Z'), subject: 'quarterly numbers',
+      });
+      const page = await db.getConversationPage({
+        limit: 100, cursor: null, folder: INBOX, accountId: 'test-a', search: 'quarterly',
+      });
+      expect(page.representatives.map((r: any) => Number(r.uid))).toEqual([12]);
+      expect(page.messages.map((m: any) => Number(m.uid))).toEqual([12]);
+      // Put the fixture back for any case that runs after this one.
+      await put({ accountId: 'test-a', uid: 12, threadId: 'T1', date: new Date('2026-05-20T00:00:00Z') });
+    });
+
+    it('carries attachment metadata on every member, like the other read paths', async () => {
+      const page = await db.getConversationPage({
+        limit: 100, cursor: null, folder: INBOX, accountId: 'test-a',
+      });
+      for (const message of page.messages as any[]) {
+        expect(Array.isArray(message.attachments)).toBe(true);
+      }
+    });
+
+    it('answers an empty page without a second query', async () => {
+      const page = await db.getConversationPage({
+        limit: 10, cursor: null, folder: INBOX, accountId: 'test-b', search: 'nothing matches this',
+      });
+      expect(page).toEqual({ messages: [], representatives: [] });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // F7: unified inbox ordering and keyset pagination
   // ---------------------------------------------------------------------------
 

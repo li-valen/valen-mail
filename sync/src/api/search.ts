@@ -91,8 +91,15 @@ export function parseQueryParam(raw: string | null): QueryParseResult {
  * the mailbox. A caller that wants a scoped search passes `folder=inbox`
  * explicitly and gets byte-identical resolution to /api/inbox's, since
  * this delegates to the same two functions for every present value.
+ *
+ * Exported for ./conversations.ts, which serves the GROUPED view of both
+ * this route and /api/inbox and must resolve `folder` exactly as whichever
+ * one it is standing in for — a grouped search that silently defaulted to
+ * INBOX would return a different result set from the ungrouped search of
+ * the same query, which is the kind of divergence nobody would think to
+ * look for.
  */
-function resolveSearchFolder(
+export function resolveSearchFolder(
   raw: string | null,
   accountFilter: string | null,
   accounts: readonly AccountConfig[],

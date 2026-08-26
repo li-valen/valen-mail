@@ -7,6 +7,7 @@ import { fetchOpens } from './opens.ts';
 import { parseLimit } from './limits.ts';
 import { handleInbox } from './inbox.ts';
 import { handleSearch } from './search.ts';
+import { handleConversations } from './conversations.ts';
 import { handleFollowup } from './followup.ts';
 import {
   buildClearedSessionCookie,
@@ -581,6 +582,16 @@ export function createRouter(
     // than resembling each other.
     if (path === '/api/search') {
       return handleSearch(db, pool, accounts, url);
+    }
+
+    // The COLLAPSED view of the two routes above: the same mail, the same
+    // filters and the same keyset cursor, paginated by conversation
+    // rather than by message so a 40-message thread costs one row instead
+    // of forty. `?q=` makes it the grouped view of /api/search rather
+    // than of /api/inbox, including that route's different folder
+    // default. Everything it does lives in ./conversations.ts.
+    if (path === '/api/conversations') {
+      return handleConversations(db, pool, accounts, url);
     }
 
     if (path === '/api/opens') {

@@ -174,6 +174,17 @@ export function makeFakeDb(overrides: Record<string, unknown> = {}) {
   return {
     getUnifiedInbox: async () => [{ subject: 'a', date: new Date('2026-08-01') }],
     getThread: async (id: string) => (id === 't1' ? [{ subject: 'x' }] : []),
+    // Two views of one page — see ../src/db.ts's ConversationPage. The
+    // default is a single one-message conversation, so the two arrays
+    // agree with each other the way a real page always does; a suite that
+    // cares about the difference (which array the next cursor comes from)
+    // overrides it with arrays of different lengths on purpose.
+    getConversationPage: async () => ({
+      messages: [{ subject: 'a', account_id: 'harvard', uid: '1', date: new Date('2026-08-01') }],
+      representatives: [
+        { subject: 'a', account_id: 'harvard', uid: '1', date: new Date('2026-08-01') },
+      ],
+    }),
     query: async () => [],
     upsertMessage: async () => {},
     upsertAttachment: async () => {},

@@ -518,6 +518,9 @@ export function createFakeDb(): FakeDb {
     async getUnifiedInbox() {
       return [];
     },
+    async getConversationPage() {
+      return { messages: [], representatives: [] };
+    },
     async getThread() {
       return [];
     },

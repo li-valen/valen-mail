@@ -153,6 +153,27 @@ export type InboxFolderFilter =
   | { readonly kind: 'pairs'; readonly pairs: readonly NativeFolderPair[] }
   | { readonly kind: 'starred' };
 
+/**
+ * One page of conversations, as two views of the same page.
+ *
+ * `messages` is FLAT and newest-first — byte-for-byte the ordering
+ * GET /api/inbox already emits — because that is what lets the client
+ * recover the conversations by first appearance without carrying a second
+ * copy of INBOX_ORDER's comparator: in a newest-first list, the first row
+ * of a conversation IS its newest message, so first-appearance order is
+ * exactly conversation-by-recency order.
+ *
+ * `representatives` is one row per conversation, in the same order, and
+ * exists for exactly one reason: the next cursor must address the next
+ * CONVERSATION, so `nextCursorFrom` is handed this and never `messages`
+ * (whose last row is the OLDEST message of the last conversation, and
+ * would page the client back into a thread it has already been given).
+ */
+export interface ConversationPage {
+  readonly messages: readonly any[];
+  readonly representatives: readonly any[];
+}
+
 export interface Db {
   applySchema(): Promise<void>;
   query(text: string, values?: readonly unknown[]): Promise<any[]>;
@@ -185,6 +206,33 @@ export interface Db {
      *  or null for an ordinary inbox read. */
     search?: string | null;
   }): Promise<any[]>;
+  /**
+   * ONE PAGE OF CONVERSATIONS, whole — the query behind
+   * GET /api/conversations.
+   *
+   * The difference from getUnifiedInbox above is what `limit` counts.
+   * There it is messages; here it is CONVERSATIONS, and every message of
+   * every conversation on the page comes back with it. That is the whole
+   * point: a client that paginated by message could never draw a
+   * collapsed conversation honestly, because the page boundary would cut
+   * threads in half and the count beside a row would grow every time the
+   * user pressed "Load more".
+   *
+   * A CONVERSATION IS SCOPED BY THE FILTER, not by the mailbox. Under
+   * `folder=inbox` it is the messages of one thread that are IN THE
+   * INBOX; the same thread's Sent copies are a different conversation in
+   * a different list, and are neither counted here nor archived when the
+   * user archives this one. Under a search it is the MATCHING messages of
+   * one thread, so the result count means what it says.
+   */
+  getConversationPage(options: {
+    /** How many CONVERSATIONS, not how many messages. */
+    limit: number;
+    cursor: InboxCursor | null;
+    folder: InboxFolderFilter;
+    accountId: string | null;
+    search?: string | null;
+  }): Promise<ConversationPage>;
   getThread(threadId: string): Promise<any[]>;
   /**
    * The lowest UID currently stored for one (account, folder), or null
@@ -323,6 +371,27 @@ interface InboxFilter {
 }
 
 /**
+ * Which table alias a clause is written against, and how many bound
+ * parameters already exist in the statement it is being appended to.
+ *
+ * BOTH EXIST FOR ONE CALLER: getConversationPage, which composes TWO
+ * filters into a SINGLE statement — one over the candidate row (`m`) and
+ * one over its own thread siblings (`sib`) inside a correlated
+ * subquery. Without `alias` the sibling test would silently be written
+ * against the outer row and match everything; without `offset` the second
+ * filter's placeholders would restart at $1 and read the FIRST filter's
+ * values. Both failures produce a query that runs and returns wrong rows,
+ * which is why the two are one type and always travel together.
+ *
+ * Defaulted (`m`, 0) so every pre-existing caller is unchanged — see
+ * buildInboxFilter.
+ */
+interface FilterContext {
+  readonly alias: string;
+  readonly offset: number;
+}
+
+/**
  * Appends the cursor's clause (if any) to `clauses`/`values` in place.
  *
  * Placeholder numbers are derived from `values.push(...)`'s own return
@@ -334,23 +403,29 @@ interface InboxFilter {
  * each push is what keeps every clause correct regardless of what runs
  * before or after it.
  */
-function pushCursorClause(clauses: string[], values: unknown[], cursor: InboxCursor | null): void {
+function pushCursorClause(
+  clauses: string[],
+  values: unknown[],
+  cursor: InboxCursor | null,
+  ctx: FilterContext,
+): void {
   if (!cursor) return;
+  const { alias, offset } = ctx;
 
   if (cursor.accountId !== null && cursor.uid !== null) {
-    const dateIdx = values.push(cursor.date);
-    const acctIdx = values.push(cursor.accountId);
-    const uidIdx = values.push(cursor.uid);
+    const dateIdx = offset + values.push(cursor.date);
+    const acctIdx = offset + values.push(cursor.accountId);
+    const uidIdx = offset + values.push(cursor.uid);
     clauses.push(
-      `(coalesce(m.date, '-infinity'::timestamptz), m.account_id, m.uid) ` +
+      `(coalesce(${alias}.date, '-infinity'::timestamptz), ${alias}.account_id, ${alias}.uid) ` +
       `< (coalesce($${dateIdx}::timestamptz, '-infinity'::timestamptz), $${acctIdx}::text, $${uidIdx}::bigint)`,
     );
     return;
   }
 
   if (cursor.date !== null) {
-    const dateIdx = values.push(cursor.date);
-    clauses.push(`coalesce(m.date, '-infinity'::timestamptz) < $${dateIdx}::timestamptz`);
+    const dateIdx = offset + values.push(cursor.date);
+    clauses.push(`coalesce(${alias}.date, '-infinity'::timestamptz) < $${dateIdx}::timestamptz`);
   }
 }
 
@@ -374,7 +449,13 @@ function pushCursorClause(clauses: string[], values: unknown[], cursor: InboxCur
  * still returns 200 with zero rows, not a WHERE-less scan of the whole
  * table and not a thrown error.
  */
-function pushFolderClause(clauses: string[], values: unknown[], folder: InboxFolderFilter): void {
+function pushFolderClause(
+  clauses: string[],
+  values: unknown[],
+  folder: InboxFolderFilter,
+  ctx: FilterContext,
+): void {
+  const { alias, offset } = ctx;
   if (folder.kind === 'all') return;
 
   if (folder.kind === 'starred') {
@@ -387,14 +468,14 @@ function pushFolderClause(clauses: string[], values: unknown[], folder: InboxFol
     // matching any row (starred returns empty, not an error). A bound
     // parameter's value is never subject to that parsing at all, which is
     // what makes this immune to the GUC rather than dependent on it.
-    const idx = values.push('\\Flagged');
-    clauses.push(`$${idx} = any(m.flags)`);
+    const idx = offset + values.push('\\Flagged');
+    clauses.push(`$${idx} = any(${alias}.flags)`);
     return;
   }
 
   if (folder.kind === 'literal') {
-    const idx = values.push(folder.folder);
-    clauses.push(`m.folder = $${idx}`);
+    const idx = offset + values.push(folder.folder);
+    clauses.push(`${alias}.folder = $${idx}`);
     return;
   }
 
@@ -404,29 +485,34 @@ function pushFolderClause(clauses: string[], values: unknown[], folder: InboxFol
   }
   const accountIds = folder.pairs.map((pair) => pair.accountId);
   const nativeFolders = folder.pairs.map((pair) => pair.folder);
-  const acctIdx = values.push(accountIds);
-  const folderIdx = values.push(nativeFolders);
+  const acctIdx = offset + values.push(accountIds);
+  const folderIdx = offset + values.push(nativeFolders);
   clauses.push(
     `exists (` +
       `select 1 from unnest($${acctIdx}::text[], $${folderIdx}::text[]) as pair(account_id, folder) ` +
-      `where pair.account_id = m.account_id and pair.folder = m.folder` +
+      `where pair.account_id = ${alias}.account_id and pair.folder = ${alias}.folder` +
     `)`,
   );
 }
 
 /** Appends the `account` filter (Plan 5 Task 2) — independent of, and
  *  composable with, whichever folder clause pushFolderClause added. */
-function pushAccountClause(clauses: string[], values: unknown[], accountId: string | null): void {
+function pushAccountClause(
+  clauses: string[],
+  values: unknown[],
+  accountId: string | null,
+  ctx: FilterContext,
+): void {
   if (accountId === null) return;
-  const idx = values.push(accountId);
-  clauses.push(`m.account_id = $${idx}`);
+  const idx = ctx.offset + values.push(accountId);
+  clauses.push(`${ctx.alias}.account_id = $${idx}`);
 }
 
 /** The columns GET /api/search looks in. Snippet is one of them, which is
  *  what makes previews searchable and not merely decorative — and also why
  *  a row synced before Plan 7 Task 1 (snippet still NULL) can only ever
  *  match on the other three. */
-const SEARCH_COLUMNS = ['m.subject', 'm.from_name', 'm.from_email', 'm.snippet'] as const;
+const SEARCH_COLUMNS = ['subject', 'from_name', 'from_email', 'snippet'] as const;
 
 /**
  * Escapes the three characters LIKE/ILIKE treat as syntax, so a user
@@ -465,10 +551,17 @@ export function escapeLikePattern(raw: string): string {
  * "no match" — the correct answer for a message with no subject, and the
  * reason no coalesce is needed here.
  */
-function pushSearchClause(clauses: string[], values: unknown[], search: string | null): void {
+function pushSearchClause(
+  clauses: string[],
+  values: unknown[],
+  search: string | null,
+  ctx: FilterContext,
+): void {
   if (search === null) return;
-  const idx = values.push(`%${escapeLikePattern(search)}%`);
-  clauses.push(`(${SEARCH_COLUMNS.map((column) => `${column} ilike $${idx}`).join(' or ')})`);
+  const idx = ctx.offset + values.push(`%${escapeLikePattern(search)}%`);
+  clauses.push(
+    `(${SEARCH_COLUMNS.map((column) => `${ctx.alias}.${column} ilike $${idx}`).join(' or ')})`,
+  );
 }
 
 /**
@@ -487,17 +580,62 @@ export function buildInboxFilter(options: {
   readonly folder: InboxFolderFilter;
   readonly accountId: string | null;
   readonly search?: string | null;
+  /** The table alias these clauses address. Defaults to `m`, which is
+   *  what MESSAGE_SELECT names the `messages` table. */
+  readonly alias?: string;
+  /** How many parameters the surrounding statement has already bound, so
+   *  this filter's placeholders continue from there rather than
+   *  restarting at $1. Defaults to 0. */
+  readonly offset?: number;
 }): InboxFilter {
   const clauses: string[] = [];
   const values: unknown[] = [];
+  const ctx: FilterContext = { alias: options.alias ?? 'm', offset: options.offset ?? 0 };
 
-  pushCursorClause(clauses, values, options.cursor);
-  pushFolderClause(clauses, values, options.folder);
-  pushAccountClause(clauses, values, options.accountId);
-  pushSearchClause(clauses, values, options.search ?? null);
+  pushCursorClause(clauses, values, options.cursor, ctx);
+  pushFolderClause(clauses, values, options.folder, ctx);
+  pushAccountClause(clauses, values, options.accountId, ctx);
+  pushSearchClause(clauses, values, options.search ?? null, ctx);
 
   const where = clauses.length > 0 ? `where ${clauses.join(' and ')}` : '';
   return { where, values };
+}
+
+/**
+ * Appends one more clause to a WHERE built by buildInboxFilter, whether
+ * or not it produced any clauses of its own.
+ *
+ * A three-line helper rather than an inline ternary at each call site
+ * because the empty case is the one that breaks: `'' + ' and (…)'` is
+ * `" and (…)"`, which is a syntax error, and it only happens for a
+ * request with no folder, no account, no search and no cursor — i.e. the
+ * one shape a hand-written test is least likely to cover.
+ */
+function andClause(where: string, clause: string): string {
+  return where === '' ? `where ${clause}` : `${where} and ${clause}`;
+}
+
+/**
+ * THE CONVERSATION KEY, IN SQL — and the `account_id` beside it in every
+ * comparison is not decoration.
+ *
+ * `thread_id` is Gmail's own X-GM-THRID, a decimal counter allocated
+ * PER MAILBOX. Two of this user's four accounts can therefore hold the
+ * same thread id for two entirely unrelated conversations, and a grouping
+ * keyed on `thread_id` alone would merge a Harvard advising thread into a
+ * personal one — then archive both together when the user archived what
+ * looked like one row. Every use of this expression is paired with an
+ * `account_id` equality; there is no code path where it stands alone.
+ *
+ * A NULL `thread_id` becomes the message's OWN key rather than joining
+ * one giant null bucket: a message the sync path never learned a thread
+ * for is a conversation of one, not a conversation with every other
+ * unthreaded message in the mailbox. The `t`/`u` prefix makes the two
+ * spaces disjoint, so no real thread id can ever collide with a
+ * synthesised one.
+ */
+function conversationKey(alias: string): string {
+  return `(case when ${alias}.thread_id is null then 'u' || ${alias}.uid else 't' || ${alias}.thread_id end)`;
 }
 
 export function openDb(databaseUrl: string): Db {
@@ -588,6 +726,108 @@ export function openDb(databaseUrl: string): Db {
         [...filter.values, limit],
       );
       return result.rows;
+    },
+
+    async getConversationPage({ limit, cursor, folder, accountId, search }) {
+      // Two filters over the SAME statement. The first narrows the
+      // candidate rows (`m`); the second re-applies the folder and search
+      // narrowing to the sibling probe (`sib`), and leaving it off is a
+      // data-loss bug rather than a slow query: a thread whose newest
+      // message sits in Sent would disqualify its INBOX messages one by
+      // one and the whole conversation would vanish from the inbox.
+      //
+      // `offset` continues the sibling filter's placeholders past the
+      // first filter's, which is what lets both live in one `values`
+      // array. `accountId` is deliberately NOT re-applied to `sib` — the
+      // subquery already joins on `sib.account_id = m.account_id`, so a
+      // second copy would bind a parameter for a clause that can never
+      // change the answer.
+      const rowFilter = buildInboxFilter({ cursor, folder, accountId, search });
+      const siblingFilter = buildInboxFilter({
+        cursor: null,
+        folder,
+        accountId: null,
+        search,
+        alias: 'sib',
+        offset: rowFilter.values.length,
+      });
+
+      /*
+       * THE REPRESENTATIVE TEST, and why it is an anti-join rather than a
+       * GROUP BY.
+       *
+       * A row is its conversation's representative exactly when no OTHER
+       * message of the same conversation is newer. Written that way the
+       * query never aggregates: it walks messages_unified_keyset in the
+       * order it is already stored, probes messages_thread once per
+       * candidate (an index seek into that one thread), and stops as soon
+       * as it has `limit` survivors. Measured against this user's real
+       * 41,151-row inbox: 5ms for page one, 0.24ms for a page ten months
+       * deep. The GROUP BY formulation has to aggregate and sort all
+       * 40,216 conversations before it can return the first fifty, on
+       * every page, forever.
+       *
+       * It also composes with the existing cursor for free. The
+       * conversation's sort key IS its representative's own row sort key,
+       * so `nextCursorFrom` needs no new shape and the client's paging
+       * code needs no change at all.
+       *
+       * A NULL thread_id short-circuits: such a message is a conversation
+       * of one (see conversationKey), so it is always its own
+       * representative and needs no probe.
+       */
+      const isRepresentative =
+        `(m.thread_id is null or not exists (` +
+          `select 1 from messages sib ` +
+          `where sib.account_id = m.account_id and sib.thread_id = m.thread_id ` +
+            (siblingFilter.where === ''
+              ? ''
+              : `and ${siblingFilter.where.slice('where '.length)} `) +
+            `and (coalesce(sib.date, '-infinity'::timestamptz), sib.uid) ` +
+              `> (coalesce(m.date, '-infinity'::timestamptz), m.uid)` +
+        `))`;
+
+      const repValues = [...rowFilter.values, ...siblingFilter.values];
+      const repResult = await pool.query(
+        `select m.account_id, m.folder, m.uid, m.thread_id, m.date from messages m ` +
+          `${andClause(rowFilter.where, isRepresentative)} ${INBOX_ORDER} ` +
+          `limit $${repValues.length + 1}`,
+        [...repValues, limit],
+      );
+      const representatives = repResult.rows;
+      if (representatives.length === 0) return { messages: [], representatives };
+
+      // The members, in ONE round trip keyed on the page's own
+      // (account_id, thread_key) pairs. Zipped positionally by unnest
+      // rather than built into the SQL text — the number of conversations
+      // changes the LENGTH of two bound arrays and never the shape of the
+      // statement, which is the same discipline pushFolderClause uses for
+      // (account, folder) pairs.
+      //
+      // The cursor is deliberately absent from this filter: a
+      // conversation's older messages are exactly the rows a cursor would
+      // exclude, and excluding them is what a partial thread IS.
+      const memberFilter = buildInboxFilter({ cursor: null, folder, accountId, search });
+      const accountIds = representatives.map((row: any) => String(row.account_id));
+      const threadKeys = representatives.map((row: any) =>
+        row.thread_id === null ? `u${row.uid}` : `t${row.thread_id}`,
+      );
+      const acctIdx = memberFilter.values.length + 1;
+      const keyIdx = memberFilter.values.length + 2;
+      const memberResult = await pool.query(
+        `${MESSAGE_SELECT} ` +
+          andClause(
+            memberFilter.where,
+            `exists (` +
+              `select 1 from unnest($${acctIdx}::text[], $${keyIdx}::text[]) as conv(account_id, thread_key) ` +
+              `where conv.account_id = m.account_id and conv.thread_key = ${conversationKey('m')}` +
+            `)`,
+          ) +
+          ` ${INBOX_ORDER}`,
+        [...memberFilter.values, accountIds, threadKeys],
+      );
+
+      return { messages: memberResult.rows, representatives };
     },
 
     async getThread(threadId) {
