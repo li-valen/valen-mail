@@ -10,8 +10,10 @@ import {
   NOTHING_SELECTED,
   pruneSelection,
   selectAll,
+  selectableKeys,
   selectedMessages,
   selectionKeyFor,
+  toggleGroupSelection,
   toggleSelection,
 } from '../src/bulkSelection';
 
@@ -236,5 +238,94 @@ describe('the live count', () => {
 
   it('never renders a zero — the bar is absent instead', () => {
     expect(countLabel(0)).toBe('0 selected');
+  });
+});
+
+/**
+ * Ticking a COLLAPSED CONVERSATION — one row, N keys, one decision.
+ *
+ * The keys stay per message (a move is one request per message, and the
+ * hidden set is per message); what changes is that they go in and come
+ * out together. A half-ticked conversation is the failure these two
+ * functions exist to make unreachable: its row's box asks whether the
+ * WHOLE conversation is selected, so a partial selection draws as
+ * unticked while an Archive would take part of it.
+ */
+describe('toggleGroupSelection', () => {
+  const group = ['harvard:9', 'harvard:4', 'harvard:1'];
+
+  it('ticks every key of an untouched group', () => {
+    const next = toggleGroupSelection(NOTHING_SELECTED, group);
+    expect([...next].sort()).toEqual([...group].sort());
+  });
+
+  it('unticks every key of a fully-ticked group — the exact inverse', () => {
+    const ticked = toggleGroupSelection(NOTHING_SELECTED, group);
+    expect(toggleGroupSelection(ticked, group).size).toBe(0);
+  });
+
+  it('COMPLETES a partly-ticked group rather than inverting each key', () => {
+    // Toggling per key would leave two ticked and one not — a row whose
+    // box says "not selected" over a selection that Archive would act on.
+    const partial = new Set(['harvard:4']);
+    const next = toggleGroupSelection(partial, group);
+    expect([...next].sort()).toEqual([...group].sort());
+  });
+
+  it('leaves keys outside the group alone', () => {
+    const other = new Set(['primary:7']);
+    const next = toggleGroupSelection(other, group);
+    expect(next.has('primary:7')).toBe(true);
+  });
+
+  it('returns the SAME set for an empty group, so nothing re-renders', () => {
+    const current = new Set(['primary:7']);
+    expect(toggleGroupSelection(current, [])).toBe(current);
+  });
+
+  it('never mutates the set it was given', () => {
+    const current = new Set(['primary:7']);
+    toggleGroupSelection(current, group);
+    expect([...current]).toEqual(['primary:7']);
+  });
+});
+
+describe('selectableKeys', () => {
+  const inInbox = (m: InboxMessage) => m.folder === 'INBOX';
+
+  it('is exactly the ungrouped filter when every row stands for itself', () => {
+    const rows = [
+      message('harvard', '1'),
+      message('harvard', '2', { folder: '[Gmail]/Sent Mail' }),
+      message('primary', '1'),
+    ];
+    expect(selectableKeys(rows, inInbox)).toEqual(['harvard:1', 'primary:1']);
+  });
+
+  it('drops EVERY member of a conversation one of whose members cannot move', () => {
+    // Starred is the one view that merges folders, so a conversation
+    // there can hold an INBOX message and a Sent one. Selecting the INBOX
+    // half alone is the half-ticked conversation this prevents.
+    const inbox = message('harvard', '9');
+    const sent = message('harvard', '4', { folder: '[Gmail]/Sent Mail' });
+    const solo = message('primary', '1');
+    const membersOf = new Map<string, readonly InboxMessage[]>([
+      ['harvard:9', [inbox, sent]],
+      ['harvard:4', [inbox, sent]],
+      ['primary:1', [solo]],
+    ]);
+    const keys = selectableKeys(
+      [inbox, sent, solo],
+      inInbox,
+      (m) => membersOf.get(messageKey(m)) ?? [m],
+    );
+    expect(keys).toEqual(['primary:1']);
+  });
+
+  it('keeps every member of a conversation that can move as a whole', () => {
+    const a = message('harvard', '9');
+    const b = message('harvard', '4');
+    const keys = selectableKeys([a, b], inInbox, () => [a, b]);
+    expect(keys).toEqual(['harvard:9', 'harvard:4']);
   });
 });

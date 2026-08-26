@@ -109,6 +109,45 @@ export interface MessageRowProps {
    *  of a selection, so the user can see what they are adding to instead
    *  of hunting for boxes that only exist under the pointer. */
   readonly isSelecting?: boolean;
+  /**
+   * What the sender column says when this row stands for a CONVERSATION
+   * whose messages came from different people — `Ann, Bob`, or
+   * `Ann, …, Zed`. Resolved by the caller through
+   * ../conversations.ts's `participantsLabel`.
+   *
+   * Absent for a row that stands for one message, which is 99% of this
+   * inbox, and absence falls back to `rowLayoutFor`'s own answer — so a
+   * single-message row is byte-identical to the row that shipped before
+   * conversations existed. The avatar's letter and colour are
+   * deliberately NOT overridden with it: they belong to the newest
+   * sender, which is who the rest of the row is about.
+   */
+  readonly senderLabel?: string;
+  /**
+   * Gmail's `(3)` — how many messages this row stands for — or `null`/
+   * absent for a conversation of one.
+   *
+   * A STRING RATHER THAN A NUMBER, because the decision about whether to
+   * draw anything at all belongs to ../conversations.ts's
+   * `conversationCountLabel` (`null` at one, so no node is rendered) and
+   * not to a `> 1` test buried in this file's JSX where no test can reach
+   * it.
+   */
+  readonly conversationCount?: string | null;
+  /** What a screen reader hears in place of that bare number, which on
+   *  its own is read as part of the sender's name ("Ann Lei 3"). */
+  readonly conversationAnnouncement?: string | null;
+  /**
+   * Whether to draw the paperclip. Overrides `message.has_attach` so a
+   * conversation shows one when ANY of its messages carries an
+   * attachment — reading it off the representative alone would hide the
+   * clip the moment somebody replied without one.
+   *
+   * UNSET FALLS BACK TO THE MESSAGE, not to `false`, for the reason
+   * `isUnread` above does: this component is also rendered by
+   * ThreadContext.tsx, which passes no overrides at all.
+   */
+  readonly hasAttachment?: boolean;
 }
 
 /**
@@ -336,8 +375,14 @@ export default function MessageRow({
   onToggleSelect,
   isBulkSelected = false,
   isSelecting = false,
+  senderLabel,
+  conversationCount = null,
+  conversationAnnouncement = null,
+  hasAttachment,
 }: MessageRowProps) {
-  const { sender, subject, preview, initial, tone } = rowLayoutFor(message);
+  const { sender: rowSender, subject, preview, initial, tone } = rowLayoutFor(message);
+  const sender = senderLabel ?? rowSender;
+  const hasAttach = hasAttachment ?? message.has_attach;
   const unread = isUnreadOverride ?? isUnread(message);
   const when = formatWhen(message.date, now);
   const isSelectable = onToggleSelect !== undefined;
@@ -417,6 +462,9 @@ export default function MessageRow({
       >
         {unread && <span className="sr-only">Unread. </span>}
         {isStarred && <span className="sr-only">Starred. </span>}
+        {conversationAnnouncement !== null && (
+          <span className="sr-only">{conversationAnnouncement}</span>
+        )}
 
         {/* ── below lg: the Gmail-mobile row ───────────────────────── */}
         <span className="flex items-start gap-3 px-3 py-2.5 lg:hidden">
@@ -456,7 +504,24 @@ export default function MessageRow({
               >
                 {sender}
               </span>
-              {message.has_attach && (
+              {/* GMAIL'S `(3)`, and it is the WHOLE new affordance on
+                  this row. A `shrink-0` sibling of the sender rather than
+                  text inside it, so the truncation that shortens a long
+                  name can never eat the count. Absent — not `(1)` — for a
+                  single message, which is why the row that 99% of this
+                  inbox draws is unchanged. */}
+              {conversationCount !== null && (
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    'shrink-0 tabular-nums text-neutral-500 dark:text-muted-foreground',
+                    unread && 'font-semibold',
+                  )}
+                >
+                  {conversationCount}
+                </span>
+              )}
+              {hasAttach && (
                 <>
                   <Paperclip
                     className="h-3.5 w-3.5 shrink-0 text-neutral-500 dark:text-muted-foreground"
@@ -553,6 +618,17 @@ export default function MessageRow({
           >
             {sender}
           </span>
+          {conversationCount !== null && (
+            <span
+              aria-hidden="true"
+              className={cn(
+                'shrink-0 tabular-nums text-neutral-500 dark:text-muted-foreground',
+                unread && 'font-semibold',
+              )}
+            >
+              {conversationCount}
+            </span>
+          )}
 
           <span className="min-w-0 flex-1 truncate text-neutral-500 dark:text-muted-foreground">
             {subject}
@@ -582,7 +658,7 @@ export default function MessageRow({
               onMailboxMove !== undefined && 'group-hover:invisible',
             )}
           >
-            {message.has_attach && (
+            {hasAttach && (
               <>
                 <Paperclip
                   className="h-3.5 w-3.5 text-neutral-400 dark:text-muted-foreground"

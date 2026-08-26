@@ -24,9 +24,10 @@ import {
   NOTHING_SELECTED,
   pruneSelection,
   selectAll,
+  selectableKeys,
   selectedMessages,
   selectionKeyFor,
-  toggleSelection,
+  toggleGroupSelection,
 } from './bulkSelection';
 import { UNDO_WINDOW_MS, type MoveDestination } from './mailboxActions';
 
@@ -83,11 +84,31 @@ export interface PendingBulkUndo {
 }
 
 export interface BulkSelectionOptions {
-  /** The list on screen, in list order. The selection is resolved against
-   *  it, and pruned against it when it changes. */
+  /**
+   * EVERY LOADED MESSAGE, in list order — not one per row.
+   *
+   * The list draws one row per conversation, but the selection, the
+   * prune, "select all" and every batch are per MESSAGE, because a move
+   * is one request per message. So this is the flattened set: forty
+   * entries for a forty-message conversation, all of which are ticked and
+   * archived together. `expand` below is what ties the two together.
+   */
   readonly messages: readonly InboxMessage[];
-  /** The row under the keyboard cursor, or null — what `x` acts on. */
+  /** The row under the keyboard cursor, or null — what `x` acts on. The
+   *  conversation's REPRESENTATIVE; `expand` turns it back into the whole
+   *  conversation. */
   readonly cursorMessage: InboxMessage | null;
+  /**
+   * Every message the row `message` stands for — its conversation's
+   * members, including itself.
+   *
+   * Defaults to `[message]`, which is the ungrouped behaviour this hook
+   * had before conversations existed and is still what a list of
+   * single-message rows produces. Must be referentially STABLE (the
+   * caller wraps it in `useCallback`): it is a dependency of `toggle`,
+   * which every row holds.
+   */
+  readonly expand?: (message: InboxMessage) => readonly InboxMessage[];
   /** Hide rows optimistically. App.tsx owns the hidden set because
    *  InboxList and the reader both draw from it. */
   readonly hideKeys: (keys: readonly string[]) => void;
@@ -117,6 +138,22 @@ export interface BulkSelection {
   /** `x`. A no-op without a cursor; the resolver already refuses that
    *  case, and this is the belt on top of it. */
   readonly toggleCursorRow: () => void;
+  /**
+   * Archive / trash / report an ARBITRARY set of messages through the
+   * same batch machinery the selection uses.
+   *
+   * Exists because a collapsed row stands for N messages even when
+   * NOTHING is ticked: `e` on a forty-message conversation has to archive
+   * forty, and routing that through the single-message path would archive
+   * one and leave a row that silently reports thirty-nine. Everything the
+   * selection path gets — the bounded runner, the partial-failure
+   * accounting, the rollback, the one undo bar — comes with it, because
+   * this IS that path with the targets named directly.
+   */
+  readonly moveMessages: (
+    messages: readonly InboxMessage[],
+    destination: MoveDestination,
+  ) => void;
   readonly selectAllVisible: () => void;
   readonly clear: () => void;
   readonly move: (destination: MoveDestination) => void;
@@ -137,9 +174,22 @@ function targetsFrom(messages: readonly InboxMessage[]): readonly BulkTarget[] {
   return messages.map((message) => ({ key: selectionKeyFor(message), message }));
 }
 
+/** The ungrouped default: one row stands for one message. A module-level
+ *  constant so a caller that does not group hands down a STABLE identity
+ *  rather than a fresh closure per render. */
+const NO_EXPANSION = (message: InboxMessage): readonly InboxMessage[] => [message];
+
 export function useBulkSelection(options: BulkSelectionOptions): BulkSelection {
-  const { messages, cursorMessage, hideKeys, revealKeys, setSeen, revertSeen, clearSingleUndo } =
-    options;
+  const {
+    messages,
+    cursorMessage,
+    expand = NO_EXPANSION,
+    hideKeys,
+    revealKeys,
+    setSeen,
+    revertSeen,
+    clearSingleUndo,
+  } = options;
 
   const [selectedKeys, setSelectedKeys] = useState<ReadonlySet<string>>(NOTHING_SELECTED);
   const [undo, setUndo] = useState<PendingBulkUndo | null>(null);
@@ -230,18 +280,26 @@ export function useBulkSelection(options: BulkSelectionOptions): BulkSelection {
     [messages, selectedKeys],
   );
 
-  const toggle = useCallback((message: InboxMessage) => {
-    // Refused OUT LOUD rather than silently, the rule this codebase
-    // applies to every other interaction that is not offered where it was
-    // attempted. Decided per row because the Starred view is a flag query
-    // across folders — see bulkActions.ts's `canBulkSelect`.
-    if (!canBulkSelect(message)) {
-      setError(bulkSelectionUnavailableHere());
-      return;
-    }
-    setError(null);
-    setSelectedKeys((current) => toggleSelection(current, selectionKeyFor(message)));
-  }, []);
+  const toggle = useCallback(
+    (message: InboxMessage) => {
+      // THE WHOLE CONVERSATION, and `every` rather than the row's own
+      // message: a group in which one member cannot be moved would arm an
+      // Archive that acts on part of what the row stands for. Refused OUT
+      // LOUD rather than silently, the rule this codebase applies to every
+      // interaction that is not offered where it was attempted. See
+      // bulkActions.ts's `canBulkSelect` and conversations.ts's
+      // `isConversationSelectable`, which is this same predicate named
+      // from the row's side.
+      const group = expand(message);
+      if (!group.every(canBulkSelect)) {
+        setError(bulkSelectionUnavailableHere());
+        return;
+      }
+      setError(null);
+      setSelectedKeys((current) => toggleGroupSelection(current, group.map(selectionKeyFor)));
+    },
+    [expand],
+  );
 
   const toggleCursorRow = useCallback(() => {
     if (cursorMessage === null) return;
@@ -250,23 +308,31 @@ export function useBulkSelection(options: BulkSelectionOptions): BulkSelection {
 
   const selectAllVisible = useCallback(() => {
     // Only the rows that can actually be acted on, so "select all" never
-    // produces a selection the Archive button is partly inert against.
-    setSelectedKeys(selectAll(messages.filter(canBulkSelect).map(selectionKeyFor)));
-  }, [messages]);
+    // produces a selection the Archive button is partly inert against —
+    // and only WHOLE conversations, so it never produces a half-ticked
+    // one either (bulkSelection.ts's `selectableKeys`).
+    setSelectedKeys(selectAll(selectableKeys(messages, canBulkSelect, expand)));
+  }, [messages, expand]);
 
   const clear = useCallback(() => setSelectedKeys(clearSelection()), []);
 
   /**
-   * Archive / trash / report the whole selection.
+   * Archive / trash / report a named set of messages.
    *
    * THE ORDER OF THE FIRST FOUR LINES IS THE FEATURE. The rows are hidden
    * and the ticks cleared in the same frame as the click, because a bulk
    * action that waited for forty IMAP round trips would feel broken; the
    * batch then decides, per row, which of those hides stands.
+   *
+   * Takes the messages rather than reading the selection, so the SAME
+   * machinery serves the bar's buttons, `e`/`#` over a ticked selection,
+   * and `e`/`#` over a collapsed conversation nobody has ticked. It
+   * deselects the batch's keys unconditionally, which is a no-op for the
+   * third case and the point of the first two.
    */
-  const move = useCallback(
-    (destination: MoveDestination) => {
-      const targets = targetsFrom(selectedMessages(messages, selectedKeys, selectionKeyFor));
+  const moveMessages = useCallback(
+    (batch: readonly InboxMessage[], destination: MoveDestination) => {
+      const targets = targetsFrom(batch);
       if (targets.length === 0) return;
 
       const batchKeys = targets.map((target) => target.key);
@@ -315,7 +381,21 @@ export function useBulkSelection(options: BulkSelectionOptions): BulkSelection {
         },
       );
     },
-    [messages, selectedKeys, hideKeys, revealKeys, clearSingleUndo],
+    [hideKeys, revealKeys, clearSingleUndo],
+  );
+
+  /**
+   * Archive / trash / report the whole SELECTION.
+   *
+   * Resolves the ticked keys against the loaded list and hands them to
+   * `moveMessages` — one path, so the bar's button and a keystroke on an
+   * unticked conversation cannot behave differently.
+   */
+  const move = useCallback(
+    (destination: MoveDestination) => {
+      moveMessages(selectedMessages(messages, selectedKeys, selectionKeyFor), destination);
+    },
+    [messages, selectedKeys, moveMessages],
   );
 
   const runUndo = useCallback(() => {
@@ -410,11 +490,12 @@ export function useBulkSelection(options: BulkSelectionOptions): BulkSelection {
     countLabel: countLabel(selectedKeys.size),
     isEverythingSelected: isEverythingSelected(
       selectedKeys,
-      messages.filter(canBulkSelect).map(selectionKeyFor),
+      selectableKeys(messages, canBulkSelect, expand),
     ),
     selection,
     toggle,
     toggleCursorRow,
+    moveMessages,
     selectAllVisible,
     clear,
     move,

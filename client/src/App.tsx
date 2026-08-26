@@ -9,6 +9,12 @@ import type { FolderId } from './inboxFilters';
 import type { InboxMessage, OpenEvent, ParsedMessage } from './api';
 import { moveMessage, setMessageFlag } from './api';
 import { foldMessageIndex } from './messageIndex';
+import {
+  allMessagesOf,
+  membersByMessageKey,
+  representativesOf,
+} from './conversations';
+import type { Conversation } from './conversations';
 import { messageCache } from './messageCache';
 import { loadMessage, targetFor } from './messageLoader';
 import { messagePrefetcher } from './messagePrefetch';
@@ -249,8 +255,8 @@ export default function App() {
   // screen when its "recent open" row gets clicked.
   const [messageIndex, setMessageIndex] = useState<readonly InboxMessage[]>([]);
   /**
-   * The CURRENT list, in list order — what InboxList last reported,
-   * unfolded.
+   * The CURRENT list, in list order — what InboxList last reported, as
+   * CONVERSATIONS.
    *
    * A second copy of the same report, and the two are not redundant:
    * `messageIndex` above grows forever across folders and accounts (that
@@ -258,8 +264,13 @@ export default function App() {
    * adjacent-message prefetch needs exactly the order the user is looking
    * at — "the row after this one" is only defined against one list.
    * Replaced on every report rather than folded, for the same reason.
+   *
+   * Conversations rather than messages because the two derived views
+   * below have to agree with what is drawn: the cursor walks ROWS and the
+   * selection acts on MESSAGES, and holding only one of them would make
+   * the other a lookup that can be wrong.
    */
-  const [visibleMessages, setVisibleMessages] = useState<readonly InboxMessage[]>([]);
+  const [conversations, setConversations] = useState<readonly Conversation[]>([]);
   // Component-local, not persisted — keyed on the message text rather than
   // a plain boolean, so a retry that fails with a DIFFERENT message still
   // shows; only a repeat of the exact message the user already dismissed
@@ -414,12 +425,18 @@ export default function App() {
   // instead of the account roster — see that state's own comment and
   // messageIndex.ts's header for why this grows across folders/accounts
   // rather than replacing on every report.
-  const handleMessagesChange = useCallback((next: readonly InboxMessage[]) => {
-    setMessageIndex((known) => foldMessageIndex(known, next));
-    // The same report, kept in order — see `visibleMessages`. Storing the
+  //
+  // The index is folded from EVERY MEMBER, not from the rows: a
+  // Recent-opens click names one message, and a message that is the
+  // fourth reply in a collapsed conversation is still loaded and still
+  // openable. Folding only the representatives would make those clicks
+  // answer "not in the synced window" about mail that is right there.
+  const handleConversationsChange = useCallback((next: readonly Conversation[]) => {
+    setMessageIndex((known) => foldMessageIndex(known, allMessagesOf(next)));
+    // The same report, kept in order — see `conversations`. Storing the
     // array by reference means an unchanged list is a no-op update React
     // bails out of rather than a render.
-    setVisibleMessages(next);
+    setConversations(next);
   }, []);
 
   // One object for InboxList, rebuilt only when a selection actually
@@ -428,9 +445,44 @@ export default function App() {
   // about render count.
   const filter = useMemo(() => ({ folder, account }), [folder, account]);
 
+  /**
+   * THE ROWS — one message per drawn row, which is each conversation's
+   * newest.
+   *
+   * Everything that indexes by CURSOR POSITION reads this: `j`/`k`, the
+   * star, the reply trio, `Enter`/`o`, and the reader's neighbour
+   * prefetch. A cursor that walked every loaded message would spend
+   * thirty-nine presses of `j` inside a forty-message conversation that
+   * draws as one row.
+   */
+  const visibleMessages = useMemo(() => representativesOf(conversations), [conversations]);
+  /**
+   * EVERY LOADED MESSAGE, in list order — what the bulk selection is
+   * resolved and pruned against, because a move is one request per
+   * message however few rows they occupy.
+   */
+  const selectableMessages = useMemo(() => allMessagesOf(conversations), [conversations]);
+  /** From any loaded message's key to its whole conversation. Feeds
+   *  `expandConversation` below. */
+  const conversationMembers = useMemo(() => membersByMessageKey(conversations), [conversations]);
+
+  /**
+   * Every message the row for `message` stands for.
+   *
+   * Falls back to the message ITSELF for anything this list does not
+   * know — a thread row inside the reader, a Recent-opens click — which
+   * is the honest answer: a row that is not in the list stands for
+   * nothing but itself.
+   */
+  const expandConversation = useCallback(
+    (message: InboxMessage): readonly InboxMessage[] =>
+      conversationMembers.get(messageKey(message)) ?? [message],
+    [conversationMembers],
+  );
+
   /** The current list as `messageKey`s, in list order — the array the
    *  cursor indexes into and the one `reconcileSelection` compares
-   *  against. Memoised on `visibleMessages`, which InboxList replaces by
+   *  against. Memoised on `visibleMessages`, which is replaced by
    *  reference only when the list actually changed. */
   const visibleKeys = useMemo(() => visibleMessages.map(messageKey), [visibleMessages]);
 
@@ -926,8 +978,12 @@ export default function App() {
   const clearSingleUndo = useCallback(() => setPendingUndo(null), []);
 
   const bulk = useBulkSelection({
-    messages: visibleMessages,
+    // EVERY loaded message, not one per row — see the hook's own
+    // `messages` doc. The cursor row is the conversation's
+    // representative, and `expand` turns it back into the conversation.
+    messages: selectableMessages,
     cursorMessage: visibleMessages[cursor.index] ?? null,
+    expand: expandConversation,
     hideKeys,
     revealKeys,
     setSeen: applySeen,
@@ -954,13 +1010,38 @@ export default function App() {
         selection: bulk.selection,
       });
       if (targets.kind === 'none') return;
-      if (targets.kind === 'one') {
-        performMove(targets.message, destination);
+      if (targets.kind === 'selection') {
+        bulk.move(destination);
         return;
       }
-      bulk.move(destination);
+      /*
+       * A ROW STANDS FOR ITS WHOLE CONVERSATION; THE READER STANDS FOR
+       * ONE MESSAGE.
+       *
+       * In the list, `e` on a forty-message conversation has to archive
+       * forty — archiving only the row's own message would leave the row
+       * exactly where it was, one shorter, and read as a key that did
+       * nothing. Gmail archives the conversation for the same reason.
+       *
+       * In the READER it is the message that is on screen, and only it.
+       * This app's reader shows ONE message with the rest of the thread
+       * listed beside it (components/ThreadContext.tsx), so archiving
+       * thirty-nine messages the user is not reading would be an action
+       * about something other than what they are looking at. That is the
+       * same rule `moveTargetsFor` already applies to a selection behind
+       * an open reader, extended to the conversation behind it.
+       */
+      const group = selected === null ? expandConversation(targets.message) : [targets.message];
+      if (group.length > 1) {
+        // The batch path, not a loop of single moves: the bounded runner,
+        // the partial-failure accounting, the rollback and the one undo
+        // bar all already exist and all already apply.
+        bulk.moveMessages(group, destination);
+        return;
+      }
+      performMove(targets.message, destination);
     },
-    [selected, visibleMessages, cursor.index, performMove, bulk],
+    [selected, visibleMessages, cursor.index, performMove, bulk, expandConversation],
   );
 
   /** The reader's two buttons, bound to the message the reader is
@@ -974,13 +1055,25 @@ export default function App() {
     [selected, performMove],
   );
 
-  /** A list row's own hover controls, which name their message directly
-   *  rather than going through the cursor — a mouse user never moved it. */
+  /**
+   * A list row's own hover controls, which name their row directly rather
+   * than going through the cursor — a mouse user never moved it.
+   *
+   * Acts on the whole CONVERSATION, exactly as `e` does from the list and
+   * for the same reason: the button sits on a row that says "(40)", so
+   * moving one of the forty would be a control that contradicts its own
+   * label.
+   */
   const moveFromRow = useCallback(
     (message: InboxMessage, destination: MoveDestination) => {
+      const group = expandConversation(message);
+      if (group.length > 1) {
+        bulk.moveMessages(group, destination);
+        return;
+      }
       performMove(message, destination);
     },
-    [performMove],
+    [performMove, expandConversation, bulk],
   );
 
   /**
@@ -1457,7 +1550,7 @@ export default function App() {
                 <InboxList
                   filter={filter}
                   onAccountsChange={handleAccountsChange}
-                  onMessagesChange={handleMessagesChange}
+                  onConversationsChange={handleConversationsChange}
                   onOpenMessage={openMessage}
                   search={searchQuery}
                   onClearSearch={clearSearch}

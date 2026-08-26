@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SearchX } from 'lucide-react';
-import { ApiError, getInbox, getSearch } from '../api';
+import { ApiError, getConversationsPage } from '../api';
 import type { InboxCursor, InboxMessage, InboxPage } from '../api';
 import type { AccountSummary } from '../accountRoster';
 import { emptyStateFor, searchEmptyStateFor } from '../emptyState';
 import { FOLDER_ICONS } from '../folderIcons';
 import { headingFor } from '../inboxFilters';
 import type { FolderId, InboxFilter } from '../inboxFilters';
-import { canMoveFrom, visibleMessages } from '../mailboxActions';
+import { visibleMessages } from '../mailboxActions';
+import { canBulkSelect } from '../bulkActions';
 import type { MoveDestination } from '../mailboxActions';
 import { NOTHING_SELECTED } from '../bulkSelection';
 import { Alert, AlertDescription } from '../ui/Alert';
@@ -19,7 +20,18 @@ import { Settle, SettleGroup } from '../motion';
 import MessageRow from './MessageRow';
 import { messagePrefetcher } from '../messagePrefetch';
 import { targetFor } from '../messageLoader';
-import { groupByDay } from './inboxDates';
+import { groupByDayOf } from './inboxDates';
+import {
+  conversationCountAnnouncement,
+  conversationCountLabel,
+  conversationHasAttachment,
+  groupIntoConversations,
+  isConversationSelectable,
+  isConversationStarred,
+  isConversationUnread,
+  participantsLabel,
+} from '../conversations';
+import type { Conversation } from '../conversations';
 import { LIST_DIVIDERS, LIST_SURFACE } from './listSurface';
 import { isCurrentSelection, resolveLoadMorePage } from './inboxPaging';
 import { messageKey } from './messageBody';
@@ -86,15 +98,26 @@ export interface InboxListProps {
    *  Must be referentially stable (the caller wraps it in `useCallback`),
    *  because it is an effect dependency. */
   readonly onAccountsChange?: (accounts: readonly AccountSummary[]) => void;
-  /** Reports the currently loaded message rows up to App.tsx (task V3),
-   *  the SAME shape and SAME "current filter's pages" scope as
-   *  `onAccountsChange` above — App.tsx folds what it receives into
-   *  `messageIndex.ts`'s registry, which is what lets a Recent-opens
-   *  click (Ask 2) resolve a message this list loaded for an unrelated
-   *  reason, in an earlier folder, possibly after this component has
-   *  since unmounted. Optional and referentially-stable for the same
-   *  reason `onAccountsChange` is: it is an effect dependency. */
-  readonly onMessagesChange?: (messages: readonly InboxMessage[]) => void;
+  /**
+   * Reports the currently loaded CONVERSATIONS up to App.tsx — the SAME
+   * "current filter's pages" scope as `onAccountsChange` above.
+   *
+   * CONVERSATIONS RATHER THAN MESSAGES, and it is one report rather than
+   * two because App.tsx needs both halves and they must agree: the
+   * REPRESENTATIVES are the rows the keyboard cursor walks and the
+   * reader's neighbour prefetch reads, while EVERY MEMBER feeds the bulk
+   * selection (a move is one request per message) and
+   * `messageIndex.ts`'s registry — which is what lets a Recent-opens
+   * click resolve a message this list loaded for an unrelated reason, in
+   * an earlier folder, possibly after this component has since unmounted.
+   * Two props would be two things that can drift; one is a fact about the
+   * list from which both are derived (../conversations.ts's
+   * `representativesOf` / `allMessagesOf`).
+   *
+   * Optional and referentially-stable for the same reason
+   * `onAccountsChange` is: it is an effect dependency.
+   */
+  readonly onConversationsChange?: (conversations: readonly Conversation[]) => void;
   /** Opens one row in the reader. Required, not optional: as of Plan 6
    *  a row IS a control, and a list rendered with nowhere for it to go
    *  is exactly the defect that task exists to fix. Handed straight to
@@ -202,7 +225,7 @@ const NO_SEEN_OVERRIDES: ReadonlyMap<string, boolean> = new Map();
 export default function InboxList({
   filter,
   onAccountsChange,
-  onMessagesChange,
+  onConversationsChange,
   onOpenMessage,
   search,
   onClearSearch,
@@ -345,6 +368,25 @@ export default function InboxList({
     [messages, hiddenKeys],
   );
 
+  /**
+   * WHAT THE LIST DRAWS: one row per conversation.
+   *
+   * Derived from `visible`, i.e. AFTER the hidden-key filter, which is
+   * what makes archiving a conversation fall out for free — every member
+   * key is hidden together, so the whole conversation leaves the list;
+   * and if a batch only partly succeeded, the survivors come back as a
+   * smaller conversation with an honest count.
+   *
+   * The grouping itself is ../conversations.ts's and this component makes
+   * none of its decisions — client/CLAUDE.md's standing constraint is
+   * that no test here renders a component, so anything decided in this
+   * file is decided where no test can reach it.
+   */
+  const conversations = useMemo(() => groupIntoConversations(visible), [visible]);
+
+  // Still counted in MESSAGES, deliberately: the sidebar answers "how
+  // much of the loaded mail is yours", and collapsing rows does not
+  // change how much mail there is.
   const accounts = useMemo(() => summarizeAccounts(visible), [visible]);
 
   useEffect(() => {
@@ -352,8 +394,8 @@ export default function InboxList({
   }, [accounts, onAccountsChange]);
 
   useEffect(() => {
-    onMessagesChange?.(visible);
-  }, [visible, onMessagesChange]);
+    onConversationsChange?.(conversations);
+  }, [conversations, onConversationsChange]);
 
   const loadMore = useCallback(() => {
     if (isLoadingMore || cursor === null) return;
@@ -421,12 +463,13 @@ export default function InboxList({
    * roving tabindex is here to fix.
    */
   const tabStopKey = useMemo(() => {
-    const first = visible[0];
+    const first = conversations[0];
     if (first === undefined) return null;
-    const firstKey = messageKey(first);
-    if (selectedKey === null) return firstKey;
-    return visible.some((message) => messageKey(message) === selectedKey) ? selectedKey : firstKey;
-  }, [visible, selectedKey]);
+    if (selectedKey === null) return first.key;
+    return conversations.some((conversation) => conversation.key === selectedKey)
+      ? selectedKey
+      : first.key;
+  }, [conversations, selectedKey]);
 
   const retry = useCallback(() => setAttempt((previous) => previous + 1), []);
   // What the polite live region says. Derived, not stored: it has to
@@ -445,8 +488,12 @@ export default function InboxList({
       ? `Searching ${scopeLabel} for ${search}`
       : load.status === 'error'
         ? `Search failed for ${search}`
-        : `${visible.length}${cursor !== null ? '+' : ''} ${
-            visible.length === 1 ? 'result' : 'results'
+        // CONVERSATIONS, not messages: the number has to mean "rows you
+        // can point at", which is what the user is looking at and what
+        // `Load more` extends. Counting the loaded messages would report
+        // eighty-three for a page of fifty rows.
+        : `${conversations.length}${cursor !== null ? '+' : ''} ${
+            conversations.length === 1 ? 'result' : 'results'
           } for ${search} in ${scopeLabel}`;
 
   /**
@@ -555,7 +602,11 @@ export default function InboxList({
       );
     }
 
-    const groups = groupByDay(visible, now);
+    // A CONVERSATION's place on the timeline is its representative's
+    // date — the message the row shows and the one the row's own
+    // timestamp comes from. Any other choice would put a row under a day
+    // heading its visible time contradicts.
+    const groups = groupByDayOf(conversations, (conversation) => conversation.representative.date, now);
 
     return (
       /*
@@ -620,34 +671,58 @@ export default function InboxList({
             </h2>
             <Card className={LIST_SURFACE}>
               <ul className={LIST_DIVIDERS}>
-                {group.messages.map((message) => {
-                  const key = messageKey(message);
+                {group.items.map((conversation) => {
+                  const { key, representative, count } = conversation;
+                  /* EVERY ONE OF THESE READS THE WHOLE CONVERSATION, not
+                     just the row's own message, and each is the answer to
+                     a way a collapsed row can lie: unread hidden under a
+                     read newest message, a star or a paperclip that
+                     belongs to a reply further down, a tick that would
+                     arm an action over a member it cannot move.
+                     ../conversations.ts owns every one of these rules and
+                     tests/conversations.test.ts holds them. */
+                  const isSelectable = isConversationSelectable(conversation, canBulkSelect);
                   return (
                     <MessageRow
                       key={key}
-                      message={message}
+                      message={representative}
                       now={now}
                       onOpen={onOpenMessage}
                       onPrefetch={prefetchMessage}
                       onSelect={onSelectMessage}
                       isSelected={key === selectedKey}
-                      isStarred={resolveStar(message, starOverrides, key)}
-                      isUnread={resolveUnread(message, seenOverrides, key)}
+                      isStarred={isConversationStarred(conversation, (member) =>
+                        resolveStar(member, starOverrides, messageKey(member)),
+                      )}
+                      isUnread={isConversationUnread(conversation, (member) =>
+                        resolveUnread(member, seenOverrides, messageKey(member)),
+                      )}
+                      hasAttachment={conversationHasAttachment(conversation)}
+                      senderLabel={participantsLabel(conversation)}
+                      conversationCount={conversationCountLabel(count)}
+                      conversationAnnouncement={conversationCountAnnouncement(count)}
                       tabIndex={key === tabStopKey ? 0 : -1}
                       /* Ticking is offered exactly where MOVING is —
                          ../bulkActions.ts's `canBulkSelect` is
                          `canMoveFrom` — so a selection is never partly
-                         un-archivable. Per row, because Starred merges
-                         folders. */
-                      onToggleSelect={canMoveFrom(message.folder) ? onToggleSelect : undefined}
+                         un-archivable. Per CONVERSATION and by `every`,
+                         because Starred merges folders and one
+                         conversation there can hold an INBOX message and
+                         a Sent one. */
+                      onToggleSelect={isSelectable ? onToggleSelect : undefined}
+                      /* The whole conversation is ticked together
+                         (../bulkSelection.ts's `toggleGroupSelection`),
+                         so the representative's key answers for all of
+                         them. */
                       isBulkSelected={selectedKeys.has(key)}
                       isSelecting={selectedKeys.size > 0}
                       /* Absent outside the inbox rather than present and
                          refusing — see ../mailboxActions.ts's
-                         `canMoveFrom`, and note that the Starred folder
-                         is a flag query across every synced folder, so
-                         this is decided per ROW and not per view. */
-                      onMailboxMove={canMoveFrom(message.folder) ? onMailboxMove : undefined}
+                         `canMoveFrom`. Same `every` rule as the tick: a
+                         row's Archive moves the whole conversation, so it
+                         is offered only where the whole conversation can
+                         move. */
+                      onMailboxMove={isSelectable ? onMailboxMove : undefined}
                     />
                   );
                 })}
@@ -706,6 +781,11 @@ function fetchPage(
     readonly cursor?: InboxCursor | null;
   },
 ): Promise<InboxPage> {
-  if (search === '') return getInbox(request);
-  return getSearch({ ...request, q: search });
+  // ONE call for both, unlike the two this used to branch between.
+  // GET /api/conversations IS the grouped view of /api/inbox and of
+  // /api/search — `q` picks which, including /api/search's different
+  // folder default — so the branch that used to live here now lives on
+  // the server, in one place, where the two defaults can be imported from
+  // each other rather than restated.
+  return getConversationsPage({ ...request, q: search === '' ? undefined : search });
 }

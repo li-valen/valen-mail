@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { formatWhen, groupByDay } from '../src/components/InboxList';
+import { groupByDayOf } from '../src/components/inboxDates';
 import type { InboxMessage } from '../src/api';
 
 /**
@@ -215,5 +216,71 @@ describe('groupByDay — day-rule label format (Amendment 1)', () => {
   it('still labels the dateless trailing group "No date", unaffected by the relative-label change', () => {
     const out = groupByDay([buildMessage({ uid: '1', date: null })], NOW);
     expect(out[out.length - 1]?.day).toBe('No date');
+  });
+});
+
+/**
+ * `groupByDayOf` — the same day rules, over whatever the list is
+ * currently drawing.
+ *
+ * Plan 12 made the inbox a list of CONVERSATIONS rather than of messages,
+ * and a conversation's place on the timeline is its representative's date.
+ * `groupByDay` above is now this function with `message.date`, which is
+ * what keeps the two from drifting: everything asserted above is asserted
+ * about this code path too.
+ */
+describe('groupByDayOf', () => {
+  interface Row {
+    readonly id: string;
+    readonly when: string | null;
+  }
+  const whenOf = (row: Row) => row.when;
+
+  it('buckets by the caller’s own timestamp, newest day first', () => {
+    const groups = groupByDayOf(
+      [
+        { id: 'a', when: '2026-08-24T10:00:00Z' },
+        { id: 'b', when: '2026-08-23T22:00:00Z' },
+        { id: 'c', when: '2026-08-24T08:00:00Z' },
+      ] satisfies Row[],
+      whenOf,
+      NOW,
+    );
+    expect(groups.map((group) => group.day)).toEqual(['Today', 'Yesterday']);
+    expect(groups[0]?.items.map((row) => row.id)).toEqual(['a', 'c']);
+    expect(groups[1]?.items.map((row) => row.id)).toEqual(['b']);
+  });
+
+  it('keeps a dateless row visible in a trailing group rather than dropping it', () => {
+    // Dropping it would silently shrink the inbox — and a CONVERSATION
+    // that disappeared would take every one of its messages with it.
+    const groups = groupByDayOf(
+      [
+        { id: 'a', when: '2026-08-24T10:00:00Z' },
+        { id: 'b', when: null },
+      ] satisfies Row[],
+      whenOf,
+      NOW,
+    );
+    expect(groups[groups.length - 1]?.day).toBe('No date');
+    expect(groups[groups.length - 1]?.items.map((row) => row.id)).toEqual(['b']);
+  });
+
+  it('agrees with groupByDay on the same messages', () => {
+    const messages = [
+      buildMessage({ uid: '1', date: '2026-08-24T10:00:00Z' }),
+      buildMessage({ uid: '2', date: '2026-08-21T10:00:00Z' }),
+      buildMessage({ uid: '3', date: null }),
+    ];
+    const viaGeneric = groupByDayOf(messages, (message) => message.date, NOW);
+    const viaOriginal = groupByDay(messages, NOW);
+    expect(viaGeneric.map((group) => group.day)).toEqual(viaOriginal.map((group) => group.day));
+    expect(viaGeneric.map((group) => group.items)).toEqual(
+      viaOriginal.map((group) => group.messages),
+    );
+  });
+
+  it('is total on the empty list', () => {
+    expect(groupByDayOf([], whenOf, NOW)).toEqual([]);
   });
 });

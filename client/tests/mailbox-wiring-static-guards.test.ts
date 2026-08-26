@@ -193,8 +193,22 @@ describe('the removal is optimistic AND rolls back', () => {
 
   it('the keyboard cursor is driven by the FILTERED list', () => {
     // A row hidden from the list but still reachable with j/k is the same
-    // defect in a quieter costume.
-    expect(/onMessagesChange\?\.\(visible\)/.test(LIST)).toBe(true);
+    // defect in a quieter costume. The list reports CONVERSATIONS now, so
+    // this is two links: the conversations are grouped from `visible`
+    // (post-hidden-key), and it is those that are reported upward.
+    expect(/groupIntoConversations\(visible\)/.test(LIST)).toBe(true);
+    expect(/onConversationsChange\?\.\(conversations\)/.test(LIST)).toBe(true);
+  });
+
+  it('a conversation whose every member is hidden leaves the list with them', () => {
+    // Falls out of grouping AFTER the filter rather than before it — and
+    // if only some members moved, the survivors come back as a smaller
+    // conversation with an honest count. Grouping `messages` instead
+    // would keep an archived conversation on screen at full size.
+    expect(/const conversations = useMemo\(\(\) => groupIntoConversations\(visible\)/.test(LIST)).toBe(
+      true,
+    );
+    expect(/groupIntoConversations\(messages\)/.test(LIST)).toBe(false);
   });
 });
 
@@ -237,7 +251,34 @@ describe('undo is offered, and only when it is real', () => {
 
 describe('the actions are absent where they do not apply', () => {
   it('a row outside the inbox gets no controls', () => {
-    expect(/canMoveFrom\(message\.folder\) \? onMailboxMove : undefined/.test(LIST)).toBe(true);
+    // Decided per CONVERSATION and by `every` — a row's Archive moves all
+    // of what the row stands for, so it is offered only where all of it
+    // can move. `canBulkSelect` IS `canMoveFrom` (bulkActions.ts), so this
+    // is the same predicate one level up.
+    expect(/isConversationSelectable\(conversation, canBulkSelect\)/.test(LIST)).toBe(true);
+    expect(/onMailboxMove=\{isSelectable \? onMailboxMove : undefined\}/.test(LIST)).toBe(true);
+  });
+
+  it('a row’s Archive moves the WHOLE conversation, not just its newest message', () => {
+    // Archiving one of forty would leave the row exactly where it was,
+    // one shorter, over a badge that still claims a conversation — a
+    // control that contradicts its own label.
+    expect(
+      /const group = expandConversation\(message\);[\s\S]{0,200}bulk\.moveMessages\(group, destination\)/.test(
+        APP,
+      ),
+    ).toBe(true);
+  });
+
+  it('and so does `e` from the list — but NOT from the reader', () => {
+    // The reader shows ONE message with the thread listed beside it, so
+    // archiving thirty-nine messages the user is not reading would be an
+    // action about something other than what is on screen.
+    expect(
+      /const group = selected === null \? expandConversation\(targets\.message\) : \[targets\.message\]/.test(
+        APP,
+      ),
+    ).toBe(true);
   });
 
   it('the reader outside the inbox gets none either', () => {
@@ -248,6 +289,17 @@ describe('the actions are absent where they do not apply', () => {
     expect(/if \(!canMoveFrom\(target\.folder\)\) \{[\s\S]{0,120}unavailableHereFor\(destination\)/.test(APP)).toBe(
       true,
     );
+  });
+
+  it('the conversation-move guards are not vacuous', () => {
+    expect(
+      /const group = expandConversation\(message\);[\s\S]{0,200}bulk\.moveMessages\(group, destination\)/.test(
+        'const group = expandConversation(message); performMove(message, destination);',
+      ),
+    ).toBe(false);
+    expect(/isConversationSelectable\(conversation, canBulkSelect\)/.test(
+      'canMoveFrom(message.folder)',
+    )).toBe(false);
   });
 
   it('the absence guard is not vacuous', () => {

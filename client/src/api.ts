@@ -23,6 +23,8 @@
 import { buildInboxParams } from './inboxFilters';
 import type { FolderId } from './inboxFilters';
 import { buildSearchParams } from './searchQuery';
+import { buildConversationParams } from './conversationParams';
+import type { ConversationQuery } from './conversationParams';
 import type { MoveDestination, MoveResult, UndoTicket } from './mailboxActions';
 
 const REQUEST_INIT: RequestInit = { credentials: 'same-origin' };
@@ -301,6 +303,39 @@ export async function getSearch(
   const messages = isRecord(body) && Array.isArray(body.messages) ? body.messages : [];
   return {
     messages: keepValid(messages, isInboxMessage, 'search result(s)'),
+    nextCursor: isRecord(body) ? parseNextCursor(body.nextCursor) : null,
+  };
+}
+
+/**
+ * One page of CONVERSATIONS — the collapsed inbox and the collapsed
+ * search, both.
+ *
+ * Returns an `InboxPage`, because that is literally what the route
+ * answers: the same flat, newest-first `messages` array and the same
+ * keyset `nextCursor` as `getInbox`, validated by the same
+ * `isInboxMessage`. What differs is only what the server counted against
+ * `limit` — conversations rather than rows — and the guarantee that comes
+ * with it: every message of every conversation on the page is in
+ * `messages`, so nothing the client draws is a partial thread.
+ *
+ * `q` present makes it the grouped view of GET /api/search instead,
+ * including that route's different folder default — which is why
+ * ./conversationParams.ts always sends `folder` explicitly.
+ *
+ * Throws ApiError on any non-2xx, like every other function here. The
+ * inbox is the primary surface, so a failure here is the caller's to
+ * handle, not to hide behind a fallback.
+ */
+export async function getConversationsPage(
+  request: ConversationQuery,
+  fetchImpl: typeof fetch = fetch,
+): Promise<InboxPage> {
+  const query = buildConversationParams(request);
+  const body = await getJson(`/api/conversations?${query}`, fetchImpl);
+  const messages = isRecord(body) && Array.isArray(body.messages) ? body.messages : [];
+  return {
+    messages: keepValid(messages, isInboxMessage, 'conversation message(s)'),
     nextCursor: isRecord(body) ? parseNextCursor(body.nextCursor) : null,
   };
 }

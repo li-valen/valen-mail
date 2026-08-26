@@ -8,6 +8,7 @@ import keyboardHookSource from '../src/keyboard/useKeyboardShortcuts.ts?raw';
 import messageRowSource from '../src/components/MessageRow.tsx?raw';
 import runnerSource from '../src/bulkRunner.ts?raw';
 import selectionSource from '../src/bulkSelection.ts?raw';
+import conversationsSource from '../src/conversations.ts?raw';
 
 /**
  * The WIRING checks for bulk selection — the same `?raw`-import-and-regex
@@ -40,6 +41,7 @@ const KEYBOARD = stripComments(keyboardHookSource);
 const ROW = stripComments(messageRowSource);
 const RUNNER = stripComments(runnerSource);
 const SELECTION = stripComments(selectionSource);
+const CONVERSATIONS = stripComments(conversationsSource);
 
 describe('the rollback is applied UNCONDITIONALLY', () => {
   it('reveals the failed rows BEFORE the generation guard, not after it', () => {
@@ -248,8 +250,41 @@ describe('a row can be ticked, at both widths', () => {
 
   it('offers ticking exactly where moving is offered', () => {
     // A selection holding one row that cannot be archived would make the
-    // bar's Archive button partly inert.
-    expect(/canMoveFrom\(message\.folder\) \? onToggleSelect : undefined/.test(LIST)).toBe(true);
+    // bar's Archive button partly inert. Decided per CONVERSATION now,
+    // and by `every`: `canBulkSelect` IS `canMoveFrom`, so this is the
+    // same predicate asked of all of what the row stands for.
+    expect(/isConversationSelectable\(conversation, canBulkSelect\)/.test(LIST)).toBe(true);
+    expect(/onToggleSelect=\{isSelectable \? onToggleSelect : undefined\}/.test(LIST)).toBe(true);
+    expect(/return conversation\.messages\.every\(canSelectOne\);/.test(CONVERSATIONS)).toBe(true);
+  });
+
+  it('ticking a row ticks EVERY message the row stands for', () => {
+    // One row, N keys. Ticking only the representative would leave the
+    // bar counting one and an Archive taking one out of forty, over a row
+    // that says "(40)".
+    expect(/const group = expand\(message\);/.test(HOOK)).toBe(true);
+    expect(/toggleGroupSelection\(current, group\.map\(selectionKeyFor\)\)/.test(HOOK)).toBe(true);
+    expect(/expand: expandConversation/.test(APP)).toBe(true);
+  });
+
+  it('`x` reaches the whole conversation too, through the same toggle', () => {
+    expect(/toggleCursorRow = useCallback\(\(\) => \{[\s\S]{0,200}toggle\(cursorMessage\)/.test(HOOK)).toBe(
+      true,
+    );
+  });
+
+  it('select-all never produces a HALF-ticked conversation', () => {
+    expect(/selectAll\(selectableKeys\(messages, canBulkSelect, expand\)\)/.test(HOOK)).toBe(true);
+    expect(/messages\.filter\(canBulkSelect\)\.map\(selectionKeyFor\)/.test(HOOK)).toBe(false);
+  });
+
+  it('the bulk list is EVERY loaded message, not one per row', () => {
+    // A move is one request per message however few rows they occupy, so
+    // the selection, the prune and every batch resolve against the
+    // flattened list. Passing the representatives would make a batch act
+    // on one message per conversation.
+    expect(/messages: selectableMessages/.test(APP)).toBe(true);
+    expect(/allMessagesOf\(conversations\)/.test(APP)).toBe(true);
   });
 
   it('the sibling and gating guards are not vacuous', () => {
@@ -331,11 +366,28 @@ describe('the selection is keyed so two accounts cannot collide', () => {
 
   it('the list ticks rows by that same key', () => {
     expect(/isBulkSelected=\{selectedKeys\.has\(key\)\}/.test(LIST)).toBe(true);
-    expect(/const key = messageKey\(message\);/.test(LIST)).toBe(true);
+    // A conversation's key IS its representative's `messageKey`, so the
+    // row, the cursor, the hidden set and the selection all still speak
+    // one key shape — which is what lets App.tsx compare those sets
+    // directly.
+    expect(/key: messageKey\(representative\),/.test(CONVERSATIONS)).toBe(true);
+  });
+
+  it('and the CONVERSATION key carries the account, so two accounts cannot merge', () => {
+    // Gmail allocates X-GM-THRID per mailbox. Keyed on the thread alone,
+    // two unrelated conversations collapse into one row — and archiving
+    // it archives mail from an account the user was not looking at.
+    expect(
+      /return `\$\{message\.account_id\}\$\{KEY_SEPARATOR\}\$\{thread\}`;/.test(CONVERSATIONS),
+    ).toBe(true);
   });
 
   it('the key guard is not vacuous', () => {
     expect(/return messageKey\(message\);/.test('return message.uid;')).toBe(false);
+    expect(
+      /return `\$\{message\.account_id\}\$\{KEY_SEPARATOR\}\$\{thread\}`;/.test('return thread;'),
+    ).toBe(false);
+    expect(/const group = expand\(message\);/.test('const group = [message];')).toBe(false);
   });
 });
 

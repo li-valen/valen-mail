@@ -35,6 +35,14 @@ import { messageKey } from './components/messageBody';
  * per-mailbox uid ambiguity cannot arise within a batch. The Starred
  * view — the one list that merges folders — offers no bulk controls for
  * exactly this reason.
+ *
+ * **THE UNIT OF SELECTION IS THE ROW, AND A ROW IS NOW A CONVERSATION.**
+ * The keys stay per MESSAGE — they have to, because a move is one request
+ * per message and the hidden set is per message — but they are added and
+ * removed in whole groups (`toggleGroupSelection`, `selectableKeys`).
+ * Nothing here knows what a conversation is; the caller passes the
+ * members, ./conversations.ts decides what they are, and this module's
+ * only claim is that a group goes in and comes out together.
  */
 
 /**
@@ -75,8 +83,36 @@ export function isSelected(selected: ReadonlySet<string>, key: string): boolean 
  * whatever it was on the first render.
  */
 export function toggleSelection(selected: ReadonlySet<string>, key: string): ReadonlySet<string> {
+  return toggleGroupSelection(selected, [key]);
+}
+
+/**
+ * Tick or untick MANY keys as ONE decision — what a collapsed
+ * conversation's checkbox does.
+ *
+ * **ALL-OR-NOTHING, AND THE DIRECTION IS DECIDED ONCE FOR THE WHOLE
+ * GROUP.** Toggling each key independently would leave a conversation
+ * half-ticked whenever it was already partly selected, and a half-ticked
+ * conversation is a row whose box says one thing while an Archive would
+ * do another. So: fully selected -> drop all of them; anything else ->
+ * add all of them. That also makes the second press of `x` on the same
+ * row always the exact inverse of the first, which is the only behaviour
+ * a user can predict.
+ *
+ * An empty group returns the SAME set — a no-op update React bails out of
+ * rather than a render over a fifty-row list.
+ */
+export function toggleGroupSelection(
+  selected: ReadonlySet<string>,
+  keys: readonly string[],
+): ReadonlySet<string> {
+  if (keys.length === 0) return selected;
+  const isFullySelected = keys.every((key) => selected.has(key));
   const next = new Set(selected);
-  if (!next.delete(key)) next.add(key);
+  for (const key of keys) {
+    if (isFullySelected) next.delete(key);
+    else next.add(key);
+  }
   return next;
 }
 
@@ -157,6 +193,32 @@ export function pruneSelection(
   const kept = [...selected].filter((key) => live.has(key));
   if (kept.length === selected.size) return selected;
   return new Set(kept);
+}
+
+/**
+ * Which keys "select all" is allowed to tick — every message whose WHOLE
+ * conversation can be acted on.
+ *
+ * `groupOf(message).every(canSelect)`, not `canSelect(message)`, and the
+ * difference only shows in the one view that merges folders. In Starred a
+ * conversation can hold an INBOX message and a Sent one; ticking the
+ * INBOX half alone would put a partial conversation in the selection,
+ * whose row would then draw itself UNTICKED (the box asks whether the
+ * whole conversation is selected) while a batch archived half of it. The
+ * group is the unit of selection or it is not a unit at all.
+ *
+ * With the default `groupOf` — one message per group — this is exactly
+ * `messages.filter(canSelect).map(selectionKeyFor)`, i.e. the ungrouped
+ * behaviour, unchanged.
+ */
+export function selectableKeys(
+  messages: readonly InboxMessage[],
+  canSelect: (message: InboxMessage) => boolean,
+  groupOf: (message: InboxMessage) => readonly InboxMessage[] = (message) => [message],
+): readonly string[] {
+  return messages
+    .filter((message) => groupOf(message).every(canSelect))
+    .map(selectionKeyFor);
 }
 
 /**

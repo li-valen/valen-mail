@@ -127,30 +127,65 @@ function formatDayLabel(date: Date, now: Date): string {
  * from the original version.
  */
 export function groupByDay(messages: readonly InboxMessage[], now: Date): readonly DayGroup[] {
-  const buckets = new Map<string, { readonly date: Date; readonly messages: InboxMessage[] }>();
-  const dateless: InboxMessage[] = [];
+  return groupByDayOf(messages, (message) => message.date, now).map((group) => ({
+    day: group.day,
+    messages: group.items,
+  }));
+}
 
-  for (const message of messages) {
-    const date = parseDate(message.date);
+/** One day's worth of whatever the list is drawing — messages before Plan
+ *  12, conversations after it. */
+export interface DayGroupOf<T> {
+  readonly day: string;
+  readonly items: readonly T[];
+}
+
+/**
+ * `groupByDay`, over anything that can name its own timestamp.
+ *
+ * Generalised (Plan 12) because the inbox list now draws CONVERSATIONS
+ * rather than messages, and a conversation's place on the timeline is its
+ * representative's date. The alternative — day-grouping the
+ * representatives and then mapping each one back to its conversation —
+ * would put the same lookup at every call site and make the two
+ * groupings' orders a coincidence rather than a fact.
+ *
+ * Every rule this file already made is unchanged and is now made in ONE
+ * place: newest day first, a NULL or unparseable timestamp goes into a
+ * trailing group of its own rather than being dropped, `Today`/
+ * `Yesterday` resolve against the caller's `now`, and nothing is mutated.
+ * `groupByDay` is this function with `message.date`, so the message list
+ * and the conversation list cannot drift apart.
+ */
+export function groupByDayOf<T>(
+  items: readonly T[],
+  dateOf: (item: T) => string | null,
+  now: Date,
+): readonly DayGroupOf<T>[] {
+  const buckets = new Map<string, { readonly date: Date; readonly items: T[] }>();
+  const dateless: T[] = [];
+
+  for (const item of items) {
+    const date = parseDate(dateOf(item));
     if (!date) {
-      dateless.push(message);
+      dateless.push(item);
       continue;
     }
     const key = localDayKey(date);
     const existing = buckets.get(key);
     if (existing) {
-      existing.messages.push(message);
+      existing.items.push(item);
     } else {
-      buckets.set(key, { date, messages: [message] });
+      buckets.set(key, { date, items: [item] });
     }
   }
 
-  const dayGroups: DayGroup[] = [...buckets.values()]
+  const dayGroups: DayGroupOf<T>[] = [...buckets.values()]
     .sort((a, b) => b.date.getTime() - a.date.getTime())
-    .map((bucket) => ({ day: formatDayLabel(bucket.date, now), messages: bucket.messages }));
+    .map((bucket) => ({ day: formatDayLabel(bucket.date, now), items: bucket.items }));
 
   if (dateless.length === 0) return dayGroups;
-  return [...dayGroups, { day: NO_DATE_GROUP_LABEL, messages: dateless }];
+  return [...dayGroups, { day: NO_DATE_GROUP_LABEL, items: dateless }];
 }
 
 /**
