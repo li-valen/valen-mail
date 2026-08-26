@@ -489,12 +489,22 @@ export default function MessageRow({
           {/* Hidden — not removed — while the hover actions are showing,
               so the row's width never changes under the pointer and the
               actions need no backdrop of their own to stay legible.
-              `invisible` keeps the layout, which is the whole point. */}
+              `invisible` keeps the layout, which is the whole point.
+
+              **HOVER ONLY, NEVER `group-focus-within`.** This originally
+              also hid on focus-within, and live verification caught what
+              that costs: the hover actions are `tabIndex={-1}`, so
+              FOCUSING a row (every `j`/`k` move, and the focus restore on
+              Back from the reader) hid the badge and timestamp while
+              nothing appeared in their place — a row that silently lost
+              half its content whenever the keyboard touched it. Every
+              test in the suite passed through that. The two conditions
+              have to be the SAME condition, and hover is the one the
+              actions actually appear on. */}
           <span
             className={cn(
               'flex shrink-0 items-center gap-2',
-              onMailboxMove !== undefined &&
-                'group-hover:invisible group-focus-within:invisible',
+              onMailboxMove !== undefined && 'group-hover:invisible',
             )}
           >
             {message.has_attach && (

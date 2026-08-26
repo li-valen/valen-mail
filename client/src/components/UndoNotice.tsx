@@ -41,7 +41,12 @@ export default function UndoNotice({ undo, onUndo, onDismiss }: UndoNoticeProps)
   return (
     <Alert role="status" className="mb-6">
       <AlertDescription className="flex flex-wrap items-center gap-3">
-        <span className="min-w-[12rem] flex-1">{moveNoticeFor(undo.destination)}</span>
+        {/* `min-w-0`, NOT the `min-w-[12rem]` the other banners use.
+            Those carry a sentence and one button; this carries a
+            three-word receipt and TWO controls, and at 375px a 12rem
+            floor pushed "Dismiss" onto a line of its own. The text here
+            is never long enough to need a floor. */}
+        <span className="min-w-0 flex-1">{moveNoticeFor(undo.destination)}</span>
         {/* `outline`, not `ghost`: this is the one control on the banner
             the user is meant to find in a hurry, and a ghost button
             beside a "Dismiss" ghost button reads as two equal options

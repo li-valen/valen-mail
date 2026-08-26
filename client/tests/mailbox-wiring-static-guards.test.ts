@@ -100,6 +100,23 @@ describe('a list row can too, on desktop only', () => {
     expect(/aria-label=\{label\}/.test(ROW)).toBe(true);
   });
 
+  it('hides the badge and timestamp on HOVER ONLY, never on focus', () => {
+    // THE DEFECT LIVE VERIFICATION CAUGHT. The hover controls are
+    // `tabIndex={-1}`, so they never appear on focus — but the right-hand
+    // cluster used to HIDE on `group-focus-within`, which meant every
+    // `j`/`k` move and every Back-from-reader focus restore blanked the
+    // account badge and the timestamp with nothing in their place. The
+    // two conditions must be the same condition.
+    expect(/onMailboxMove !== undefined && 'group-hover:invisible'/.test(ROW)).toBe(true);
+    expect(ROW).not.toMatch(/group-focus-within:invisible/);
+  });
+
+  it('the focus-hiding guard is not vacuous', () => {
+    expect("'group-hover:invisible group-focus-within:invisible'").toMatch(
+      /group-focus-within:invisible/,
+    );
+  });
+
   it('the stopPropagation and label guards are not vacuous', () => {
     expect(/event\.stopPropagation\(\)/.test('onClick={() => onClick()}')).toBe(false);
     // The bug it catches: an icon button with no name at all, which a
