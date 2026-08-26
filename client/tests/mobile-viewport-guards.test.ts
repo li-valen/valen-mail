@@ -3,6 +3,7 @@ import stylesCss from '../src/styles.css?raw';
 import indexHtml from '../index.html?raw';
 import appShellSource from '../src/AppShell.tsx?raw';
 import loginSource from '../src/LoginView.tsx?raw';
+import messageViewSource from '../src/components/MessageView.tsx?raw';
 
 /**
  * THE THREE MOBILE DEFECTS THE INTERFACE AUDIT FOUND, guarded so they
@@ -28,6 +29,33 @@ import loginSource from '../src/LoginView.tsx?raw';
 function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 }
+
+describe('the reader\'s controls, under a thumb', () => {
+  const view = stripComments(messageViewSource);
+
+  it('sizes them for touch and gives the density back above lg:', () => {
+    // Measured at 393x852 before this: every control 32px tall, and the
+    // worst pair is Archive beside Trash — adjacent, alike, one of them
+    // destructive. 44px is where Apple's HIG and WCAG 2.5.5 both land.
+    expect(view).toMatch(/const TOUCH_HEIGHT = 'h-11 lg:h-8'/);
+  });
+
+  it('applies it to EVERY small control in the reader, not most of them', () => {
+    // A toolbar where one button is 32px and its neighbour is 44px is
+    // worse than one where they agree, so this counts rather than samples.
+    const small = view.match(/size="sm"/g) ?? [];
+    const sized = view.match(/size="sm" className=\{TOUCH_HEIGHT\}/g) ?? [];
+    expect(small.length).toBeGreaterThan(0);
+    expect(sized.length).toBe(small.length);
+  });
+
+  it('covers the one control that is not a Button either', () => {
+    // "Show original colours" is hand-rolled and measured 24px — the WCAG
+    // 2.5.8 floor exactly, and the smallest thing in the reader.
+    expect(view).toContain('min-h-11');
+    expect(view).toContain('lg:min-h-0');
+  });
+});
 
 describe('reaching Compose below lg:, where the sidebar is a closed drawer', () => {
   const shell = stripComments(appShellSource);
