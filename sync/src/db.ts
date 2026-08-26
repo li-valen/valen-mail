@@ -286,7 +286,7 @@ const MESSAGE_SELECT = `
  *
  * Must stay identical to messages_unified_keyset in schema.sql.
  */
-const INBOX_ORDER =
+export const INBOX_ORDER =
   `order by coalesce(m.date, '-infinity'::timestamptz) desc, m.account_id desc, m.uid desc`;
 
 interface InboxFilter {

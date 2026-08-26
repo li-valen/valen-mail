@@ -3,6 +3,7 @@ import type { OpenEvent } from '../api/opens';
 import { sendPush } from './send.ts';
 import type { PushPayload, SendImpl } from './send';
 import { isValidSubscription } from './vapid.ts';
+import { isOwnAddress } from '../addresses.ts';
 import type { PushSubscription, VapidConfig } from './vapid';
 
 /**
@@ -31,28 +32,6 @@ import type { PushSubscription, VapidConfig } from './vapid';
  */
 const INBOX_URL = '/';
 const OPENS_URL = '/?rail=opens';
-
-/**
- * Compares two email addresses as identities: case-insensitively, with
- * surrounding whitespace ignored. `recipientEmail` arrives from the
- * tracking service (a separate deployment, so external data), and a
- * configured address arrives from accounts.json — neither side is assumed
- * to already be normalised, even though `loadConfig`'s `parseAccount`
- * happens to trim its own.
- *
- * Deliberately NOT full RFC 5322 equivalence, and deliberately not
- * Gmail's dots-and-plus-tags folding: matching here means staying SILENT,
- * so a looser rule would swallow a genuine open by a stranger whose
- * address merely normalises onto one of ours.
- */
-function isSameAddress(a: string, b: string): boolean {
-  return a.trim().toLowerCase() === b.trim().toLowerCase();
-}
-
-/** True when `address` is one of the user's own configured accounts. */
-function isOwnAddress(address: string, ownAddresses: readonly string[]): boolean {
-  return ownAddresses.some((own) => isSameAddress(own, address));
-}
 
 /**
  * True only for a genuinely confirmed open BY SOMEONE ELSE.

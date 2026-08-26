@@ -7,6 +7,7 @@ import { fetchOpens } from './opens.ts';
 import { parseLimit } from './limits.ts';
 import { handleInbox } from './inbox.ts';
 import { handleSearch } from './search.ts';
+import { handleFollowup } from './followup.ts';
 import {
   buildClearedSessionCookie,
   buildSessionCookie,
@@ -564,6 +565,16 @@ export function createRouter(
 
     if (path === '/api/opens') {
       return handleOpens(url, trackingConfig, fetchImpl);
+    }
+
+    // Plan 10 — spec 7A's "Sent & Waiting" / "Opened, no reply". A third
+    // sibling of /api/inbox and /api/search: same auth gate, same cursor
+    // shape, same `account` filter. It is the only route that reads BOTH
+    // this service's Postgres and the tracking service in one request,
+    // which is why it takes `trackingConfig` and `fetchImpl` the way
+    // handleOpens above does. Everything it does lives in ./followup.ts.
+    if (path === '/api/followup') {
+      return handleFollowup(db, pool, accounts, trackingConfig, url, { fetchImpl });
     }
 
     if (path === '/api/push/key') {
