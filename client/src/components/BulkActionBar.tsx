@@ -87,7 +87,12 @@ export default function BulkActionBar({
       role="toolbar"
       aria-label={`Actions for ${countLabel}`}
       className={cn(
-        'sticky top-0 z-20 mb-4 flex items-center gap-1 rounded-lg px-2 py-2',
+        // `pl-4 pr-2`, not a symmetric `px-`: the leading padding is the
+        // desktop ROW's own `px-4`, so the select-all box lands on the
+        // exact pixel every row checkbox lands on (measured: 305px at
+        // 1280 wide, both). The trailing side is tighter because the last
+        // thing on it is a ghost button with its own padding.
+        'sticky top-0 z-20 mb-4 flex items-center gap-1 rounded-lg py-2 pl-4 pr-2',
         // Opaque in both themes: mail rows scroll underneath this.
         'border border-neutral-200 bg-white dark:border-border dark:bg-card',
         'shadow-sm',
@@ -100,7 +105,11 @@ export default function BulkActionBar({
         checked={isEverythingSelected}
         label={isEverythingSelected ? 'Deselect all messages' : 'Select all messages'}
         onToggle={isEverythingSelected ? onClear : onSelectAll}
-        className={cn(SELECT_BOX.always, 'ml-1 mr-2')}
+        // `mr-2` (8px) plus this row's own `gap-1` (4px) = the desktop
+        // row's `gap-3`, so the count sits on the same vertical line as
+        // every sender name beneath it. Measured, not derived: forgetting
+        // the flex gap is exactly how the two end up 4px apart.
+        className={cn(SELECT_BOX.always, 'mr-2')}
       />
 
       {/* THE LIVE COUNT, and it is `aria-live` because it changes without

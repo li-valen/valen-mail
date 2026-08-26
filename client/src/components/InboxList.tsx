@@ -600,15 +600,22 @@ export default function InboxList({
                 breakpoints — it used to sit at `px-1`, hanging twelve
                 pixels to the left of every sender name in the card below
                 it. One alignment line down the column. */}
-            {/* `lg:pl-12` = the desktop row's own `px-4` (16px) plus the
-                reserved 16px checkbox column plus its `gap-3` (12px), so
-                the day label still sits on the same vertical line as
-                every sender name beneath it. Below `lg:` there is no
-                checkbox column (the avatar is the target), so `px-3`
-                stands unchanged. Change one of these two and the other
-                has to move with it — tests/bulk-wiring-static-guards.ts
-                holds them together. */}
-            <h2 className="mb-2 px-3 text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-muted-foreground lg:pl-12 lg:pr-4">
+            {/* `lg:pl-11` = 44px = the desktop row's own `px-4` (16px)
+                plus the reserved 16px checkbox column plus its `gap-3`
+                (12px), which is where the sender name now starts. It used
+                to be `lg:px-4`, correct for a row with no checkbox
+                column; leaving it there would have hung the day label
+                28px to the left of every sender name — the exact
+                misalignment a187527 fixed, reintroduced by this task.
+                MEASURED IN THE BROWSER, not derived on paper: it
+                reproduces the same 1px relationship the old pairing had
+                (the `Card`'s own border sits between them). Below `lg:`
+                there is no checkbox column at all — the avatar is the
+                target — so `px-3` stands unchanged. Change either the
+                row's leading column or this and the other has to move
+                with it; tests/bulk-wiring-static-guards.test.ts holds the
+                two together. */}
+            <h2 className="mb-2 px-3 text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-muted-foreground lg:pl-11 lg:pr-4">
               {group.day}
             </h2>
             <Card className={LIST_SURFACE}>

@@ -152,21 +152,53 @@ export function useBulkSelection(options: BulkSelectionOptions): BulkSelection {
    */
   const generationRef = useRef(0);
   /**
-   * Aborted on unmount, and only on unmount.
+   * The controllers of every batch currently in flight, aborted on
+   * unmount and only on unmount.
    *
-   * ./bulkRunner.ts uses it as a GATE before each request rather than as
-   * a cancellation of one in flight, so this stops the queue issuing
-   * requests into a torn-down app without ever producing an `AbortError`
-   * that would be indistinguishable from a genuine failure. Navigation
+   * ./bulkRunner.ts uses a signal as a GATE before each request rather
+   * than as a cancellation of one already sent, so this stops the queue
+   * issuing requests into a torn-down app without ever producing an
+   * `AbortError` indistinguishable from a genuine failure. Navigation
    * deliberately does NOT abort: the user asked for forty messages to be
    * archived, and clicking another folder does not retract that.
+   *
+   * **ONE CONTROLLER PER BATCH, NEVER ONE PER HOOK — AND THAT IS A BUG
+   * FIX, NOT A STYLE CHOICE.** The first version of this held a single
+   * controller created lazily during render and aborted in this effect's
+   * cleanup. Under `<StrictMode>` (src/main.tsx) React mounts, unmounts
+   * and remounts every component on purpose, so that cleanup ran while
+   * the app was very much alive — permanently aborting the one controller
+   * every future batch would be gated on. Every bulk action then reported
+   * all forty rows as `skipped`, restored all forty, and told the user
+   * "None of the 40 messages could be archived", having sent no requests
+   * at all. The whole test suite passed; only driving the real app in a
+   * real browser showed it.
+   *
+   * A `Set` of per-batch controllers is immune by construction: the
+   * cleanup aborts whatever is in flight AT THAT MOMENT and empties the
+   * set, and every later batch makes its own fresh controller.
    */
-  const lifetimeRef = useRef<AbortController | null>(null);
-  if (lifetimeRef.current === null) lifetimeRef.current = new AbortController();
+  const controllersRef = useRef<Set<AbortController>>(new Set());
   useEffect(() => {
-    const controller = lifetimeRef.current;
-    return () => controller?.abort();
+    const live = controllersRef.current;
+    return () => {
+      for (const controller of live) controller.abort();
+      live.clear();
+    };
   }, []);
+
+  /** A controller for one batch, registered so unmount can reach it. */
+  function beginBatch(): AbortController {
+    const controller = new AbortController();
+    controllersRef.current.add(controller);
+    return controller;
+  }
+
+  /** …and unregistered when the batch settles, so a long session does not
+   *  accumulate one dead controller per action. */
+  function endBatch(controller: AbortController): void {
+    controllersRef.current.delete(controller);
+  }
 
   const keys = useMemo(() => messages.map(selectionKeyFor), [messages]);
 
@@ -250,9 +282,11 @@ export function useBulkSelection(options: BulkSelectionOptions): BulkSelection {
 
       generationRef.current += 1;
       const issuedAt = generationRef.current;
+      const controller = beginBatch();
 
-      void runBulkMove(targets, destination, { signal: lifetimeRef.current?.signal }).then(
+      void runBulkMove(targets, destination, { signal: controller.signal }).then(
         (outcome) => {
+          endBatch(controller);
           // UNCONDITIONAL. See the header: which rows are still in the
           // inbox is a fact about the mailbox, not about the screen.
           revealKeys(outcome.restoredKeys);
@@ -267,6 +301,7 @@ export function useBulkSelection(options: BulkSelectionOptions): BulkSelection {
           // is a per-item status. Reaching here means the batching itself
           // broke, which would leave every row hidden and no report to
           // put them back from, so the rows come back wholesale.
+          endBatch(controller);
           console.error('useBulkSelection: bulk move batch failed', error);
           revealKeys(batchKeys);
           if (issuedAt !== generationRef.current) return;
@@ -293,9 +328,11 @@ export function useBulkSelection(options: BulkSelectionOptions): BulkSelection {
     generationRef.current += 1;
     const issuedAt = generationRef.current;
     const destination = undo.outcome.destination;
+    const controller = beginBatch();
 
-    void runBulkUndo(entries, { signal: lifetimeRef.current?.signal }).then(
+    void runBulkUndo(entries, { signal: controller.signal }).then(
       (outcome) => {
+        endBatch(controller);
         // Unconditional again, and in the other direction: a row that
         // came back must appear, whatever else has happened since.
         revealKeys(outcome.restoredKeys);
@@ -303,6 +340,7 @@ export function useBulkSelection(options: BulkSelectionOptions): BulkSelection {
         setError(bulkUndoFailureFor(destination, outcome));
       },
       (error: unknown) => {
+        endBatch(controller);
         console.error('useBulkSelection: bulk undo batch failed', error);
         if (issuedAt !== generationRef.current) return;
         setError(
@@ -336,14 +374,17 @@ export function useBulkSelection(options: BulkSelectionOptions): BulkSelection {
 
       generationRef.current += 1;
       const issuedAt = generationRef.current;
+      const controller = beginBatch();
 
-      void runBulkFlag(targets, seen, { signal: lifetimeRef.current?.signal }).then(
+      void runBulkFlag(targets, seen, { signal: controller.signal }).then(
         (outcome) => {
+          endBatch(controller);
           revertSeen(outcome.revertedKeys);
           if (issuedAt !== generationRef.current) return;
           setError(bulkFlagFailureFor(outcome));
         },
         (error: unknown) => {
+          endBatch(controller);
           console.error('useBulkSelection: bulk flag batch failed', error);
           revertSeen(batchKeys);
           if (issuedAt !== generationRef.current) return;

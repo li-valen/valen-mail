@@ -88,6 +88,34 @@ describe('the rollback is applied UNCONDITIONALLY', () => {
   });
 });
 
+describe('the abort signal cannot outlive its own batch', () => {
+  it('makes a fresh controller per batch', () => {
+    expect(/function beginBatch\(\): AbortController \{[\s\S]{0,200}new AbortController\(\)/.test(HOOK)).toBe(
+      true,
+    );
+    expect((HOOK.match(/beginBatch\(\)/g) ?? []).length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('never holds ONE controller for the whole hook', () => {
+    // THE DEFECT LIVE VERIFICATION CAUGHT, and nothing in this suite
+    // could: a single controller created lazily in render and aborted in
+    // a mount effect's cleanup is permanently dead after `<StrictMode>`'s
+    // deliberate mount/unmount/remount. Every later batch then skipped
+    // all forty rows, restored all forty, and told the user "None of the
+    // 40 messages could be archived" having sent no requests at all.
+    expect(HOOK).not.toMatch(/\w+Ref\.current === null\) \w+Ref\.current = new AbortController\(\)/);
+  });
+
+  it('the StrictMode guard is not vacuous', () => {
+    const buggy = 'if (lifetimeRef.current === null) lifetimeRef.current = new AbortController();';
+    expect(buggy).toMatch(/\w+Ref\.current === null\) \w+Ref\.current = new AbortController\(\)/);
+  });
+
+  it('releases a controller once its batch settles', () => {
+    expect((HOOK.match(/endBatch\(controller\)/g) ?? []).length).toBeGreaterThanOrEqual(6);
+  });
+});
+
 describe('the partial failure reaches the screen', () => {
   it('the hook sets an error from the batch outcome', () => {
     expect(/setError\(bulkMoveFailureFor\(destination, outcome\)\)/.test(HOOK)).toBe(true);
@@ -211,9 +239,10 @@ describe('a row can be ticked, at both widths', () => {
   });
 
   it('keeps the day label on the sender line now that the column exists', () => {
-    // 16px row padding + 16px checkbox + 12px gap = 48px = pl-12. The two
-    // halves are only correct together.
-    expect(/lg:pl-12/.test(LIST)).toBe(true);
+    // 16px row padding + 16px checkbox + 12px gap = 44px = pl-11. The two
+    // halves are only correct together, and the number was measured in a
+    // real browser rather than derived — see InboxList's own comment.
+    expect(/lg:pl-11/.test(LIST)).toBe(true);
     expect(/hidden h-11 w-full items-center gap-3 px-4 lg:flex/.test(ROW)).toBe(true);
   });
 
