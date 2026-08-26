@@ -31,6 +31,8 @@ const DISPLAY_TO_EVENT_KEY: Readonly<Record<string, string>> = {
   a: 'a',
   f: 'f',
   s: 's',
+  e: 'e',
+  '#': '#',
   g: 'g',
   i: 'i',
   t: 't',
@@ -124,6 +126,11 @@ describe('the help table advertises every shortcut that exists', () => {
   const ALPHABET = [
     ...'abcdefghijklmnopqrstuvwxyz',
     '?',
+    // `#` is the one letter-less binding this app has (Gmail's own
+    // "move to Trash"), so the sweep would miss it without this entry —
+    // and a binding the sweep cannot see is a binding the table is not
+    // checked against.
+    '#',
     '/',
     'Enter',
     'Escape',
@@ -156,11 +163,13 @@ describe('the help table advertises every shortcut that exists', () => {
     expect(ALPHABET.filter((key) => isBound(key)).sort()).toEqual(
       [
         '?',
+        '#',
         'ArrowDown',
         'ArrowUp',
         'Enter',
         'Escape',
         'a',
+        'e',
         'f',
         'g',
         'i',

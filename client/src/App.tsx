@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import LoginView from './LoginView';
 import AppShell from './AppShell';
 import type { ViewId } from './AppShell';
@@ -7,11 +7,24 @@ import { foldAccountRoster } from './accountRoster';
 import { DEFAULT_FILTER } from './inboxFilters';
 import type { FolderId } from './inboxFilters';
 import type { InboxMessage, OpenEvent, ParsedMessage } from './api';
-import { setMessageFlag } from './api';
+import { moveMessage, setMessageFlag } from './api';
 import { foldMessageIndex } from './messageIndex';
 import { messageCache } from './messageCache';
 import { loadMessage, targetFor } from './messageLoader';
 import { messagePrefetcher } from './messagePrefetch';
+import {
+  canMoveFrom,
+  canUndo,
+  hideMessage,
+  moveFailureFor,
+  revealMessage,
+  undoFailureFor,
+  unavailableHereFor,
+  UNDO_WINDOW_MS,
+  type MoveDestination,
+  type PendingUndo,
+} from './mailboxActions';
+import UndoNotice from './components/UndoNotice';
 import { replyKey } from './replyDraft';
 import type { ReplyMode, ReplySource } from './replyDraft';
 import Compose, { DISCARD_DRAFT_PROMPT } from './components/Compose';
@@ -290,6 +303,33 @@ export default function App() {
    *  keystroke that appeared to work and did not is the worst outcome
    *  available for a write path. */
   const [starError, setStarError] = useState<string | null>(null);
+  /**
+   * Rows this session has archived, trashed or reported, keyed by
+   * `messageKey` and drawn over the list by filtering
+   * (components/InboxList.tsx's `visible`).
+   *
+   * OPTIMISTIC, AND ROLLED BACK ON FAILURE — the same contract
+   * `starOverrides` above carries, and here it matters more: a star that
+   * silently failed leaves a wrong icon, while an archive that silently
+   * failed leaves a message the user believes they have dealt with and
+   * which is still sitting in their inbox. The key is REMOVED (never
+   * inverted) when the move fails, so the row returns to exactly where it
+   * was in the list rather than to some reconstruction of it.
+   */
+  const [hiddenKeys, setHiddenKeys] = useState<ReadonlySet<string>>(() => new Set());
+  /**
+   * The move the user can still take back, or null.
+   *
+   * ONE AT A TIME, deliberately. Gmail's undo is a single bar and a
+   * single action; a queue of them would mean the user pressing "Undo"
+   * without knowing which of three archives it applies to. A second move
+   * replaces the first — whose effect stands, because the move already
+   * happened and only the AFFORDANCE expires.
+   */
+  const [pendingUndo, setPendingUndo] = useState<PendingUndo | null>(null);
+  /** A move (or an undo) the mailbox refused, held until dismissed. Same
+   *  in-place shape as `starError`, and never a toast. */
+  const [moveError, setMoveError] = useState<string | null>(null);
   /**
    * What the composer is replying TO, or null for a plain new message.
    *
@@ -680,6 +720,165 @@ export default function App() {
     );
   }, [selected, visibleMessages, cursor.index, starOverrides]);
 
+
+  /**
+   * `e`, `#`, the reader's two buttons and a row's hover controls: get
+   * ONE message out of the inbox.
+   *
+   * OPTIMISTIC, THEN HONEST — the same three beats `toggleStar` above
+   * uses, and the rollback is the load-bearing one. The row is hidden the
+   * instant the key is pressed, because an archive that waited for an
+   * IMAP round trip would feel broken next to a keystroke; and it comes
+   * BACK if the move fails, because a message that stays gone in the UI
+   * while it is still in the inbox is a lie the user cannot detect. See
+   * mailboxActions.ts.
+   *
+   * THE READER CLOSES on success and only on success. Archiving what you
+   * are reading and being left staring at it is the interaction Gmail
+   * gets right by returning you to the list; being thrown back to the
+   * list for a move that then FAILED would be worse than not moving at
+   * all, so the close waits for the answer.
+   *
+   * NOTHING HERE IS BULK. One call, one message — the same sentence
+   * sync/src/api/move.ts and src/api.ts both make, for the same reason.
+   */
+  const performMove = useCallback(
+    (target: InboxMessage, destination: MoveDestination) => {
+      setMoveError(null);
+      // Only the keyboard can reach this: the reader's buttons and a
+      // row's hover controls are ABSENT outside the inbox rather than
+      // present and inert. Said out loud rather than silently ignored,
+      // because a bare key that appears to do nothing is the failure this
+      // codebase refuses everywhere else. See mailboxActions.ts's
+      // `canMoveFrom` for why Sent in particular must not be archivable.
+      if (!canMoveFrom(target.folder)) {
+        setMoveError(unavailableHereFor(destination));
+        return;
+      }
+
+      const key = messageKey(target);
+      // A second move supersedes the first undo offer rather than queuing
+      // behind it — see `pendingUndo`.
+      setPendingUndo(null);
+      setHiddenKeys((hidden) => hideMessage(hidden, key));
+
+      moveMessage(target.account_id, target.folder, target.uid, { to: destination }).then(
+        (result) => {
+          // The reader is closed HERE rather than beside the optimistic
+          // hide, so a refused move leaves the user exactly where they
+          // were, reading the message that did not go anywhere.
+          setSelected((current) => (current !== null && messageKey(current) === key ? null : current));
+          if (!canUndo(result)) return;
+          setPendingUndo({
+            key,
+            accountId: target.account_id,
+            destination,
+            // Non-null by `canUndo`, which is the ONLY thing that decides
+            // whether an undo may be offered at all.
+            ticket: result.undo!,
+          });
+        },
+        (error: unknown) => {
+          console.error('App: mailbox move failed', error);
+          setHiddenKeys((hidden) => revealMessage(hidden, key));
+          setMoveError(moveFailureFor(destination));
+        },
+      );
+    },
+    [],
+  );
+
+  /**
+   * Puts the message back where it came from.
+   *
+   * The SAME primitive in the other direction: the server issued the
+   * ticket (which folder the message is in now, its new uid there, and
+   * the logical kind it came from), and this replays it verbatim. Nothing
+   * here constructs a destination — see src/api.ts's `moveMessage`.
+   *
+   * **THE ROW THAT COMES BACK CARRIES A STALE UID, AND THAT IS
+   * DELIBERATE.** A MOVE renumbers the message, so the row this reveals
+   * addresses a uid that no longer exists in INBOX; the correct row
+   * arrives from the server on the next sync cycle (the restored message
+   * lands at the top of INBOX's uid range, well inside the window
+   * sync/src/imap/fetch.ts reads). Revealing the stale row is still the
+   * right trade: the user sees their message come back in the same frame
+   * they pressed Undo, and the only exposure is opening THAT row inside
+   * the sync window, which lands on the reader's existing
+   * could-not-be-loaded state with a retry. The alternative — leaving the
+   * row hidden and telling the user it worked — is the dead interaction
+   * this codebase refuses everywhere else.
+   */
+  const undoMove = useCallback((undo: PendingUndo) => {
+    setPendingUndo(null);
+    setMoveError(null);
+    moveMessage(undo.accountId, undo.ticket.folder, String(undo.ticket.uid), {
+      to: 'undo',
+      origin: undo.ticket.origin,
+    }).then(
+      () => {
+        setHiddenKeys((hidden) => revealMessage(hidden, undo.key));
+      },
+      (error: unknown) => {
+        console.error('App: undo of a mailbox move failed', error);
+        // The row stays hidden, because the message really is still in
+        // the folder it was moved to. Saying so is the whole point: the
+        // failure copy for this is a DIFFERENT sentence from a failed
+        // move, since the message is not where a failed move would have
+        // left it.
+        setMoveError(undoFailureFor(undo.destination));
+      },
+    );
+  }, []);
+
+  /**
+   * The undo offer expires; the MOVE does not.
+   *
+   * A cosmetic timer, exactly like the chord hint's in
+   * keyboard/useKeyboardShortcuts.ts: if it never fired (a backgrounded
+   * tab throttling timeouts, which browsers do aggressively) the bar
+   * would simply stay on screen and still work. Keyed on the pending
+   * undo's identity so a second move restarts the window rather than
+   * inheriting the remainder of the first.
+   */
+  useEffect(() => {
+    if (pendingUndo === null) return;
+    const timer = setTimeout(() => setPendingUndo(null), UNDO_WINDOW_MS);
+    return () => clearTimeout(timer);
+  }, [pendingUndo]);
+
+  /** `e`/`#`: the same "which message is in hand" rule `s` and the reply
+   *  trio use, and the same belt-and-braces early return —
+   *  keyboard/shortcuts.ts has already guaranteed one exists. */
+  const moveMessageInHand = useCallback(
+    (destination: MoveDestination) => {
+      const target = selected ?? visibleMessages[cursor.index];
+      if (target === undefined) return;
+      performMove(target, destination);
+    },
+    [selected, visibleMessages, cursor.index, performMove],
+  );
+
+  /** The reader's two buttons, bound to the message the reader is
+   *  showing. Same function the keyboard reaches, so the two cannot
+   *  diverge. */
+  const moveSelected = useCallback(
+    (destination: MoveDestination) => {
+      if (selected === null) return;
+      performMove(selected, destination);
+    },
+    [selected, performMove],
+  );
+
+  /** A list row's own hover controls, which name their message directly
+   *  rather than going through the cursor — a mouse user never moved it. */
+  const moveFromRow = useCallback(
+    (message: InboxMessage, destination: MoveDestination) => {
+      performMove(message, destination);
+    },
+    [performMove],
+  );
+
   /**
    * `r`, `a`, `f` and the reader's three buttons: open the composer on a
    * message.
@@ -805,6 +1004,7 @@ export default function App() {
       onCloseReader: closeMessage,
       onToggleStar: toggleStar,
       onReply: replyToMessageInHand,
+      onMailboxMove: moveMessageInHand,
       onGoFolder: changeFolder,
       onOpenHelp: () => setIsHelpOpen(true),
       onCloseHelp: () => setIsHelpOpen(false),
@@ -962,6 +1162,47 @@ export default function App() {
         </Settle>
       )}
 
+      {/* "Archived. — Undo."
+
+          THE WHOLE REASON THE ACTION IS SAFE TO USE. An archive you
+          cannot take back is frightening enough that people stop using it
+          and let the inbox grow again, which is precisely the problem
+          this task exists to solve.
+
+          Above the two failure banners and below the send confirmation,
+          because it is the most recent thing the user did. Keyed on the
+          hidden row so a SECOND archive re-plays the entrance rather than
+          silently swapping the text under an animation that already ran —
+          same reasoning, same shape, as `sentNotice` above. */}
+      {isAuthorized && pendingUndo !== null && (
+        <Settle key={`undo-${pendingUndo.key}`}>
+          <UndoNotice
+            undo={pendingUndo}
+            onUndo={undoMove}
+            onDismiss={() => setPendingUndo(null)}
+          />
+        </Settle>
+      )}
+
+      {/* A move the mailbox refused, or an undo that could not put the
+          message back, or a key pressed where the action is not offered.
+          Same dismissible in-place shape as the star failure above — and
+          for a FAILED move the optimistic removal has ALREADY been rolled
+          back by the time this renders, so the row is back in the list
+          beneath it while this explains why. */}
+      {isAuthorized && moveError !== null && (
+        <Settle>
+          <Alert variant="destructive" className="mb-6">
+            <AlertDescription className="flex flex-wrap items-center gap-3">
+              <span className="flex-1 min-w-[12rem]">{moveError}</span>
+              <Button variant="ghost" size="sm" onClick={() => setMoveError(null)}>
+                Dismiss
+              </Button>
+            </AlertDescription>
+          </Alert>
+        </Settle>
+      )}
+
       {/* A reply whose message could not be fetched, so the composer never
           opened. Dismissible and in place, exactly like the star failure
           above: a keystroke that appeared to do nothing is the failure
@@ -1057,6 +1298,8 @@ export default function App() {
                   selectedKey={cursor.key}
                   onSelectMessage={selectMessage}
                   starOverrides={starOverrides}
+                  hiddenKeys={hiddenKeys}
+                  onMailboxMove={moveFromRow}
                 />
               </div>
               <OpensRail feed={feed} onOpenEvent={handleOpenEvent} />
@@ -1083,6 +1326,11 @@ export default function App() {
                 isStarred={resolveStar(selected, starOverrides, messageKey(selected))}
                 onToggleStar={toggleStar}
                 onReply={replyToSelected}
+                /* ABSENT, not disabled, for a message the actions do not
+                   apply to — a Starred row that lives in Sent or Spam.
+                   A control that is visible and refuses is a worse answer
+                   than one that was never offered. */
+                onMailboxMove={canMoveFrom(selected.folder) ? moveSelected : undefined}
               />
             )}
           </>
@@ -1114,6 +1362,11 @@ export default function App() {
                 isStarred={resolveStar(selected, starOverrides, messageKey(selected))}
                 onToggleStar={toggleStar}
                 onReply={replyToSelected}
+                /* NEVER here. The follow-up queue is built out of SENT
+                   mail, and on Gmail archiving a sent message removes the
+                   Sent label — it would delete a row out of the very
+                   feature the user is looking at. mailboxActions.ts's
+                   `canMoveFrom` carries the full case. */
               />
             )}
           </>

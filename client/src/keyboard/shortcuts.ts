@@ -1,4 +1,5 @@
 import type { FolderId } from '../inboxFilters';
+import type { MoveDestination } from '../mailboxActions';
 import type { ReplyMode } from '../replyDraft';
 
 /**
@@ -140,6 +141,16 @@ export type ShortcutAction =
    * one function either way. ../replyDraft.ts owns what each mode means.
    */
   | { readonly kind: 'reply'; readonly mode: ReplyMode }
+  /**
+   * Get whichever message is in hand OUT of the inbox — the same
+   * "something to act on" guarantee `toggle-star` and `reply` carry.
+   *
+   * The DESTINATION is carried rather than two separate action kinds, for
+   * the same reason `reply` carries its mode: the keys differ in exactly
+   * one value and App.tsx's handler is one function either way.
+   * ../mailboxActions.ts owns what each destination means.
+   */
+  | { readonly kind: 'mailbox-move'; readonly destination: MoveDestination }
   | { readonly kind: 'go-folder'; readonly folder: FolderId }
   | { readonly kind: 'open-help' }
   | { readonly kind: 'close-help' };
@@ -156,6 +167,20 @@ export interface ShortcutResolution {
    *  every shortcut it has not heard of. */
   readonly preventDefault: boolean;
 }
+
+/**
+ * `#` — Gmail's own binding for "move to Trash", and the one letter-less
+ * shortcut in this app.
+ *
+ * IT IS MATCHED ON THE PRODUCED CHARACTER, NOT ON "3 WITH SHIFT". On a US
+ * layout `#` is Shift-3; on a UK layout Shift-3 is `£` and `#` is
+ * somewhere else entirely; on a German layout it needs no modifier at
+ * all. `event.key` already accounts for every one of those, which is the
+ * same reason `?` is matched this way — see `resolveBareKey`, where both
+ * are deliberately resolved BEFORE the Shift guard that would otherwise
+ * throw them away.
+ */
+const TRASH_KEY = '#';
 
 /** Keydowns for the modifier keys THEMSELVES. Pressing Shift halfway
  *  through `g` then `i` must not cancel the chord — on a layout where the
@@ -242,14 +267,15 @@ function moveFrom(state: ShortcutState, delta: number): ShortcutAction {
 }
 
 /**
- * True when there is a message for `s`, `r`, `a` or `f` to act on.
+ * True when there is a message for `s`, `r`, `a`, `f`, `e` or `#` to act
+ * on.
  *
  * The reader always has one. The list needs a cursor, and a session that
  * has not pressed `j` yet has none — `-1` is a real state (see `moveTo`),
  * not an impossible one.
  *
- * ONE PREDICATE FOR ALL FOUR KEYS, deliberately. They ask the same
- * question, and four copies of it is how one of them eventually answers
+ * ONE PREDICATE FOR ALL SIX KEYS, deliberately. They ask the same
+ * question, and six copies of it is how one of them eventually answers
  * differently and fires on an empty list.
  */
 function hasMessageInHand(state: ShortcutState): boolean {
@@ -269,6 +295,16 @@ function resolveBareKey(event: ShortcutEvent, state: ShortcutState): ShortcutRes
   // makes it work on layouts where `?` is somewhere else entirely.
   if (key === '?') {
     return act(state.isHelpOpen ? { kind: 'close-help' } : { kind: 'open-help' });
+  }
+
+  // The second key that legitimately arrives with Shift held on the most
+  // common layouts, and therefore the second one resolved before the
+  // Shift guard below. Gated on the help overlay explicitly, because
+  // that guard is also below: trashing a message from behind an overlay
+  // that covers the list is worse than invisible.
+  if (key === TRASH_KEY) {
+    if (state.isHelpOpen) return IGNORED;
+    return hasMessageInHand(state) ? act({ kind: 'mailbox-move', destination: 'trash' }) : IGNORED;
   }
 
   // Escape is handled even while the help overlay is open — it is the
@@ -345,6 +381,17 @@ function resolveBareKey(event: ShortcutEvent, state: ShortcutState): ShortcutRes
 
     case 'f':
       return hasMessageInHand(state) ? act({ kind: 'reply', mode: 'forward' }) : IGNORED;
+
+    // Gmail's archive, and the reason this task exists: until it worked
+    // the inbox only ever grew. `e` and `#` are Gmail's own bindings —
+    // inventing better mnemonics would mean the user's fingers are wrong
+    // on day one, which is the opposite of the goal (see this file's
+    // header). Live from the list as well as from the reader, same as
+    // `s` and the reply trio.
+    case 'e':
+      return hasMessageInHand(state)
+        ? act({ kind: 'mailbox-move', destination: 'archive' })
+        : IGNORED;
 
     // Opens a chord. The ONE resolution in this file that pairs a `none`
     // action with `preventDefault: true`, and the pairing is deliberate:

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { FolderId } from '../inboxFilters';
+import type { MoveDestination } from '../mailboxActions';
 import type { ReplyMode } from '../replyDraft';
 import { CHORD_TIMEOUT_MS, resolveShortcut } from './shortcuts';
 import type { ChordKey, PendingChord, ShortcutState } from './shortcuts';
@@ -44,6 +45,10 @@ export interface ShortcutHandlers {
    *  App side (the parsed body has to be resolved before a quote can be
    *  built), which is why nothing here awaits it. */
   readonly onReply: (mode: ReplyMode) => void;
+  /** Gets whichever message is in hand out of the inbox. Async on the App
+   *  side (an IMAP round trip), which is why nothing here awaits it — the
+   *  row is removed optimistically and put back if the move fails. */
+  readonly onMailboxMove: (destination: MoveDestination) => void;
   readonly onGoFolder: (folder: FolderId) => void;
   readonly onOpenHelp: () => void;
   readonly onCloseHelp: () => void;
@@ -155,6 +160,9 @@ export function useKeyboardShortcuts(
           return;
         case 'reply':
           current.onReply(action.mode);
+          return;
+        case 'mailbox-move':
+          current.onMailboxMove(action.destination);
           return;
         case 'go-folder':
           current.onGoFolder(action.folder);

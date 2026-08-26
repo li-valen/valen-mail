@@ -563,3 +563,112 @@ describe('preventDefault tracks whether the app acted', () => {
     }
   });
 });
+
+/**
+ * `e` and `#` — Gmail's own archive and trash, and the reason this task
+ * exists: until they worked the inbox only ever grew.
+ *
+ * `#` gets more coverage than any other single key here because it is
+ * the ONE binding in this app that is not a bare letter, and every
+ * assumption that holds for a letter has to be re-checked for it: it
+ * arrives with Shift held on the most common layouts, and the resolver
+ * refuses Shift for everything else.
+ */
+describe('getting mail out of the inbox', () => {
+  it('archives on `e` from the list', () => {
+    const result = resolveShortcut(press('e'), state({ isReaderOpen: false, selectedIndex: 2 }));
+    expect(result.action).toEqual({ kind: 'mailbox-move', destination: 'archive' });
+    expect(result.preventDefault).toBe(true);
+  });
+
+  it('archives on `e` from the reader', () => {
+    const result = resolveShortcut(press('e'), state({ isReaderOpen: true, selectedIndex: -1 }));
+    expect(result.action).toEqual({ kind: 'mailbox-move', destination: 'archive' });
+  });
+
+  it('trashes on `#`', () => {
+    const result = resolveShortcut(press('#'), state({ isReaderOpen: false, selectedIndex: 2 }));
+    expect(result.action).toEqual({ kind: 'mailbox-move', destination: 'trash' });
+    expect(result.preventDefault).toBe(true);
+  });
+
+  it('trashes on `#` even though Shift is held — it is Shift-3 on a US layout', () => {
+    // THE CASE THAT MAKES THIS BINDING DIFFERENT. The resolver refuses
+    // every other key when Shift is down, so `#` has to be matched on the
+    // produced CHARACTER before that guard. Without this it is dead on
+    // every US, UK and Irish keyboard.
+    const result = resolveShortcut(
+      { ...press('#'), shiftKey: true },
+      state({ isReaderOpen: false, selectedIndex: 2 }),
+    );
+    expect(result.action).toEqual({ kind: 'mailbox-move', destination: 'trash' });
+  });
+
+  it('does nothing on an empty list — a key that visibly does nothing is worse than none', () => {
+    for (const key of ['e', '#']) {
+      const result = resolveShortcut(
+        press(key),
+        state({ isReaderOpen: false, listLength: 0, selectedIndex: -1 }),
+      );
+      expect(result.action).toEqual({ kind: 'none' });
+      expect(result.preventDefault).toBe(false);
+    }
+  });
+
+  it('does nothing before the cursor exists', () => {
+    for (const key of ['e', '#']) {
+      const result = resolveShortcut(
+        press(key),
+        state({ isReaderOpen: false, listLength: 10, selectedIndex: -1 }),
+      );
+      expect(result.action).toEqual({ kind: 'none' });
+    }
+  });
+
+  it('never fires from behind the help overlay', () => {
+    // The overlay covers the list, so archiving from behind it is worse
+    // than invisible: the row the user cannot see is the one that goes.
+    for (const key of ['e', '#']) {
+      const result = resolveShortcut(press(key), state({ isHelpOpen: true }));
+      expect(result.action.kind).not.toBe('mailbox-move');
+    }
+  });
+
+  it('never fires while the composer is open', () => {
+    for (const key of ['e', '#']) {
+      const result = resolveShortcut(press(key), state({ isComposerOpen: true }));
+      expect(result.action).toEqual({ kind: 'none' });
+    }
+  });
+
+  it('never fires while the user is typing — `e` is a letter in every draft', () => {
+    for (const key of ['e', '#']) {
+      const result = resolveShortcut({ ...press(key), isTyping: true }, state({}));
+      expect(result.action).toEqual({ kind: 'none' });
+    }
+  });
+
+  it('leaves the modified forms to the platform', () => {
+    // ⌘E and ⌃E belong to the browser and to readline; answering to them
+    // would break shortcuts this app never knew about.
+    for (const modifier of ['metaKey', 'ctrlKey', 'altKey'] as const) {
+      for (const key of ['e', '#']) {
+        const result = resolveShortcut({ ...press(key), [modifier]: true }, state({}));
+        expect(result.action).toEqual({ kind: 'none' });
+        expect(result.preventDefault).toBe(false);
+      }
+    }
+  });
+
+  it('cancels a pending `g` rather than being swallowed by it', () => {
+    // `g` then `e` is not a chord this app has. The prefix is dropped and
+    // the key resolves as though pressed on its own, which is the rule
+    // every other unrecognised continuation already follows.
+    const result = resolveShortcut(
+      press('e'),
+      state({ isReaderOpen: false, selectedIndex: 2, chord: { key: 'g', startedAtMs: 1_000 } }),
+    );
+    expect(result.action).toEqual({ kind: 'mailbox-move', destination: 'archive' });
+    expect(result.chord).toBeNull();
+  });
+});

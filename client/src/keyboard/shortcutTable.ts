@@ -49,6 +49,12 @@ export const SHORTCUT_HELP: readonly ShortcutHelpGroup[] = [
       { keys: ['a'], description: 'Reply to everyone' },
       { keys: ['f'], description: 'Forward' },
       { keys: ['s'], description: 'Star or unstar' },
+      // Gmail's own two, and the pair that finally lets the inbox
+      // shrink. "Archive" rather than "Remove from Inbox" because that
+      // is the word the user already knows — and it is accurate: the
+      // message stays in All Mail, it is not deleted.
+      { keys: ['e'], description: 'Archive' },
+      { keys: ['#'], description: 'Move to Trash' },
     ],
   },
   {

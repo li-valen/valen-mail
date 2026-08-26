@@ -23,6 +23,7 @@
 import { buildInboxParams } from './inboxFilters';
 import type { FolderId } from './inboxFilters';
 import { buildSearchParams } from './searchQuery';
+import type { MoveDestination, MoveResult, UndoTicket } from './mailboxActions';
 
 const REQUEST_INIT: RequestInit = { credentials: 'same-origin' };
 
@@ -748,6 +749,81 @@ export async function setMessageFlag(
   if (!response.ok) {
     throw new ApiError(response.status, `${path} returned ${response.status}`);
   }
+}
+
+/**
+ * POST /api/message/{accountId}/{folder}/{uid}/move — how mail leaves the
+ * inbox, and the SECOND call in this client that changes the user's real
+ * Gmail.
+ *
+ * Path shape mirrors `setMessageFlag` above exactly (three
+ * percent-encoded segments, because a Gmail folder name can contain a
+ * literal `/`), plus a `/move` suffix.
+ *
+ * **THE DESTINATION IS A LITERAL, NEVER A FOLDER NAME.** The signature is
+ * shaped so a caller CANNOT assemble a body naming a mailbox: `to` is one
+ * of three strings, and undo replays a ticket the SERVER issued rather
+ * than anything constructed here. sync/src/api/move.ts refuses anything
+ * else with a 400 that reaches no IMAP call — a route that took a path
+ * would be an arbitrary-folder-move primitive against a live mailbox.
+ *
+ * NOTHING HERE IS BULK, and nothing here should become bulk — the same
+ * sentence, for the same reason, as `setMessageFlag`: one request moves
+ * one message, which bounds the damage a bug on either side can do.
+ *
+ * Throws ApiError on any non-2xx, exactly like the calls above, so a
+ * caller can tell a 401 (session gone) from a 502 (IMAP unreachable) and
+ * roll its optimistic removal back either way.
+ */
+export type MoveRequest =
+  | { readonly to: MoveDestination }
+  | { readonly to: 'undo'; readonly origin: string };
+
+export async function moveMessage(
+  accountId: string,
+  folder: string,
+  uid: string,
+  request: MoveRequest,
+  fetchImpl: typeof fetch = fetch,
+): Promise<MoveResult> {
+  const segments = [accountId, folder, uid].map(encodeURIComponent);
+  const path = `/api/message/${segments.join('/')}/move`;
+  const response = await fetchImpl(path, {
+    ...REQUEST_INIT,
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, `${path} returned ${response.status}`);
+  }
+  const body: unknown = await response.json();
+  // Narrowed rather than trusted, like every other boundary in this file.
+  // `moved` defaulting to TRUE on a malformed body is deliberate and is
+  // the safe direction: the call returned 2xx, so the move happened, and
+  // reporting otherwise would roll a row back into a list it has left.
+  // `undo` defaulting to null is the safe direction for the same reason
+  // inverted — an unrecognised ticket must never be replayed.
+  return {
+    moved: !isRecord(body) || body.moved !== false,
+    undo: isRecord(body) && isUndoTicket(body.undo) ? body.undo : null,
+  };
+}
+
+/** Every field an undo replays has to be present and the right shape. A
+ *  partial ticket is refused outright rather than patched with defaults:
+ *  a guessed uid would move an unrelated message into the inbox. */
+function isUndoTicket(value: unknown): value is UndoTicket {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.folder === 'string' &&
+    value.folder.length > 0 &&
+    typeof value.uid === 'number' &&
+    Number.isSafeInteger(value.uid) &&
+    value.uid > 0 &&
+    typeof value.origin === 'string' &&
+    value.origin.length > 0
+  );
 }
 
 /**

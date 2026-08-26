@@ -7,6 +7,8 @@ import { emptyStateFor, searchEmptyStateFor } from '../emptyState';
 import { FOLDER_ICONS } from '../folderIcons';
 import { headingFor } from '../inboxFilters';
 import type { FolderId, InboxFilter } from '../inboxFilters';
+import { canMoveFrom, visibleMessages } from '../mailboxActions';
+import type { MoveDestination } from '../mailboxActions';
 import { Alert, AlertDescription } from '../ui/Alert';
 import { Button } from '../ui/Button';
 import { Card } from '../ui/Card';
@@ -130,6 +132,21 @@ export interface InboxListProps {
    *  ./messageFlags.ts's `resolveStar`. Empty by default so a caller that
    *  does not star anything needs no map. */
   readonly starOverrides?: ReadonlyMap<string, boolean>;
+  /**
+   * Rows this session has archived, trashed or reported and that the
+   * server has not yet been asked about (or has been, and agreed).
+   *
+   * FILTERED AT RENDER, never deleted from `messages`. Removing the row
+   * from the list state would make rollback a reconstruction — the row
+   * would lose its place in the day grouping and under the keyboard
+   * cursor — and rollback is not optional here: a message that stays gone
+   * in the UI while it is still in the inbox is a lie the user cannot
+   * detect. See ../mailboxActions.ts.
+   */
+  readonly hiddenKeys?: ReadonlySet<string>;
+  /** Archive / Move to Trash from a row's own hover controls, `lg:` and
+   *  above only — see MessageRow's `onMailboxMove`. */
+  readonly onMailboxMove?: (message: InboxMessage, destination: MoveDestination) => void;
 }
 
 /**
@@ -158,6 +175,11 @@ export interface InboxListProps {
  * `apps/web/src/pages/contacts/index.tsx`, wrapped in the `Card` atom.
  */
 const NO_STAR_OVERRIDES: ReadonlyMap<string, boolean> = new Map();
+/** Module-level so the default prop is a STABLE identity across renders —
+ *  a fresh `new Set()` per render would change `visible`'s memo key every
+ *  time and re-run the filter over fifty rows for nothing. Same reason
+ *  NO_STAR_OVERRIDES above is hoisted. */
+const NO_HIDDEN_KEYS: ReadonlySet<string> = new Set();
 
 export default function InboxList({
   filter,
@@ -169,6 +191,8 @@ export default function InboxList({
   selectedKey = null,
   onSelectMessage,
   starOverrides = NO_STAR_OVERRIDES,
+  hiddenKeys = NO_HIDDEN_KEYS,
+  onMailboxMove,
 }: InboxListProps) {
   const { folder, account } = filter;
   const isSearching = search !== '';
@@ -281,15 +305,34 @@ export default function InboxList({
     // the machinery that already existed rather than by a second one.
   }, [folder, account, search, attempt]);
 
-  const accounts = useMemo(() => summarizeAccounts(messages), [messages]);
+  /**
+   * What the list actually DRAWS: everything loaded, minus whatever this
+   * session has archived, trashed or reported.
+   *
+   * Every consumer below reads this rather than `messages` — the day
+   * groups, the empty state, the roving tab stop, the result count, the
+   * account counts, and the report App.tsx drives its keyboard cursor
+   * from. A row that is hidden from the list but still reachable with
+   * `j`/`k` (or still counted in the sidebar) would be the same defect in
+   * a quieter costume.
+   *
+   * `messages` itself is untouched, which is what makes the rollback in
+   * ../mailboxActions.ts a set deletion rather than a refetch.
+   */
+  const visible = useMemo(
+    () => visibleMessages(messages, hiddenKeys, messageKey),
+    [messages, hiddenKeys],
+  );
+
+  const accounts = useMemo(() => summarizeAccounts(visible), [visible]);
 
   useEffect(() => {
     onAccountsChange?.(accounts);
   }, [accounts, onAccountsChange]);
 
   useEffect(() => {
-    onMessagesChange?.(messages);
-  }, [messages, onMessagesChange]);
+    onMessagesChange?.(visible);
+  }, [visible, onMessagesChange]);
 
   const loadMore = useCallback(() => {
     if (isLoadingMore || cursor === null) return;
@@ -357,12 +400,12 @@ export default function InboxList({
    * roving tabindex is here to fix.
    */
   const tabStopKey = useMemo(() => {
-    const first = messages[0];
+    const first = visible[0];
     if (first === undefined) return null;
     const firstKey = messageKey(first);
     if (selectedKey === null) return firstKey;
-    return messages.some((message) => messageKey(message) === selectedKey) ? selectedKey : firstKey;
-  }, [messages, selectedKey]);
+    return visible.some((message) => messageKey(message) === selectedKey) ? selectedKey : firstKey;
+  }, [visible, selectedKey]);
 
   const retry = useCallback(() => setAttempt((previous) => previous + 1), []);
   // What the polite live region says. Derived, not stored: it has to
@@ -381,8 +424,8 @@ export default function InboxList({
       ? `Searching ${scopeLabel} for ${search}`
       : load.status === 'error'
         ? `Search failed for ${search}`
-        : `${messages.length}${cursor !== null ? '+' : ''} ${
-            messages.length === 1 ? 'result' : 'results'
+        : `${visible.length}${cursor !== null ? '+' : ''} ${
+            visible.length === 1 ? 'result' : 'results'
           } for ${search} in ${scopeLabel}`;
 
   /**
@@ -466,7 +509,7 @@ export default function InboxList({
       );
     }
 
-    if (messages.length === 0) {
+    if (visible.length === 0) {
       // Copy per folder AND per account, and honest in both directions —
       // never "Trash is empty" for a Trash that has never synced, never a
       // permanent "still syncing…" for one that has. While a search is
@@ -491,7 +534,7 @@ export default function InboxList({
       );
     }
 
-    const groups = groupByDay(messages, now);
+    const groups = groupByDay(visible, now);
 
     return (
       /*
@@ -554,6 +597,12 @@ export default function InboxList({
                       isSelected={key === selectedKey}
                       isStarred={resolveStar(message, starOverrides, key)}
                       tabIndex={key === tabStopKey ? 0 : -1}
+                      /* Absent outside the inbox rather than present and
+                         refusing — see ../mailboxActions.ts's
+                         `canMoveFrom`, and note that the Starred folder
+                         is a flag query across every synced folder, so
+                         this is decided per ROW and not per view. */
+                      onMailboxMove={canMoveFrom(message.folder) ? onMailboxMove : undefined}
                     />
                   );
                 })}

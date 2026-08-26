@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Ref, RefObject } from 'react';
-import { ArrowLeft, FileText, Forward, Reply, ReplyAll, Star } from 'lucide-react';
+import { Archive, ArrowLeft, FileText, Forward, Reply, ReplyAll, Star, Trash2 } from 'lucide-react';
 import { ApiError } from '../api';
 import type { InboxMessage, ParsedMessage } from '../api';
 import { messageCache } from '../messageCache';
+import type { MoveDestination } from '../mailboxActions';
 import type { ReplyMode } from '../replyDraft';
 import { loadMessage, readCachedMessage, refetchMessage, targetFor } from '../messageLoader';
 import { messagePrefetcher } from '../messagePrefetch';
@@ -499,6 +500,17 @@ export interface MessageViewProps {
    * message.
    */
   readonly onReply?: (mode: ReplyMode) => void;
+  /**
+   * Archive / Move to Trash, shared with the list rows and the keyboard
+   * for the same reason `onToggleStar` is: one behaviour with three ways
+   * in, rather than three implementations that agree today.
+   *
+   * Omitted where the action makes no sense for the surface — nothing
+   * passes it today from a list the message did not come from — in which
+   * case the two controls are simply absent rather than present and
+   * inert.
+   */
+  readonly onMailboxMove?: (destination: MoveDestination) => void;
 }
 
 export default function MessageView({
@@ -511,6 +523,7 @@ export default function MessageView({
   isStarred = false,
   onToggleStar,
   onReply,
+  onMailboxMove,
 }: MessageViewProps) {
   const accountId = message.account_id;
   const folder = message.folder;
@@ -639,15 +652,50 @@ export default function MessageView({
     // underneath a stationary frame. There is no matching exit: see
     // src/motion/Panel.tsx for why Back is deliberately instant.
     <Panel className="space-y-4">
-      {/* The reader's one chrome row: leave, and star. Both are the same
-          controls the keyboard drives (`u`/Esc and `s`), wired to the
-          same handlers, so there is one behaviour with two ways in rather
-          than two implementations that agree today. */}
-      <div className="flex items-center justify-between gap-3">
+      {/* The reader's one chrome row: leave, get it out of the inbox, and
+          star. Every control here is the same one the keyboard drives
+          (`u`/Esc, `e`, `#`, `s`), wired to the same handlers, so there
+          is one behaviour with two ways in rather than two
+          implementations that agree today.
+
+          `flex-wrap` because five controls plus a "Back to follow-up"
+          label do not fit a 375px viewport on one line, and a toolbar
+          that overflows off the right edge takes Trash with it. */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <Button variant="ghost" size="sm" onClick={onBack}>
           <ArrowLeft aria-hidden="true" />
           {backLabel}
         </Button>
+
+        <span className="flex items-center gap-1">
+        {onMailboxMove !== undefined && (
+          <>
+            {/* ARCHIVE FIRST, and Trash after it, in that order on
+                purpose: archive is the safe, common, reversible one and
+                trash is the one nobody wants to hit by accident. Putting
+                the destructive-looking control under the thumb that was
+                aiming for the safe one is how a list of actions becomes a
+                hazard. */}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onMailboxMove('archive')}
+              aria-keyshortcuts="e"
+            >
+              <Archive aria-hidden="true" />
+              Archive
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onMailboxMove('trash')}
+              aria-keyshortcuts="#"
+            >
+              <Trash2 aria-hidden="true" />
+              Trash
+            </Button>
+          </>
+        )}
 
         {onToggleStar !== undefined && (
           <Button
@@ -668,6 +716,7 @@ export default function MessageView({
             {isStarred ? 'Starred' : 'Star'}
           </Button>
         )}
+        </span>
       </div>
 
       {/* NO CARD AROUND THE HEADER AND BODY any more. They were one

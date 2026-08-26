@@ -1,5 +1,7 @@
-import { Paperclip, Star } from 'lucide-react';
+import type { ReactNode } from 'react';
+import { Archive, Paperclip, Star, Trash2 } from 'lucide-react';
 import type { InboxMessage } from '../api';
+import type { MoveDestination } from '../mailboxActions';
 import { Badge } from '../ui/Badge';
 import { cn } from '../ui/cn';
 import { formatWhen } from './inboxDates';
@@ -53,6 +55,23 @@ export interface MessageRowProps {
    *  screen reader moving through the list) brings the cursor with them
    *  rather than leaving it behind on a row they are no longer on. */
   readonly onSelect?: (message: InboxMessage) => void;
+  /**
+   * Archive / Move to Trash for this row, revealed on hover at `lg:` and
+   * ABOVE ONLY.
+   *
+   * **`lg:` only, and it is the user's split rather than a size
+   * threshold** — the same reasoning as the two anatomies above and as
+   * the selection ring. Below `lg:` the row IS the tap target: a pair of
+   * 32px controls sitting on top of it would put a destructive action a
+   * thumb-width from "open this message", and there is no hover on a
+   * phone to keep them out of the way in the meantime. Gmail's own mobile
+   * app uses a swipe for this, which is a gesture system this app does
+   * not have and is not the subject of this task.
+   *
+   * Omitted (no controls at all) rather than present-and-inert when the
+   * surface does not support the action.
+   */
+  readonly onMailboxMove?: (message: InboxMessage, destination: MoveDestination) => void;
 }
 
 /**
@@ -214,6 +233,58 @@ const AVATAR_TONES: readonly string[] = [
   'bg-teal-100 text-teal-900 dark:bg-teal-950 dark:text-teal-200',
 ];
 
+interface RowActionProps {
+  /** The ACCESSIBLE NAME, and it names the message as well as the verb.
+   *  A list of fifty rows produces fifty "Archive" buttons; a screen
+   *  reader user tabbing through them needs to know which row they are
+   *  on, and the row's own text is not read as part of a nested control's
+   *  name. */
+  readonly label: string;
+  readonly onClick: () => void;
+  readonly children: ReactNode;
+}
+
+/**
+ * One hover action on a list row.
+ *
+ * Not `ui/Button.tsx`: that component's `motion-safe:active:scale-[0.97]`
+ * is right for a button-shaped button and wrong for a 28px icon sitting
+ * inside a 44px row, where a 3% scale reads as a wobble. Same focus ring,
+ * same hover tint, same transition duration — everything a Button gives
+ * that this needs, without the press scale.
+ */
+function RowAction({ label, onClick, children }: RowActionProps) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      /* The row underneath is itself a button whose click opens the
+         message. Without this, archiving a row would open it in the same
+         gesture — the click bubbles to the row's own handler. */
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
+      /* Roving tabindex on the ROWS is what keyboard/selection.ts drives;
+         these are not part of that sequence and must not become fifty
+         extra tab stops in a fifty-row list. They stay reachable — Tab
+         from the row lands on them — because -1 only removes them from
+         the SEQUENTIAL order, not from focus. The keyboard's real path to
+         this behaviour is `e` and `#`. */
+      tabIndex={-1}
+      className={cn(
+        'inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-md',
+        'text-neutral-500 transition-colors duration-150 dark:text-muted-foreground',
+        'hover:bg-neutral-200 hover:text-neutral-900 dark:hover:bg-secondary dark:hover:text-foreground',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
 export default function MessageRow({
   message,
   now,
@@ -223,13 +294,18 @@ export default function MessageRow({
   isStarred = false,
   tabIndex,
   onSelect,
+  onMailboxMove,
 }: MessageRowProps) {
   const { sender, subject, preview, initial, tone } = rowLayoutFor(message);
   const unread = isUnread(message);
   const when = formatWhen(message.date, now);
 
   return (
-    <li>
+    // `group` and `relative` exist ONLY for the hover actions below: the
+    // row button cannot contain them (a <button> inside a <button> is
+    // invalid and browsers un-nest it), so they are a SIBLING positioned
+    // over the row's right end.
+    <li className="group relative">
       <button
         type="button"
         onClick={() => onOpen(message)}
@@ -410,7 +486,17 @@ export default function MessageRow({
             )}
           </span>
 
-          <span className="flex shrink-0 items-center gap-2">
+          {/* Hidden — not removed — while the hover actions are showing,
+              so the row's width never changes under the pointer and the
+              actions need no backdrop of their own to stay legible.
+              `invisible` keeps the layout, which is the whole point. */}
+          <span
+            className={cn(
+              'flex shrink-0 items-center gap-2',
+              onMailboxMove !== undefined &&
+                'group-hover:invisible group-focus-within:invisible',
+            )}
+          >
             {message.has_attach && (
               <>
                 <Paperclip
@@ -435,6 +521,42 @@ export default function MessageRow({
           </span>
         </span>
       </button>
+
+      {onMailboxMove !== undefined && (
+        /* THE HOVER ACTIONS. They REPLACE the right-hand cluster rather
+           than sitting on top of it — see the `group-hover:invisible`
+           above — which is what Gmail does and what removes the need for
+           an opaque backdrop that would have to track the row's hover,
+           selected and active tints to stay legible.
+
+           `focus-within:` as well as `group-hover:`, so the controls are
+           reachable by Tab and are VISIBLE once focused rather than being
+           a transparent thing the focus ring is drawn around.
+           `pointer-events-none` while hidden so they can never swallow a
+           click meant for the row underneath. */
+        <span
+          className={cn(
+            'pointer-events-none absolute inset-y-0 right-0 hidden items-center gap-0.5 pr-3 opacity-0',
+            'transition-opacity duration-150',
+            'group-hover:pointer-events-auto group-hover:opacity-100',
+            'focus-within:pointer-events-auto focus-within:opacity-100',
+            'lg:flex',
+          )}
+        >
+          <RowAction
+            label={`Archive: ${subject}`}
+            onClick={() => onMailboxMove(message, 'archive')}
+          >
+            <Archive className="h-4 w-4" aria-hidden="true" />
+          </RowAction>
+          <RowAction
+            label={`Move to Trash: ${subject}`}
+            onClick={() => onMailboxMove(message, 'trash')}
+          >
+            <Trash2 className="h-4 w-4" aria-hidden="true" />
+          </RowAction>
+        </span>
+      )}
     </li>
   );
 }
