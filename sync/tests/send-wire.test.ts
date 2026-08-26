@@ -119,6 +119,91 @@ function unfoldQuotedPrintable(text: string): string {
   return text.replace(/=\r\n/g, '');
 }
 
+// A reply, sent through the same real path, to prove the threading headers
+// survive to the socket. The user asked for this in so many words — "Reply
+// feature should be sent in the same email chain" — and a reply that lands
+// as a new thread in the recipient's client looks completely normal from
+// our side, which is exactly why it needs a wire assertion rather than a
+// unit test on the options object.
+const ROOT_ID = '<root-abc@example.com>';
+const PARENT_ID = '<parent-def@example.com>';
+
+const replySink = await startSink();
+afterAll(() => { replySink.server.close(); });
+
+const replyTransport = nodemailer.createTransport({
+  host: '127.0.0.1', port: replySink.port, secure: false, ignoreTLS: true,
+});
+
+const replyResults = await sendTracked({ transport: replyTransport as never }, {
+  accountId: 'primary',
+  fromName: 'Valen',
+  fromEmail: 'valen@example.com',
+  to: ['recipient@example.com'],
+  cc: [],
+  subject: 'Re: the original',
+  textBody: 'Replying.',
+  messageId: '<reply-1@example.com>',
+  inReplyTo: PARENT_ID,
+  references: [ROOT_ID, PARENT_ID],
+  pixelBase: 'https://track.example',
+  recipients: [{ recipientEmail: 'recipient@example.com', token: 'tok-reply' }],
+});
+
+const replyWire = replySink.received().toString('latin1');
+
+describe('a reply, so it lands in the chain it answers', () => {
+  it('sends at all', () => {
+    expect(replyResults).toEqual([{ recipientEmail: 'recipient@example.com', ok: true }]);
+    expect(replySink.received().length).toBeGreaterThan(0);
+  });
+
+  it('emits In-Reply-To pointing at the parent', () => {
+    expect(replyWire).toMatch(/^In-Reply-To: <parent-def@example\.com>$/m);
+  });
+
+  /**
+   * WHAT THIS FILE DOES **NOT** GUARD, established by mutation rather than
+   * by reading the code, and recorded because the codebase says otherwise.
+   *
+   * client/src/api.ts warns that the angle brackets are load-bearing and
+   * that trimming them yields "a reply that sends, looks perfectly normal,
+   * and lands as a brand-new thread". On THIS path that is not what
+   * happens: nodemailer normalises the value. Stripping the brackets in
+   * `sendTracked` and re-running the send put
+   * `In-Reply-To: <parent-def@example.com>` on the wire anyway, brackets
+   * restored, and every assertion above stayed green.
+   *
+   * So a bracket-stripping bug between the composer and the socket is
+   * survivable, and no test here can fail on it — which is worth knowing
+   * before someone adds one believing it does. Where the warning may still
+   * bite is Postbox's OWN threading: `message_id` is stored and matched
+   * with its brackets, so a value trimmed before it reaches the database
+   * would fail to match its parent in the conversation view. That is a
+   * different module and a different test's job.
+   */
+  it('threads on identity, which is the part that can actually break', () => {
+    // The mutations that DO turn this file red: In-Reply-To dropped,
+    // References truncated to the parent, References reversed.
+    expect(replyWire).toContain(PARENT_ID);
+    expect(replyWire).toContain(ROOT_ID);
+  });
+
+  it('emits the whole References chain, oldest first, space-joined', () => {
+    // Gmail threads on References, not on subject. Dropping the root and
+    // keeping only the parent still threads in some clients and not others,
+    // so the ORDER and the completeness are both asserted.
+    const line = /^References:[\s\S]*?(?=\r\n[A-Za-z-]+:)/m.exec(replyWire)?.[0] ?? '';
+    const unfolded = line.replace(/\r\n\s+/g, ' ');
+    expect(unfolded).toBe(`References: ${ROOT_ID} ${PARENT_ID}`);
+  });
+
+  it('still carries its own Message-ID, distinct from the ones it references', () => {
+    // A reply that reuses the parent's id collapses the two into one node.
+    expect(replyWire).toMatch(/^Message-ID: <reply-1@example\.com>$/m);
+  });
+});
+
 describe('what sendTracked actually puts on the wire, with an attachment', () => {
   it('completes the SMTP transaction rather than reporting a send nobody received', () => {
     expect(results).toEqual([{ recipientEmail: 'recipient@example.com', ok: true }]);
