@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { Archive, Check, Paperclip, Star, Trash2 } from 'lucide-react';
 import type { InboxMessage } from '../api';
 import type { MoveDestination } from '../mailboxActions';
+import { shouldDrawCursorBand } from '../keyboard/cursorBand';
 import { ClosingRow } from '../motion';
 import { Badge } from '../ui/Badge';
 import { cn } from '../ui/cn';
@@ -42,6 +43,11 @@ export interface MessageRowProps {
    * row, all of which must leave the cursor where it was.
    */
   readonly isSelected?: boolean;
+  /** Whether the keyboard cursor's band is currently PAINTED — i.e.
+   *  whether the list is being driven from a keyboard right now. The
+   *  cursor's POSITION is `isSelected` and is unaffected; this only
+   *  decides whether it is drawn. See ../keyboard/cursorBand.ts. */
+  readonly isCursorBandVisible?: boolean;
   /** Whether to draw the star. Resolved by the caller through
    *  ./messageFlags.ts's `resolveStar`, so an optimistic toggle that has
    *  not yet been confirmed by the server draws the same as a real one. */
@@ -368,6 +374,7 @@ export default function MessageRow({
   onOpen,
   onPrefetch,
   isSelected = false,
+  isCursorBandVisible = false,
   isStarred = false,
   tabIndex,
   onSelect,
@@ -469,7 +476,7 @@ export default function MessageRow({
           'rounded-xl hover:bg-neutral-50 active:bg-neutral-100 dark:hover:bg-accent dark:active:bg-accent',
           'lg:rounded-none',
           ROW_FOCUS,
-          isSelected && ROW_SELECTED,
+          shouldDrawCursorBand(isSelected, isCursorBandVisible) && ROW_SELECTED,
         )}
       >
         {unread && <span className="sr-only">Unread. </span>}

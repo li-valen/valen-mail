@@ -10,6 +10,33 @@ import { headingFor } from '../inboxFilters';
 import type { FolderId, InboxFilter } from '../inboxFilters';
 import { visibleMessages } from '../mailboxActions';
 import { canBulkSelect } from '../bulkActions';
+import type { FocusEvent as ReactFocusEvent } from 'react';
+import { nextCursorBandVisibility } from '../keyboard/cursorBand';
+import { ROW_KEY_ATTRIBUTE } from '../keyboard/revealRow';
+
+/**
+ * Did this focus arrive from the keyboard?
+ *
+ * `:focus-visible` is the BROWSER's answer, and asking it rather than
+ * tracking the last input device ourselves is what gets the one hard case
+ * right: App.tsx re-focuses the opened row when the reader closes, and a
+ * programmatic focus inherits the visibility of the interaction before
+ * it — click, and it is not visible; Enter, and it is.
+ *
+ * An engine without `:focus-visible` (none this PWA ships to: Chrome 86+,
+ * Safari 15.4+) throws on the selector rather than returning false, so
+ * the fallback is stated explicitly and it is `true` — degrading to the
+ * old always-painted band, which is a cosmetic complaint, rather than to
+ * a cursor that can never be seen, which is a broken keyboard interface.
+ */
+function isKeyboardFocus(target: EventTarget): boolean {
+  if (!(target instanceof Element)) return false;
+  try {
+    return target.matches(':focus-visible');
+  } catch {
+    return true;
+  }
+}
 import type { MoveDestination } from '../mailboxActions';
 import { NOTHING_SELECTED } from '../bulkSelection';
 import { Alert, AlertDescription } from '../ui/Alert';
@@ -387,6 +414,40 @@ export default function InboxList({
    * that no test here renders a component, so anything decided in this
    * file is decided where no test can reach it.
    */
+  /**
+   * Whether the keyboard cursor's band is PAINTED right now.
+   *
+   * The cursor's POSITION is `selectedKey` and is unaffected by this —
+   * see ../keyboard/cursorBand.ts for why the paint is conditional and
+   * the position is not. Held here rather than in App.tsx because it is
+   * the LIST's own focus that decides it, and nothing above needs to
+   * know.
+   */
+  const [isCursorBandVisible, setCursorBandVisible] = useState(false);
+
+  const handleRowFocus = useCallback((event: ReactFocusEvent<HTMLElement>) => {
+    setCursorBandVisible((visible) =>
+      nextCursorBandVisibility(visible, {
+        kind: 'entered',
+        viaKeyboard: isKeyboardFocus(event.target),
+      }),
+    );
+  }, []);
+
+  const handleRowBlur = useCallback((event: ReactFocusEvent<HTMLElement>) => {
+    const next = event.relatedTarget;
+    setCursorBandVisible((visible) =>
+      nextCursorBandVisibility(visible, {
+        kind: 'left',
+        // Row-to-row counts as staying, ACROSS day groups: focus handlers
+        // sit on each group's own <ul>, so asking "is the next element a
+        // row" is what keeps `j` from flickering the band off and on as
+        // the cursor crosses a date heading.
+        staysInsideList: next instanceof Element && next.closest(`[${ROW_KEY_ATTRIBUTE}]`) !== null,
+      }),
+    );
+  }, []);
+
   const conversations = useMemo(
     () => groupIntoConversations(visible, folderMembershipFor(folder, isSearching)),
     [visible, folder, isSearching],
@@ -735,7 +796,7 @@ export default function InboxList({
               {group.day}
             </h2>
             <Card className={LIST_SURFACE}>
-              <ul className={LIST_DIVIDERS}>
+              <ul className={LIST_DIVIDERS} onFocus={handleRowFocus} onBlur={handleRowBlur}>
                 {group.items.map((conversation) => {
                   const { key, representative, count } = conversation;
                   /* EVERY ONE OF THESE READS THE WHOLE CONVERSATION, not
@@ -756,6 +817,7 @@ export default function InboxList({
                       onPrefetch={prefetchMessage}
                       onSelect={onSelectMessage}
                       isSelected={key === selectedKey}
+                      isCursorBandVisible={isCursorBandVisible}
                       isStarred={isConversationStarred(conversation, (member) =>
                         resolveStar(member, starOverrides, messageKey(member)),
                       )}

@@ -104,8 +104,16 @@ describe('the cursor is passed down and drawn', () => {
     expect(/tabIndex=\{key === tabStopKey \? 0 : -1\}/.test(LIST)).toBe(true);
   });
 
-  it('MessageRow applies the selection treatment when selected', () => {
-    expect(/isSelected && ROW_SELECTED/.test(ROW)).toBe(true);
+  it('MessageRow applies the selection treatment when selected AND the list has keyboard focus', () => {
+    // The band used to hang off `isSelected` alone. It was drawn in the
+    // same grey family as hover and press, so a mouse user returning from
+    // the reader saw a row that looked hovered while the pointer was
+    // elsewhere — *"my cursor isnt hovering over it but it seems like it
+    // is."* ../src/keyboard/cursorBand.ts owns the rule now; the cursor's
+    // POSITION is unchanged, only its paint is conditional.
+    expect(/shouldDrawCursorBand\(isSelected, isCursorBandVisible\) && ROW_SELECTED/.test(ROW)).toBe(
+      true,
+    );
   });
 
   it('MessageRow marks the selected row for assistive tech', () => {
@@ -113,7 +121,11 @@ describe('the cursor is passed down and drawn', () => {
   });
 
   it('would catch a selection class that is never applied', () => {
-    expect(/isSelected && ROW_SELECTED/.test('className={cn(base, ROW_FOCUS)}')).toBe(false);
+    expect(
+      /shouldDrawCursorBand\(isSelected, isCursorBandVisible\) && ROW_SELECTED/.test(
+        'className={cn(base, ROW_FOCUS)}',
+      ),
+    ).toBe(false);
   });
 });
 
