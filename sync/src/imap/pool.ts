@@ -55,15 +55,38 @@ const RESERVE_BYTES_PER_FOLDER_SYNC = HEADER_FETCH_LIMIT * ESTIMATED_BYTES_PER_H
  * dead connection would sit in IDLE forever: it never wakes (no data is
  * arriving) and never reconnects (no error ever fires).
  *
- * 3 minutes is comfortably under Gmail's own minimum 29-minute IDLE drop —
+ * 60 seconds is comfortably under Gmail's own minimum 29-minute IDLE drop —
  * so this timer, not Gmail's, is what normally paces the liveness check —
  * while being short enough that a half-open connection is caught and
  * replaced well within a user's expectation of "new mail shows up soon".
- * It is also infrequent enough (at most ~10 extra NOOP round trips per
- * Gmail-forced 29-minute IDLE cycle) not to matter against the connection
- * budget.
+ *
+ * WHY IT CAME DOWN FROM 3 MINUTES, AND WHY ONLY TO 60s. This interval is
+ * the LATENCY CEILING for any message whose 'mail' wake is missed — a
+ * half-open socket, a suppressed notification, anything. It is a
+ * MITIGATION, not a fix: the push-latency bug this value was lowered
+ * alongside was a stale `mailbox.uidNext` in imap/fetch.ts, and lowering
+ * this alone would only have made every message one SHORTER cycle late.
+ *
+ * The obvious argument for going much lower — "a NOOP is a few bytes" —
+ * measures the wrong thing. idleLoop() runs a full syncOnce() after EVERY
+ * wake, timeout included, and that is 50 headers x ~2 KB x up to 4 folders
+ * = ~400 KB per account per cycle (see syncOnce's own budget note). The
+ * cycle, not the probe, is what this interval actually prices:
+ *
+ *   180s -> 480 cycles/day  x 400 KB ~ 187 MB/day/account  (~9% of 2 GiB)
+ *    60s -> 1,440 cycles/day x 400 KB ~ 562 MB/day/account (~27% of 2 GiB)
+ *    30s -> 2,880 cycles/day x 400 KB ~ 1.12 GB/day/account (~55%)
+ *
+ * DAILY_BYTE_LIMIT is 2 GiB per account per day and is shared with the
+ * API's on-demand body/attachment fetches and with ./backfill.ts, which
+ * pulls its own ~400 KB page per cycle until a folder's history is done —
+ * so a 30s interval would spend more than half the day's allowance on
+ * polling alone before a user opened a single message. 60s keeps the
+ * steady-state floor comfortably inside a third of the budget while
+ * halving-and-then-some the worst case a missed wake can cost.
+ * ByteBudget.reserve() remains the hard enforcement either way.
  */
-export const IDLE_LIVENESS_CHECK_INTERVAL_MS = 3 * 60 * 1_000;
+export const IDLE_LIVENESS_CHECK_INTERVAL_MS = 60 * 1_000;
 
 /** Upper bound on the liveness probe itself (NOOP). A half-open socket
  *  would otherwise let this hang exactly as long as IDLE did — the probe
@@ -117,11 +140,27 @@ export function describeIdleState(client: ImapFlow): string {
  *    underneath. Listening for the event, rather than awaiting `idle()`, is
  *    what actually makes the pool wake promptly on new mail.
  *  - `timeoutMs` elapses ('timeout') — the bounded wait from Amendment 1.
- *  - the underlying `idle()` call itself settles ('idle-ended') — in normal
- *    operation nothing here breaks IDLE while this function is waiting, so
- *    this firing first almost always means the socket died (error or
- *    close), which is itself worth reacting to immediately rather than
- *    waiting out the rest of the timeout.
+ *  - the underlying `idle()` call itself settles WHILE THE CONNECTION IS NO
+ *    LONGER IDLING ('idle-ended') — in normal operation nothing here breaks
+ *    IDLE while this function is waiting, so that combination almost always
+ *    means the socket died (error or close), which is itself worth reacting
+ *    to immediately rather than waiting out the rest of the timeout.
+ *
+ *    The "no longer idling" half is load-bearing. `ImapFlow#idle()` is
+ *    `if (!this.idling) return await this.run('IDLE', ...)` — it resolves
+ *    IMMEDIATELY with `undefined`, having done nothing, when the library's
+ *    own auto-IDLE (`autoIdleDelay`, 15s by default) already owns the
+ *    connection. Treating that as 'idle-ended' would make the caller break
+ *    a perfectly healthy IDLE with a NOOP and re-sync, in a loop with no
+ *    bounded wait in it at all. `idle()` settling is not evidence about the
+ *    socket; `idling` reading false at that moment is.
+ *
+ *    Production evidence, for the record: across the instrumented window
+ *    every wake logged `armed[... idling=false ...]`, so this short-circuit
+ *    was NOT what caused the push-latency bug (that was a stale
+ *    `mailbox.uidNext` in the fetch — see imap/fetch.ts `uidRangeString`).
+ *    It is guarded here because it is a real, load-bearing hazard that the
+ *    library genuinely exposes, not because it was the culprit.
  *
  * Does not itself decide whether the connection is alive; the caller acts
  * on the returned reason (see ConnectionPool.idleLoop).
@@ -141,16 +180,22 @@ export async function waitForIdleWake(client: ImapFlow, timeoutMs: number): Prom
     const onExists = (): void => finish('mail');
     const timer = setTimeout(() => finish('timeout'), timeoutMs);
 
+    // Not awaited: this promise settling is one of the signals raced above,
+    // not something the caller needs the resolved value of. Both branches
+    // route to the same handler — by the time IDLE ends on its own, whether
+    // the library reports it as success or failure carries no extra
+    // information for a caller who did not ask it to end.
+    const onIdleSettled = (): void => {
+      // Still idling => this settled without ending anything (the library's
+      // auto-IDLE owns the session and `idle()` short-circuited), so it says
+      // nothing about the connection and there is nothing to react to. Keep
+      // waiting for real mail or the bounded timeout; see the doc comment.
+      if (client.idling === true) return;
+      finish('idle-ended');
+    };
+
     client.on('exists', onExists);
-    // Not awaited: this promise settling is one of the three signals raced
-    // above, not something the caller needs the resolved value of. Both
-    // branches route to the same reason — by the time IDLE ends on its own,
-    // whether the library reports it as success or failure carries no
-    // extra information for a caller who did not ask it to end.
-    client.idle().then(
-      () => finish('idle-ended'),
-      () => finish('idle-ended'),
-    );
+    client.idle().then(onIdleSettled, onIdleSettled);
   });
 }
 

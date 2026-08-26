@@ -140,6 +140,53 @@ export function resolveUidSpan(
 }
 
 /**
+ * The IMAP UID range string for one fetch — and the fix for the push
+ * latency bug, so the reasoning lives here rather than in a commit message.
+ *
+ * THE BUG. `resolveUidSpan` is handed `mailbox.uidNext - 1` as the highest
+ * UID in the mailbox. `mailbox.uidNext` is imapflow's CACHE, and the
+ * library writes it in exactly two places: the SELECT/EXAMINE response
+ * parser (commands/select.js) and a STATUS response (commands/status.js).
+ * The untagged `EXISTS` that a server pushes during IDLE updates
+ * `mailbox.exists` and NOTHING ELSE (imap-flow.js `untaggedExists`) — and
+ * `getMailboxLock()` takes a fast path that issues no SELECT at all when
+ * the mailbox is already selected. So the sync cycle woken BY a new
+ * message computed its ceiling from a `uidNext` captured before that
+ * message existed, and the top of its range landed exactly one UID below
+ * the message that caused the wake. Every message was therefore fetched
+ * one full cycle late — the cycle's closing `openMailbox(INBOX)` re-SELECTs
+ * (the folder loop has since moved to Sent/Spam), which refreshes the
+ * cache, so the NEXT cycle could finally see it. Measured in production:
+ * uid 33126 arrived 05:14:45 and woke IDLE with `reason=mail` at 05:14:45;
+ * the cycle that wake triggered stored nothing; the row appeared at
+ * 05:17:41, one `IDLE_LIVENESS_CHECK_INTERVAL_MS` later.
+ *
+ * THE FIX. For the live poll, the ceiling is not ours to know — only the
+ * server knows what the newest message is. `*` is the IMAP placeholder for
+ * exactly that, resolved server-side at fetch time, so no client-side
+ * cache can hide a message again. imapflow passes a compound range like
+ * `"33076:*"` through untouched (only a BARE `'*'` gets rewritten into a
+ * sequence number by `resolveRange`), so this really does reach the wire.
+ *
+ * A `sinceUid` caller keeps the computed numeric ceiling: that is
+ * ./backfill.ts walking BACKWARDS through history, where the span is a
+ * deliberate, bounded historical window. `*` there would fetch from the
+ * watermark to the newest message in the mailbox in one round trip — the
+ * unbounded fetch `resolveUidSpan`'s `limit` exists to prevent.
+ *
+ * BYTE COST. The live poll's span becomes "the newest `limit`, plus
+ * whatever arrived since the last SELECT" rather than exactly `limit`. The
+ * overshoot is only ever genuinely-new mail — the messages this poll
+ * exists to collect — never history, because `lowestUid` is unchanged.
+ * `fetchHeaders` charges the budget per message actually yielded, so a
+ * burst is metered rather than hidden.
+ */
+export function uidRangeString(range: FetchRange, span: UidSpan): string {
+  const ceiling = range.sinceUid === undefined ? '*' : String(span.highestUid);
+  return `${span.lowestUid}:${ceiling}`;
+}
+
+/**
  * Overrides normalizeMessage()'s stubbed `hasAttach: false` with the real
  * value from the BODYSTRUCTURE walk. normalizeMessage() has no visibility
  * into BODYSTRUCTURE, so only a caller holding both the normalized fields
@@ -200,7 +247,7 @@ export async function fetchHeaders(
     let bytesDownloaded = 0;
 
     for await (const message of client.fetch(
-      `${span.lowestUid}:${span.highestUid}`,
+      uidRangeString(range, span),
       HEADER_FETCH_OPTIONS,
       { uid: true },
     )) {

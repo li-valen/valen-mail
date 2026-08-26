@@ -9,9 +9,11 @@ import {
   BodyPartTooLargeError,
   applyAttachmentFlag,
   fetchBodyPart,
+  fetchHeaders,
   fetchPreviews,
   previewFetchOptions,
   resolveUidSpan,
+  uidRangeString,
 } from '../src/imap/fetch';
 import type { ImapConnection } from '../src/imap/connection';
 import { normalizeMessage } from '../src/normalize';
@@ -509,5 +511,118 @@ describe('fetchPreviews', () => {
     // console.error as a separate argument, and what a server puts in its
     // own error text is not ours to sanitize.
     expect(message).not.toContain(secret);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The push-latency bug: a live poll capped by imapflow's STALE mailbox cache
+// ---------------------------------------------------------------------------
+
+/**
+ * A connection whose `mailbox.uidNext` is FROZEN, exactly as a real imapflow
+ * client's is between SELECTs, while the mailbox itself holds newer
+ * messages.
+ *
+ * This is the situation every new message creates. imapflow writes
+ * `mailbox.uidNext` only from a SELECT/EXAMINE response or a STATUS; the
+ * untagged EXISTS the server pushes during IDLE updates `mailbox.exists`
+ * and nothing else; and `getMailboxLock()` issues no SELECT at all when the
+ * mailbox is already selected. So the sync cycle woken BY a new message
+ * sees a `uidNext` captured before that message existed.
+ *
+ * `uidNext` and the messages present are therefore SEPARATE inputs here, not
+ * derived from one another — a fake that computed one from the other could
+ * not express this state at all, which is precisely why the pool suites
+ * (tests/helpers/pool-fakes.ts) never caught this.
+ */
+function makeStaleCacheConnection(options: {
+  /** What the last SELECT reported. */
+  readonly cachedUidNext: number;
+  /** What the SERVER actually holds right now, newer arrivals included. */
+  readonly uidsPresent: readonly number[];
+}) {
+  const ranges: string[] = [];
+
+  const connection = {
+    accountId: 'primary',
+    rawClient: () => ({
+      getMailboxLock: async () => ({ release: () => {} }),
+      mailbox: { path: 'INBOX', uidNext: options.cachedUidNext, uidValidity: 1n },
+      fetch: function* (range: unknown) {
+        ranges.push(String(range));
+        const [low, high] = String(range).split(':');
+        const lowestUid = Number(low);
+        // `*` is resolved by the SERVER to the newest message present — the
+        // whole point of asking for it.
+        const highestUid = high === '*' ? Number.POSITIVE_INFINITY : Number(high);
+        for (const uid of options.uidsPresent) {
+          if (uid < lowestUid || uid > highestUid) continue;
+          yield { uid, envelope: { messageId: `<m${uid}@x>` }, flags: new Set<string>() };
+        }
+      },
+    }),
+  } as unknown as ImapConnection;
+
+  return { connection, ranges };
+}
+
+describe('uidRangeString', () => {
+  it('gives the live poll an open ceiling, so the SERVER decides what the newest message is', () => {
+    // The ceiling is not ours to know: our only source for it is a cache
+    // that IDLE never refreshes.
+    expect(uidRangeString({ limit: 50 }, { lowestUid: 33076, highestUid: 33125 })).toBe('33076:*');
+  });
+
+  it('keeps a sinceUid page numeric on BOTH ends — backfill walks a bounded window backwards', () => {
+    // `*` here would fetch from the watermark to the newest message in the
+    // mailbox in one round trip: the unbounded fetch resolveUidSpan's
+    // `limit` exists to prevent.
+    expect(uidRangeString({ limit: 200, sinceUid: 111 }, { lowestUid: 111, highestUid: 310 }))
+      .toBe('111:310');
+  });
+});
+
+describe('fetchHeaders against a stale mailbox.uidNext (the push-latency bug)', () => {
+  it('still returns a message that arrived after the last SELECT', async () => {
+    // uid 33126 arrived while the connection sat in IDLE, so the cache
+    // still says the next UID will be 33126. Capping the fetch at
+    // `uidNext - 1` stops one UID short of it — which is what delayed every
+    // message by a full IDLE_LIVENESS_CHECK_INTERVAL_MS in production.
+    const fake = makeStaleCacheConnection({
+      cachedUidNext: 33126,
+      uidsPresent: [33124, 33125, 33126],
+    });
+
+    const result = await fetchHeaders(fake.connection, 'INBOX', { limit: 50 });
+
+    expect(result.messages.map((message) => message.uid)).toContain(33126);
+  });
+
+  it('asks for that message by emitting an open-ended UID range, not a computed ceiling', async () => {
+    // The causal assertion. The test above could in principle be satisfied
+    // by a fake that was too generous; this pins what actually goes on the
+    // wire, which is the thing that was wrong.
+    const fake = makeStaleCacheConnection({
+      cachedUidNext: 33126,
+      uidsPresent: [33124, 33125, 33126],
+    });
+
+    await fetchHeaders(fake.connection, 'INBOX', { limit: 50 });
+
+    expect(fake.ranges).toEqual(['33076:*']);
+  });
+
+  it('does NOT open the ceiling for a backfill page, however stale the cache is', async () => {
+    // The counter-case that keeps the fix honest: `*` on the historical
+    // walk would turn one bounded page into "everything from here to now".
+    const fake = makeStaleCacheConnection({
+      cachedUidNext: 33126,
+      uidsPresent: [50, 60, 70, 33126],
+    });
+
+    const result = await fetchHeaders(fake.connection, 'INBOX', { limit: 20, sinceUid: 50 });
+
+    expect(fake.ranges).toEqual(['50:69']);
+    expect(result.messages.map((message) => message.uid)).toEqual([50, 60]);
   });
 });

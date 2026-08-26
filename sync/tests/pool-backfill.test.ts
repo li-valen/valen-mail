@@ -64,6 +64,18 @@ function launchPool(
 
 /** The UID ranges the pool actually asked the server for, header fetches
  *  only — the record of which spans a cycle paged. */
+/**
+ * Every header fetch's UID range, in order — which is also how these suites
+ * tell live sync apart from a backfill page.
+ *
+ * A range ending in `*` is the LIVE poll: its ceiling is the server's
+ * newest message, because imapflow's cached `mailbox.uidNext` is not
+ * refreshed by the untagged EXISTS that IDLE delivers and would otherwise
+ * stop one UID short of the message that just woke the pool (see
+ * fetch.ts's `uidRangeString`). A range with two numbers is a backfill
+ * page: a deliberate, bounded window walking backwards through history,
+ * where `*` would mean "everything from here to the newest message".
+ */
 function headerRanges(fake: ReturnType<typeof createFakeClient>): string[] {
   return fake.fetchCalls
     .filter((call) => call.query?.bodyParts === undefined)
@@ -163,7 +175,7 @@ describe('ConnectionPool — historical backfill', () => {
 
     // Live sync ran in full: the newest 50 of a 60-message mailbox.
     expect(uidsUpserted(db)).toEqual(Array.from({ length: 50 }, (_, i) => i + 11));
-    expect(headerRanges(fake)).toEqual(['11:60']);
+    expect(headerRanges(fake)).toEqual(['11:*']);
     // Backfill fetched nothing and, crucially, advanced no watermark — a
     // refused page must not look like a completed one.
     expect(headerRanges(fake)).not.toContain('1:10');
@@ -182,7 +194,7 @@ describe('ConnectionPool — historical backfill', () => {
     harness.launch(launchPool(fake, db));
     await wait(100);
 
-    expect(headerRanges(fake)).toEqual(['351:400', '111:310']);
+    expect(headerRanges(fake)).toEqual(['351:*', '111:310']);
     // The band the dead process had already covered is not re-fetched.
     expect(uidsUpserted(db).filter((uid) => uid >= 311 && uid <= 350)).toEqual([]);
     expect(db.syncState(ACCOUNT, 'INBOX')).toEqual({
@@ -204,7 +216,7 @@ describe('ConnectionPool — historical backfill', () => {
     harness.launch(launchPool(fake, db));
     await wait(80);
 
-    expect(headerRanges(fake)).toEqual(['11:60', '1:10']);
+    expect(headerRanges(fake)).toEqual(['11:*', '1:10']);
     expect(db.syncState(ACCOUNT, 'INBOX')).toMatchObject({ lastSeenUid: 1n, backfillDone: true });
 
     messages.push({ uid: 61, envelope: { messageId: '<m61@x>' } });
@@ -212,7 +224,7 @@ describe('ConnectionPool — historical backfill', () => {
     await wait(60);
 
     // The second cycle polled live mail and asked for no backfill page.
-    expect(headerRanges(fake)).toEqual(['11:60', '1:10', '12:61']);
+    expect(headerRanges(fake)).toEqual(['11:*', '1:10', '12:*']);
   });
 
   it('charges the daily byte budget for the backfilled headers, on top of live sync', async () => {
@@ -277,7 +289,7 @@ describe('ConnectionPool — historical backfill', () => {
 
     // Live sync's four spans first, then backfill's four — the pass runs
     // AFTER live sync, never interleaved with it.
-    expect(headerRanges(fake)).toEqual(['11:60', '11:60', '11:60', '11:60', '1:10', '1:10', '1:10', '1:10']);
+    expect(headerRanges(fake)).toEqual(['11:*', '11:*', '11:*', '11:*', '1:10', '1:10', '1:10', '1:10']);
     for (const path of paths) {
       expect(db.syncState(ACCOUNT, path), path).toMatchObject({ lastSeenUid: 1n, backfillDone: true });
     }
@@ -297,7 +309,7 @@ describe('ConnectionPool — historical backfill', () => {
     harness.launch(launchPool(fake, db));
     await wait(80);
 
-    expect(headerRanges(fake)).toEqual(['11:60']);
+    expect(headerRanges(fake)).toEqual(['11:*']);
     expect(db.syncState(ACCOUNT, 'INBOX')).toEqual({
       uidValidity: 4n,
       lastSeenUid: 1n,
@@ -317,7 +329,7 @@ describe('ConnectionPool — historical backfill', () => {
 
     harness.launch(launchPool(fake, db));
     await wait(80);
-    expect(headerRanges(fake)).toEqual(['11:60']);
+    expect(headerRanges(fake)).toEqual(['11:*']);
 
     // The server renumbers the mailbox mid-session, exactly as a real
     // UIDVALIDITY change presents.
@@ -327,7 +339,7 @@ describe('ConnectionPool — historical backfill', () => {
 
     // The folder pages again rather than staying terminal, and the row now
     // records the numbering it was actually computed against.
-    expect(headerRanges(fake)).toEqual(['11:60', '11:60', '1:10']);
+    expect(headerRanges(fake)).toEqual(['11:*', '11:*', '1:10']);
     expect(db.syncState(ACCOUNT, 'INBOX')).toEqual({
       uidValidity: 9n,
       lastSeenUid: 1n,

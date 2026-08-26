@@ -123,9 +123,18 @@ describe('KeyedMutex', () => {
 // waitForIdleWake (Amendment 1: bounded IDLE wait)
 // ---------------------------------------------------------------------------
 
-function createIdleWaitClient(idleImpl: () => Promise<boolean>) {
+function createIdleWaitClient(idleImpl: () => Promise<boolean>, idling = false) {
   const existsListeners = new Set<(data: unknown) => void>();
   const fake = {
+    /**
+     * imapflow's own `idling` flag. It is what tells `idle()` resolving
+     * apart from IDLE actually ending: `ImapFlow#idle()` is
+     * `if (!this.idling) return await this.run('IDLE', ...)`, so when the
+     * library's auto-IDLE already owns the connection the call returns
+     * immediately having done nothing at all, and the connection is still
+     * very much idling.
+     */
+    idling,
     idle: vi.fn(() => idleImpl()),
     on(event: string, handler: (data: unknown) => void) {
       if (event === 'exists') existsListeners.add(handler);
@@ -171,6 +180,38 @@ describe('waitForIdleWake', () => {
     const { client, listenerCount } = createIdleWaitClient(() => new Promise<boolean>(() => {}));
     await waitForIdleWake(client, 10);
     expect(listenerCount()).toBe(0);
+  });
+
+  /**
+   * The imapflow short-circuit. `idle()` returns `undefined` on the spot,
+   * without starting or ending anything, whenever the library's own
+   * auto-IDLE (`autoIdleDelay`, 15s) already holds the connection.
+   *
+   * Treating that as 'idle-ended' hands idleLoop() a wait that did not
+   * wait: it runs probeLiveness(), whose NOOP BREAKS the healthy IDLE that
+   * would have delivered the notification, re-syncs, and comes straight
+   * back here — a loop with no bounded wait left in it. So the contract is
+   * "idle() settling is only a signal when the connection is no longer
+   * idling", and these two tests pin both halves of it.
+   */
+  it('keeps waiting when idle() resolves instantly because the library is already idling', async () => {
+    const { client, triggerExists } = createIdleWaitClient(async () => undefined as never, true);
+
+    const promise = waitForIdleWake(client, 300);
+    // Let the instant resolution land before anything else happens: if the
+    // guard were missing, the wait is already over by this point.
+    await Promise.resolve();
+    await Promise.resolve();
+    triggerExists();
+
+    await expect(promise).resolves.toBe('mail');
+  });
+
+  it('still reports idle-ended when idle() settles and the connection is NOT idling', async () => {
+    // The other half: an idle() that settles with `idling` false really did
+    // end IDLE, and idleLoop() must still get its chance to probe.
+    const { client } = createIdleWaitClient(async () => undefined as never, false);
+    await expect(waitForIdleWake(client, 300)).resolves.toBe('idle-ended');
   });
 });
 

@@ -290,13 +290,20 @@ export function createFakeClient(options: FakeClientOptions = {}) {
     // would be measuring the same array four times; and a fetch that
     // ignored `UID lo:hi` would hand a backfill page of low UIDs the
     // newest messages instead, making every backfill assertion here true
-    // for the wrong reason. Live sync's own spans are unaffected: it
-    // always asks for the newest HEADER_FETCH_LIMIT, which is a superset
-    // of what any of these fakes contain.
-    const [lowestUid, highestUid] = String(range).split(':').map(Number);
+    // for the wrong reason.
+    //
+    // `*` is the SERVER's "highest UID present right now", resolved here at
+    // fetch time rather than parsed as a number — which is the whole point
+    // of fetch.ts asking for `lo:*` on the live poll. Handled explicitly,
+    // not left to `Number('*')` being NaN and every comparison against it
+    // happening to be false: a fake that models this by accident could not
+    // be trusted to keep modelling it.
+    const [low, high] = String(range).split(':');
+    const lowestUid = Number(low);
+    const highestUid = high === '*' ? Number.POSITIVE_INFINITY : Number(high);
     for (const message of messages) {
-      if (lowestUid !== undefined && message.uid < lowestUid) continue;
-      if (highestUid !== undefined && message.uid > highestUid) continue;
+      if (!Number.isNaN(lowestUid) && message.uid < lowestUid) continue;
+      if (!Number.isNaN(highestUid) && message.uid > highestUid) continue;
       yield message;
     }
   });
@@ -346,6 +353,14 @@ export function createFakeClient(options: FakeClientOptions = {}) {
       // simulate a later cycle seeing genuinely new mail) needs uidNext to
       // reflect it, or resolveUidSpan() would keep computing a span from
       // the stale original highest UID and never fetch the new message.
+      //
+      // NOTE, so nobody reads more coverage into these suites than they
+      // have: a REAL imapflow client does NOT behave this way. It caches
+      // `uidNext` from the last SELECT and the untagged EXISTS pushed
+      // during IDLE never refreshes it — which was the push-latency bug,
+      // and which this always-fresh fake is structurally unable to
+      // reproduce. That behaviour is pinned directly against fetchHeaders
+      // in tests/fetch.test.ts ("stale uidNext"), not here.
       const highestUid = state.messages.reduce((max, m) => Math.max(max, m.uid), 0);
       return {
         path: state.path,
