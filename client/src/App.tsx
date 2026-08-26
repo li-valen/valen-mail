@@ -1078,7 +1078,7 @@ export default function App() {
        *
        * In the READER it is the message that is on screen, and only it.
        * This app's reader shows ONE message with the rest of the thread
-       * listed beside it (components/ThreadContext.tsx), so archiving
+       * stacked with it (components/ThreadMessage.tsx), so archiving
        * thirty-nine messages the user is not reading would be an action
        * about something other than what they are looking at. That is the
        * same rule `moveTargetsFor` already applies to a selection behind
@@ -1641,7 +1641,6 @@ export default function App() {
                 neighbours={visibleMessages}
                 now={now}
                 onBack={closeMessage}
-                onOpen={openMessage}
                 isStarred={resolveStar(selected, starOverrides, messageKey(selected))}
                 onToggleStar={toggleStar}
                 onReply={replyToSelected}
@@ -1677,7 +1676,6 @@ export default function App() {
                 now={now}
                 onBack={closeMessage}
                 backLabel="Back to follow-up"
-                onOpen={openMessage}
                 isStarred={resolveStar(selected, starOverrides, messageKey(selected))}
                 onToggleStar={toggleStar}
                 onReply={replyToSelected}

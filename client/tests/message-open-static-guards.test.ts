@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import threadMessageSource from '../src/components/ThreadMessage.tsx?raw';
 import messageBodyHookSource from '../src/components/useMessageBody.ts?raw';
 import messageViewSource from '../src/components/MessageView.tsx?raw';
 import messageRowSource from '../src/components/MessageRow.tsx?raw';
@@ -51,7 +52,7 @@ const SYNCHRONOUS_CACHE_READ = /useState<LoadState>\(\(\)\s*=>\s*\{[\s\S]*?readC
  * load, so all of it moved to ./useMessageBody.ts unchanged. These guards
  * describe the BEHAVIOUR, not the address, so they read both.
  */
-const OPEN_PATH = messageViewSource + '\n' + messageBodyHookSource;
+const OPEN_PATH = messageViewSource + '\n' + messageBodyHookSource + '\n' + threadMessageSource;
 
 describe('MessageView renders a cached message on the first frame', () => {
   it('reads the cache from the useState initializer, not from an effect', () => {
@@ -74,9 +75,9 @@ describe('MessageView renders a cached message on the first frame', () => {
   });
 
   it('gates the skeleton on the slow-fetch threshold, so a fast open never flashes one', () => {
-    // The gate stays in the VIEW (it decides what to render); the
-    // threshold moved with the fetch.
-    expect(VIEW).toMatch(/load\.status === 'loading' && isSlow/);
+    // The gate moved with the body it gates: each message in a conversation
+    // renders its own skeleton now, so it lives in ThreadMessage.tsx.
+    expect(OPEN_PATH).toMatch(/load\.status === 'loading' && isSlow/);
     expect(OPEN_PATH).toContain('SKELETON_DELAY_MS');
   });
 

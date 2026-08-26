@@ -95,7 +95,7 @@ export interface MessageRowProps {
    * **UNSET FALLS BACK TO `flags`, NOT TO "READ".** `isStarred` may
    * default to `false` because an absent star is the ordinary case; an
    * absent READ-state is not — defaulting it would silently un-bold every
-   * unread row in ThreadContext.tsx, which renders this component without
+   * unread row in the inbox list, which renders this component without
    * an overrides map and would have no way to notice.
    */
   readonly isUnread?: boolean;
@@ -152,7 +152,7 @@ export interface MessageRowProps {
    *
    * UNSET FALLS BACK TO THE MESSAGE, not to `false`, for the reason
    * `isUnread` above does: this component is also rendered by
-   * ThreadContext.tsx, which passes no overrides at all.
+   * the inbox list, which passes no overrides at all.
    */
   readonly hasAttachment?: boolean;
 }

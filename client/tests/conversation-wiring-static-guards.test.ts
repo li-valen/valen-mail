@@ -5,7 +5,7 @@ import messageRowSource from '../src/components/MessageRow.tsx?raw';
 import messageViewSource from '../src/components/MessageView.tsx?raw';
 import conversationsSource from '../src/conversations.ts?raw';
 import followupViewSource from '../src/components/FollowupView.tsx?raw';
-import threadContextSource from '../src/components/ThreadContext.tsx?raw';
+import threadMessageSource from '../src/components/ThreadMessage.tsx?raw';
 
 /**
  * The WIRING checks for the collapsed list — the same
@@ -33,7 +33,7 @@ const ROW = stripComments(messageRowSource);
 const READER = stripComments(messageViewSource);
 const CONVERSATIONS = stripComments(conversationsSource);
 const FOLLOWUP = stripComments(followupViewSource);
-const THREAD = stripComments(threadContextSource);
+const THREAD = stripComments(threadMessageSource);
 
 describe('the list asks the server for whole conversations', () => {
   it('fetches the conversation route rather than the message ones', () => {
@@ -169,20 +169,24 @@ describe('day grouping, the cursor and the reader still work on rows', () => {
     expect(/onSelect: moveCursor/.test(APP)).toBe(true);
   });
 
-  it('the reader still opens one message and still lists the rest of the thread', () => {
+  it('the reader STACKS the conversation rather than linking away to it', () => {
     // "A collapsed conversation must still be openable to its individual
-    // messages" is ThreadContext, which already existed and which this
-    // task deliberately does not duplicate — there is no second thread
-    // view anywhere in the client.
-    expect(/<ThreadContext/.test(READER)).toBe(true);
-    // Account FIRST and always. A Gmail thread id is allocated per
-    // mailbox, so `getThread(threadId)` alone listed a different
-    // account's mail under this message, every row of it clickable.
-    expect(/getThread\(accountId, threadId\)/.test(THREAD)).toBe(true);
-    expect(/const accountId = message\.account_id/.test(THREAD)).toBe(true);
-    expect(/Also in this thread/.test(THREAD)).toBe(true);
-    // The one place a thread is listed. A second component fetching
-    // /api/thread would be the duplicate this asserts against.
+    // messages" used to mean ThreadContext: the opened message, with its
+    // siblings listed underneath as links to other screens. The user, beside
+    // Gmail — "Replies on a specific email also dont chain like gmail" — so
+    // the reader now renders every message in one scroll, oldest first, each
+    // opening where it sits.
+    expect(/<ThreadMessage/.test(READER)).toBe(true);
+    expect(/stack\.map\(/.test(READER)).toBe(true);
+    // Account FIRST and always. A Gmail thread id is allocated per mailbox,
+    // so `getThread(threadId)` alone listed a different account's mail under
+    // this message, every row of it clickable.
+    expect(/getThread\(accountId, threadId\)/.test(READER)).toBe(true);
+    // Collapsed messages must not fetch. A forty-message thread that loaded
+    // forty bodies on open is the reason `enabled` exists.
+    expect(/isExpanded,\n\s*\);/.test(THREAD)).toBe(true);
+    expect(/aria-expanded=\{isExpanded\}/.test(THREAD)).toBe(true);
+    // Still exactly one place a thread is fetched.
     expect(/getThread/.test(LIST)).toBe(false);
     expect(/getThread/.test(APP)).toBe(false);
   });

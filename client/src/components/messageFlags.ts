@@ -86,7 +86,7 @@ export function isStarred(message: InboxMessage): boolean {
  * **WHY AN OVERLAY RATHER THAN A MUTATED ROW.** The list rows are owned
  * by components/InboxList.tsx's `messages` state; the reader's copy is
  * owned by App.tsx's `selected`; the thread rows are owned by
- * ThreadContext. Starring from a keyboard shortcut has to change what all
+ * the thread stack. Starring from a keyboard shortcut has to change what all
  * three draw, and threading a setter into each one would put the same
  * write in three places that can drift. A `Map<messageKey, boolean>` in
  * App.tsx is read by every one of them through this function and is a

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import messageBodyContentSource from '../src/components/MessageBodyContent.tsx?raw';
 import stylesCss from '../src/styles.css?raw';
 import indexHtml from '../index.html?raw';
 import appShellSource from '../src/AppShell.tsx?raw';
@@ -154,7 +155,11 @@ describe('the reader\'s controls, under a thumb', () => {
     // "Show original colours" is hand-rolled and measured 24px — the WCAG
     // 2.5.8 floor exactly, and the smallest thing in the reader.
     expect(touchTargetSource).toMatch(/const TOUCH_MIN_HEIGHT = 'min-h-11 lg:min-h-0'/);
-    expect(view).toContain('TOUCH_MIN_HEIGHT');
+    // "Show original colours" lives in MessageBodyContent.tsx now — the body
+    // renderer became its own file when the reader learned to stack a whole
+    // conversation. The reader's surface is several files; the control is
+    // what matters, not which one holds it.
+    expect(messageViewSource + messageBodyContentSource).toContain('TOUCH_MIN_HEIGHT');
   });
 });
 
