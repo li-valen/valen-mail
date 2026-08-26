@@ -127,15 +127,19 @@ describe('getThread', () => {
     date: '2026-08-24T10:00:00Z',
   };
 
-  it('requests /api/thread/{threadId}, encoded', async () => {
+  it('requests /api/thread/{accountId}/{threadId}, both segments encoded', async () => {
+    // Two segments, account first. A Gmail thread id is only unique
+    // within the mailbox that issued it, so a request without the account
+    // asks a question that has more than one answer — and the server
+    // answered it with another account's mail.
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ messages: [] }));
-    await getThread('a/b c', fetchImpl);
-    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe('/api/thread/a%2Fb%20c');
+    await getThread('acct/one', 'a/b c', fetchImpl);
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe('/api/thread/acct%2Fone/a%2Fb%20c');
   });
 
   it('returns the rows, which carry the same shape as an inbox row', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ messages: [ROW] }));
-    const messages = await getThread('t1', fetchImpl);
+    const messages = await getThread('primary', 't1', fetchImpl);
     expect(messages).toHaveLength(1);
     expect(messages[0]?.uid).toBe('33098');
   });
@@ -144,19 +148,19 @@ describe('getThread', () => {
     const fetchImpl = vi.fn().mockResolvedValue(
       jsonResponse({ messages: [ROW, { uid: '1' }, { account_id: 'x', uid: '2' }] }),
     );
-    expect(await getThread('t1', fetchImpl)).toHaveLength(1);
+    expect(await getThread('primary', 't1', fetchImpl)).toHaveLength(1);
   });
 
   it('reads an unknown thread id as no context, never as an error', async () => {
     // The server answers 200 with an empty array for both an unknown and
     // an empty thread, on purpose (it refuses to leak which ids exist).
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ messages: [] }));
-    expect(await getThread('nope', fetchImpl)).toEqual([]);
+    expect(await getThread('primary', 'nope', fetchImpl)).toEqual([]);
   });
 
   it('throws ApiError on a non-2xx so the caller can decide to stay quiet', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response('nope', { status: 500 }));
-    await expect(getThread('t1', fetchImpl)).rejects.toBeInstanceOf(ApiError);
+    await expect(getThread('primary', 't1', fetchImpl)).rejects.toBeInstanceOf(ApiError);
   });
 });
 

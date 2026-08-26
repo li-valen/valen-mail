@@ -173,7 +173,8 @@ export async function readJson<T>(response: Response): Promise<T> {
 export function makeFakeDb(overrides: Record<string, unknown> = {}) {
   return {
     getUnifiedInbox: async () => [{ subject: 'a', date: new Date('2026-08-01') }],
-    getThread: async (id: string) => (id === 't1' ? [{ subject: 'x' }] : []),
+    getThread: async (accountId: string, threadId: string) =>
+      accountId === 'harvard' && threadId === 't1' ? [{ subject: 'x' }] : [],
     // Two views of one page — see ../src/db.ts's ConversationPage. The
     // default is a single one-message conversation, so the two arrays
     // agree with each other the way a real page always does; a suite that

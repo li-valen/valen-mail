@@ -175,7 +175,7 @@ maybe('db', () => {
   });
 
   it('returns attachment metadata on the thread route too', async () => {
-    const thread = await db.getThread('t10');
+    const thread = await db.getThread('test-a', 't10');
     expect(thread).toHaveLength(1);
     expect(thread[0].attachments).toHaveLength(1);
   });
@@ -291,6 +291,31 @@ maybe('db', () => {
       });
       expect(page.messages.map((m: any) => `${m.account_id}:${m.uid}`)).toEqual([
         'test-a:13', 'test-a:12', 'test-a:11', 'test-a:10',
+      ]);
+    });
+
+    it('reads a thread scoped to ONE account, never a colliding sibling', async () => {
+      // The same collision, one surface further along. The reader opens a
+      // test-a message whose thread is "T1" and asks for the rest of the
+      // conversation; test-b holds a completely unrelated "T1" because
+      // Gmail allocates X-GM-THRID per mailbox. Keyed on thread_id alone
+      // the reader lists two accounts' mail under one subject — and every
+      // row is clickable, so the user can open another account's message
+      // from inside this one.
+      const thread = await db.getThread('test-a', 'T1');
+      expect(thread.map((m: any) => `${m.account_id}:${m.uid}`)).toEqual([
+        'test-a:10', 'test-a:11', 'test-a:12', 'test-a:13',
+      ]);
+      expect(thread.some((m: any) => m.account_id === 'test-b')).toBe(false);
+    });
+
+    it('reads the OTHER account’s thread of the same id independently', async () => {
+      // The mirror image, so the test cannot pass by accidentally
+      // hard-narrowing to test-a. Same thread id, different account, its
+      // own two messages and neither of test-a's four.
+      const thread = await db.getThread('test-b', 'T1');
+      expect(thread.map((m: any) => `${m.account_id}:${m.uid}`)).toEqual([
+        'test-b:10', 'test-b:11',
       ]);
     });
 

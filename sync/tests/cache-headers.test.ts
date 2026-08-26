@@ -31,7 +31,7 @@ describe('cache headers on mailbox data', () => {
   });
 
   it('forbids caching a thread', async () => {
-    const response = await router(new Request('http://x/api/thread/t1', { headers: auth }));
+    const response = await router(new Request('http://x/api/thread/harvard/t1', { headers: auth }));
     expect(response.status).toBe(200);
     expect(response.headers.get('cache-control')).toBe(CACHE_CONTROL);
   });

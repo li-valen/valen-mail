@@ -30,6 +30,12 @@ interface ThreadContextProps {
  */
 export default function ThreadContext({ message, now, onOpen }: ThreadContextProps) {
   const threadId = message.thread_id;
+  // Half of the thread's key, not a filter. Gmail allocates thread ids per
+  // mailbox, so "thread T1" means nothing without the account that issued
+  // it — and the open message always knows its own. Fetching without it
+  // listed a DIFFERENT account's mail under this message, every row of it
+  // clickable straight into the reader.
+  const accountId = message.account_id;
   const currentKey = messageKey(message);
   const [others, setOthers] = useState<readonly InboxMessage[]>([]);
 
@@ -40,7 +46,7 @@ export default function ThreadContext({ message, now, onOpen }: ThreadContextPro
     }
     let cancelled = false;
 
-    getThread(threadId).then(
+    getThread(accountId, threadId).then(
       (messages) => {
         if (cancelled) return;
         setOthers(messages.filter((other) => messageKey(other) !== currentKey));
@@ -55,7 +61,7 @@ export default function ThreadContext({ message, now, onOpen }: ThreadContextPro
     return () => {
       cancelled = true;
     };
-  }, [threadId, currentKey]);
+  }, [accountId, threadId, currentKey]);
 
   if (others.length === 0) return null;
 

@@ -233,7 +233,16 @@ export interface Db {
     accountId: string | null;
     search?: string | null;
   }): Promise<ConversationPage>;
-  getThread(threadId: string): Promise<any[]>;
+  /**
+   * Every message of ONE account's thread, oldest first.
+   *
+   * `accountId` is part of the key, not a filter: a Gmail thread id is
+   * only unique within the mailbox that issued it, so (account, thread)
+   * is the smallest thing that names a conversation across this user's
+   * four accounts. See the implementation for what matching on the
+   * thread id alone did.
+   */
+  getThread(accountId: string, threadId: string): Promise<any[]>;
   /**
    * The lowest UID currently stored for one (account, folder), or null
    * when nothing has been synced there yet.
@@ -830,14 +839,25 @@ export function openDb(databaseUrl: string): Db {
       return { messages: memberResult.rows, representatives };
     },
 
-    async getThread(threadId) {
+    async getThread(accountId, threadId) {
+      // ACCOUNT FIRST, and it is not optional. `thread_id` is Gmail's
+      // X-GM-THRID, allocated per mailbox — two of this user's four
+      // accounts can and do hold the same value for entirely unrelated
+      // conversations. Matching on `thread_id` alone therefore listed one
+      // account's mail underneath another's message, with every row
+      // clickable. This is the same collision getConversationPage keys
+      // against with `sib.account_id = m.account_id and sib.thread_id =
+      // m.thread_id`; the two must agree, or the reader shows a thread
+      // the list never grouped.
+      //
       // Ascending (oldest first) is the reading order for a conversation.
-      // The same (account_id, uid) tiebreaker as the inbox keeps rows that
-      // share a second in a stable order across requests.
+      // The `account_id` tiebreaker is now redundant with the predicate
+      // and kept anyway: it costs nothing and keeps this ORDER BY
+      // textually identical to the inbox's, so the two cannot drift.
       const result = await pool.query(
-        `${MESSAGE_SELECT} where m.thread_id = $1
+        `${MESSAGE_SELECT} where m.account_id = $1 and m.thread_id = $2
          order by coalesce(m.date, '-infinity'::timestamptz) asc, m.account_id asc, m.uid asc`,
-        [threadId],
+        [accountId, threadId],
       );
       return result.rows;
     },

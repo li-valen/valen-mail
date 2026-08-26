@@ -720,12 +720,20 @@ export async function getMessage(
 }
 
 /**
- * Fetches every message in one thread, for the reader's thread context.
+ * Fetches every message in ONE ACCOUNT'S thread, for the reader's thread
+ * context.
  *
- * GET /api/thread/{threadId} answers `{messages:[…]}` with the SAME row
- * shape as GET /api/inbox, so this reuses `isInboxMessage` rather than
- * introducing a second, drifting definition of a row — and so the thread
- * list can render with the very same `MessageRow` the inbox uses.
+ * GET /api/thread/{accountId}/{threadId} answers `{messages:[…]}` with the
+ * SAME row shape as GET /api/inbox, so this reuses `isInboxMessage` rather
+ * than introducing a second, drifting definition of a row — and so the
+ * thread list can render with the very same `MessageRow` the inbox uses.
+ *
+ * THE ACCOUNT IS NOT OPTIONAL. A Gmail thread id is X-GM-THRID, allocated
+ * per mailbox, so two of this user's four accounts can hold the same value
+ * for unrelated conversations; without the account the reader listed one
+ * account's mail under another's message. Callers pass the `account_id` of
+ * the message they are showing — they always have it, since it is half of
+ * that message's own identity.
  *
  * An unknown thread id is not distinguishable from an empty one: the
  * server answers 200 with an empty array either way, on purpose (it
@@ -733,10 +741,12 @@ export async function getMessage(
  * means "no thread context to show", never "not found".
  */
 export async function getThread(
+  accountId: string,
   threadId: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<readonly InboxMessage[]> {
-  const body = await getJson(`/api/thread/${encodeURIComponent(threadId)}`, fetchImpl);
+  const segments = [accountId, threadId].map(encodeURIComponent);
+  const body = await getJson(`/api/thread/${segments.join('/')}`, fetchImpl);
   const messages = isRecord(body) && Array.isArray(body.messages) ? body.messages : [];
   return keepValid(messages, isInboxMessage, 'thread message(s)');
 }

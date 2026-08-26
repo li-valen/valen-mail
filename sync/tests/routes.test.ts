@@ -81,10 +81,35 @@ describe('router', () => {
   });
 
   it('returns an empty array for an unknown thread rather than 404', async () => {
-    const response = await router(new Request('http://x/api/thread/nope', { headers: auth }));
+    const response = await router(new Request('http://x/api/thread/harvard/nope', { headers: auth }));
     expect(response.status).toBe(200);
     const body = await readJson<{ messages: unknown[] }>(response);
     expect(body.messages).toEqual([]);
+  });
+
+  it('passes BOTH path segments to the thread read, account first', async () => {
+    // A thread id is Gmail's X-GM-THRID, which is allocated per mailbox —
+    // two of this user's accounts can hold the same value. The route must
+    // therefore carry the account, and must carry it all the way into the
+    // query rather than parsing it and dropping it on the floor.
+    const seen: Array<readonly [string, string]> = [];
+    const db = makeFakeDb({
+      getThread: async (accountId: string, threadId: string) => {
+        seen.push([accountId, threadId]);
+        return [];
+      },
+    });
+    const scoped = createRouter(db, FAKE_POOL, TOKEN);
+    await scoped(new Request('http://x/api/thread/harvard/t1', { headers: auth }));
+    expect(seen).toEqual([['harvard', 't1']]);
+  });
+
+  it('404s the old unscoped one-segment thread path instead of serving it', async () => {
+    // The whole point of the two-segment shape: a stale client that still
+    // asks for /api/thread/{threadId} must get nothing, not an
+    // account-blind read of every mailbox that happens to share that id.
+    const response = await router(new Request('http://x/api/thread/t1', { headers: auth }));
+    expect(response.status).toBe(404);
   });
 
   it('404s an unknown route', async () => {
@@ -440,7 +465,7 @@ describe('router / malformed path segments', () => {
   // confirming these tests are causally tied to the guard.
 
   it('400s a malformed percent-encoding in the thread id', async () => {
-    const response = await router(new Request('http://x/api/thread/%', { headers: auth }));
+    const response = await router(new Request('http://x/api/thread/harvard/%', { headers: auth }));
     expect(response.status).toBe(400);
   });
 

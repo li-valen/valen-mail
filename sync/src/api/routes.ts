@@ -266,12 +266,24 @@ async function handleOpens(
   return json({ opens: result.opens, available: true }, 200, PRIVATE_NO_STORE);
 }
 
-async function handleThread(db: Db, threadId: string): Promise<Response> {
+async function handleThread(
+  db: Db,
+  accountId: string,
+  threadId: string,
+): Promise<Response> {
   // Resolution 3: an unknown thread id is not distinguished from an empty
   // one. A 404 here would let a caller probe which thread ids exist across
   // the unified inbox; returning 200 with an empty array either way removes
-  // that signal.
-  const messages = await db.getThread(threadId);
+  // that signal. An unconfigured ACCOUNT id is treated the same way and for
+  // the same reason, rather than 400ing the way /api/inbox's `account`
+  // FILTER does: there the account narrows a route that works without it,
+  // so a typo silently returning "no mail" is a real trap; here the account
+  // is half of the thread's identity, and the client only ever sends back
+  // the `account_id` of a row this service itself issued.
+  //
+  // Both halves reach the query. A thread id is unique only within the
+  // mailbox that issued it — see db.getThread.
+  const messages = await db.getThread(accountId, threadId);
   return json({ messages }, 200, PRIVATE_NO_STORE);
 }
 
@@ -616,11 +628,17 @@ export function createRouter(
       return handleIdentities(accounts);
     }
 
-    const threadMatch = path.match(/^\/api\/thread\/([^/]+)$/);
+    // {accountId}/{threadId}, in that order, mirroring /api/message's own
+    // account-first shape. Two segments rather than one so the old
+    // account-blind path cannot keep working by accident: a stale client
+    // asking for /api/thread/{threadId} falls through to 404 instead of
+    // being served another mailbox's mail that happens to share the id.
+    const threadMatch = path.match(/^\/api\/thread\/([^/]+)\/([^/]+)$/);
     if (threadMatch) {
-      const decoded = decodeSegments([threadMatch[1] ?? '']);
+      const decoded = decodeSegments([threadMatch[1] ?? '', threadMatch[2] ?? '']);
       if (decoded instanceof Response) return decoded;
-      return handleThread(db, decoded[0]!);
+      const [accountId, threadId] = decoded;
+      return handleThread(db, accountId!, threadId!);
     }
 
     const bodyMatch = path.match(/^\/api\/message\/([^/]+)\/([^/]+)\/([^/]+)\/body$/);

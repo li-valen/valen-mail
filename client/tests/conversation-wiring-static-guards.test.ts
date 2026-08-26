@@ -175,7 +175,11 @@ describe('day grouping, the cursor and the reader still work on rows', () => {
     // task deliberately does not duplicate — there is no second thread
     // view anywhere in the client.
     expect(/<ThreadContext/.test(READER)).toBe(true);
-    expect(/getThread\(threadId\)/.test(THREAD)).toBe(true);
+    // Account FIRST and always. A Gmail thread id is allocated per
+    // mailbox, so `getThread(threadId)` alone listed a different
+    // account's mail under this message, every row of it clickable.
+    expect(/getThread\(accountId, threadId\)/.test(THREAD)).toBe(true);
+    expect(/const accountId = message\.account_id/.test(THREAD)).toBe(true);
     expect(/Also in this thread/.test(THREAD)).toBe(true);
     // The one place a thread is listed. A second component fetching
     // /api/thread would be the duplicate this asserts against.
