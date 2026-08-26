@@ -29,8 +29,20 @@ export function EmptyState({ icon: Icon, title, description, action, className }
         <Icon className="h-5 w-5 text-neutral-400 dark:text-muted-foreground" aria-hidden="true" />
       </div>
       <h3 className="text-sm font-semibold text-neutral-900 dark:text-foreground mb-1">{title}</h3>
+      {/* `mb-5` ONLY when something follows. Ported from Plunk with the
+          margin unconditional, which left 20px of dead space under the
+          last line of every empty state in this app — and all of them
+          (every inbox folder, every search miss, both follow-up scopes)
+          are description-only. Inside a `py-14` block that read as a
+          panel that had lost its button rather than as one that never
+          had one. */}
       {description && (
-        <p className="text-sm text-neutral-500 dark:text-muted-foreground max-w-xs mx-auto leading-relaxed mb-5">
+        <p
+          className={cn(
+            'text-sm text-neutral-500 dark:text-muted-foreground max-w-xs mx-auto leading-relaxed',
+            action !== undefined && 'mb-5',
+          )}
+        >
           {description}
         </p>
       )}

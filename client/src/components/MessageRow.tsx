@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { Archive, Check, Paperclip, Star, Trash2 } from 'lucide-react';
 import type { InboxMessage } from '../api';
 import type { MoveDestination } from '../mailboxActions';
+import { ClosingRow } from '../motion';
 import { Badge } from '../ui/Badge';
 import { cn } from '../ui/cn';
 import { formatWhen } from './inboxDates';
@@ -395,7 +396,18 @@ export default function MessageRow({
     // row button cannot contain them (a <button> inside a <button> is
     // invalid and browsers un-nest it), so they are a SIBLING positioned
     // over the row's right end.
-    <li className="group relative">
+    //
+    // `ClosingRow` IS the `<li>` — see src/motion/ClosingRow.tsx. It adds
+    // exactly one thing and changes nothing else: when a NEIGHBOUR is
+    // archived, this row SLIDES into the gap instead of jumping into it,
+    // so the list closes over a removal rather than snapping shut. The
+    // row's own removal is still immediate, and that file records why an
+    // exit animation is not what happens here.
+    //
+    // No entrance either: arrival belongs to the day group above
+    // (`<Settle groupCount>`), and a row with one of its own would be two
+    // entrances for one list.
+    <ClosingRow className="group relative">
       <button
         type="button"
         onClick={() => onOpen(message)}
@@ -772,6 +784,6 @@ export default function MessageRow({
           </RowAction>
         </span>
       )}
-    </li>
+    </ClosingRow>
   );
 }

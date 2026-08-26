@@ -184,6 +184,8 @@ describe('the surfaces Plan 7 named are actually wired up', () => {
     { file: 'src/components/Compose.tsx', needle: /<Panel/, what: 'composer open' },
     { file: 'src/ui/Button.tsx', needle: /motion-safe:active:scale-/, what: 'button press feedback' },
     { file: 'src/components/MessageRow.tsx', needle: /active:bg-/, what: 'row press feedback' },
+    { file: 'src/components/MessageRow.tsx', needle: /<ClosingRow/, what: 'list closing over an archived row' },
+    { file: 'src/components/BulkActionBar.tsx', needle: /barVariantsFor/, what: 'bulk bar arrival' },
   ];
 
   it.each(WIRED)('$file carries the $what', ({ file, needle }) => {

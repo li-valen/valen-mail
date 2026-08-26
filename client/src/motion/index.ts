@@ -3,10 +3,10 @@
  *
  * Components import from `../motion`, never from `../motion/tokens` or
  * `../motion/variants` directly, so retuning the system stays a change to
- * these four files rather than a grep across the tree. `motion/react`
+ * this directory rather than a grep across the tree. `motion/react`
  * itself is imported directly by the handful of components that need a
  * bespoke animation (the sidebar's shared-element pill, the opens rail's
- * per-row entrance) — those are listed in
+ * per-row entrance, the bulk bar's sticky arrival) — those are listed in
  * tests/motion-reduced-guard.test.ts's scan, which is what keeps each of
  * them honest about `prefers-reduced-motion`.
  */
@@ -17,7 +17,11 @@ export type { SettleProps, SettleGroupProps } from './Settle';
 export { Panel } from './Panel';
 export type { PanelProps } from './Panel';
 
+export { ClosingRow } from './ClosingRow';
+export type { ClosingRowProps } from './ClosingRow';
+
 export {
+  BAR_ENTER_PX,
   DURATION_MS,
   EASE,
   EASE_CSS,
@@ -35,6 +39,8 @@ export {
 export type { Bezier, DurationName } from './tokens';
 
 export {
+  barVariantsFor,
+  closingRowTransitionFor,
   groupItemVariantsFor,
   isRemoved,
   navPillTransitionFor,

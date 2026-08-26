@@ -6,6 +6,7 @@ import messageViewSource from '../src/components/MessageView.tsx?raw';
 import undoNoticeSource from '../src/components/UndoNotice.tsx?raw';
 import actionsSource from '../src/mailboxActions.ts?raw';
 import hookSource from '../src/keyboard/useKeyboardShortcuts.ts?raw';
+import closingRowSource from '../src/motion/ClosingRow.tsx?raw';
 
 /**
  * The WIRING checks for archive, trash and undo — the same
@@ -40,6 +41,7 @@ const READER = stripComments(messageViewSource);
 const UNDO = stripComments(undoNoticeSource);
 const ACTIONS = stripComments(actionsSource);
 const HOOK = stripComments(hookSource);
+const LEAVING = stripComments(closingRowSource);
 
 describe('the reader can actually get a message out of the inbox', () => {
   it('renders both actions', () => {
@@ -87,7 +89,14 @@ describe('a list row can too, on desktop only', () => {
     // Invalid HTML that browsers silently un-nest, which would move the
     // controls out of the row entirely. They are a SIBLING of the row
     // button inside a `relative` <li>.
-    expect(/<li className="group relative">/.test(ROW)).toBe(true);
+    //
+    // The element is spelled `<ClosingRow>` since the row gained a
+    // layout slide — so this checks BOTH halves, because the first alone
+    // would now pass against a component that rendered a <div>: the row
+    // asks for `group relative`, and src/motion/ClosingRow.tsx puts that
+    // className on a real <li>.
+    expect(/<ClosingRow className="group relative">/.test(ROW)).toBe(true);
+    expect(/<motion\.li[\s\S]{0,80}className=\{className\}/.test(LEAVING)).toBe(true);
   });
 
   it('gives every icon-only control an accessible name that says WHICH row', () => {

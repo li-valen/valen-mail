@@ -1,17 +1,29 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  barVariantsFor,
   groupItemVariantsFor,
   isRemoved,
   navPillTransitionFor,
   panelVariantsFor,
   railRowVariantsFor,
+  closingRowTransitionFor,
   settleGroupVariantsFor,
   settleVariantsFor,
   type MotionTarget,
   type MotionVariants,
 } from '../src/motion/variants';
-import { DURATION_MS, LIFT_PX, MAX_STAGGERED_GROUPS, ROW_ENTER_PX, seconds } from '../src/motion/tokens';
+import {
+  BAR_ENTER_PX,
+  DURATION_MS,
+  EASE,
+  LIFT_PX,
+  MAX_DURATION_MS,
+  MAX_STAGGERED_GROUPS,
+  MIN_DURATION_MS,
+  ROW_ENTER_PX,
+  seconds,
+} from '../src/motion/tokens';
 import { scanNewEntries } from '../src/motion/newEntries';
 
 /**
@@ -39,6 +51,7 @@ const BUILDERS: ReadonlyArray<{
   { name: 'groupItemVariantsFor', build: (r) => groupItemVariantsFor(r) },
   { name: 'panelVariantsFor', build: (r) => panelVariantsFor(r) },
   { name: 'railRowVariantsFor', build: (r) => railRowVariantsFor(r) },
+  { name: 'barVariantsFor', build: (r) => barVariantsFor(r) },
 ];
 
 /** The properties this project is allowed to animate, plus the
@@ -167,6 +180,73 @@ describe('the settle builders', () => {
   it('a new opens row enters from above', () => {
     expect(railRowVariantsFor(false).hidden.transform).toBe(`translateY(${ROW_ENTER_PX}px)`);
     expect(railRowVariantsFor(false).visible.transition?.duration).toBe(seconds(DURATION_MS.row));
+  });
+});
+
+/**
+ * THE LIST CLOSING over an archived row, which is a `layout` slide rather
+ * than an exit — and the reason it is a slide is a finding from the
+ * browser, not a preference.
+ *
+ * An inbox row sits inside `<SettleGroup>`, itself a `motion` component,
+ * which makes the row a variant CHILD; `motion` leaves a variant child's
+ * exit to the root of its tree, and that root (the day group) is not the
+ * thing being removed. An `<AnimatePresence>` exit on the rows therefore
+ * never completed, and because `AnimatePresence` unmounts on completion,
+ * every archived row stayed in the DOM leaving a one-row hole in the
+ * card. The whole suite was green throughout.
+ *
+ * What survives is the half that works and is the half the eye follows:
+ * the rows BENEATH the archived one gliding up into the gap.
+ */
+describe('the list closes over an archived row instead of snapping shut', () => {
+  it('slides at the content-arriving speed', () => {
+    // The list closing is content arriving, seen from the other side.
+    expect(closingRowTransitionFor(false).duration).toBe(seconds(DURATION_MS.settle));
+    expect(closingRowTransitionFor(false).ease).toEqual(EASE.out);
+  });
+
+  it('reduced motion removes the slide rather than shortening it', () => {
+    // Same contract as every builder above: the rows are simply already
+    // in their new places on the next frame.
+    expect(closingRowTransitionFor(true)).toEqual({ duration: 0 });
+    expect(closingRowTransitionFor(true).ease).toBeUndefined();
+  });
+
+  it('is genuinely not removed at full motion (the check above can fail)', () => {
+    expect(closingRowTransitionFor(false).duration).toBeGreaterThan(0);
+  });
+});
+
+describe('the bulk action bar arrives from the top of its own column', () => {
+  it('enters from above, like the drawer and the rail rows', () => {
+    expect(BAR_ENTER_PX).toBeLessThan(0);
+    expect(barVariantsFor(false).hidden.transform).toBe(`translateY(${BAR_ENTER_PX}px)`);
+    expect(barVariantsFor(false).visible.transform).toBe('translateY(0px)');
+  });
+
+  it('has no exit half, and that is deliberate rather than missing', () => {
+    // `AnimatePresence` under React's <StrictMode> left the CLEARED bar
+    // on screen, opaque and interactive, still reading "1 selected" —
+    // see src/motion/ClosingRow.tsx. The bar appears because the user ticked
+    // something and needs to see it registered; it goes because the user
+    // cleared the selection, which needs no slow confirmation back.
+    // `hidden` is therefore an entrance's starting point only.
+    expect(Object.keys(barVariantsFor(false)).sort()).toEqual(['hidden', 'visible']);
+  });
+
+  it('travels the same distance as a new opens row, because it is the same idea', () => {
+    // Two unsolicited surfaces entering from the top of their column.
+    // Stated as an agreement rather than derived, so retuning one is a
+    // visible decision about the other.
+    expect(BAR_ENTER_PX).toBe(ROW_ENTER_PX);
+  });
+
+  it('settles at the content-arriving speed, inside the band', () => {
+    const duration = barVariantsFor(false).visible.transition?.duration;
+    expect(duration).toBe(seconds(DURATION_MS.settle));
+    expect(DURATION_MS.settle).toBeGreaterThanOrEqual(MIN_DURATION_MS);
+    expect(DURATION_MS.settle).toBeLessThanOrEqual(MAX_DURATION_MS);
   });
 });
 

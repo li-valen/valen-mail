@@ -188,6 +188,19 @@ export const LIFT_PX = 6;
 export const ROW_ENTER_PX = -8;
 
 /**
+ * How far the bulk action bar travels as it arrives over the list, and
+ * again in which direction — negative, i.e. down from above.
+ *
+ * The same `ROW_ENTER_PX` distance as a new opens-rail row, for the same
+ * reason: both are unsolicited surfaces entering from the top of their
+ * column, and two surfaces doing the same thing at different distances is
+ * exactly the drift this file exists to prevent. Stated separately rather
+ * than aliased because the two are one number by AGREEMENT, not by
+ * derivation — retuning the rail must not silently retune the bar.
+ */
+export const BAR_ENTER_PX = -8;
+
+/**
  * Delay between adjacent day groups in the inbox list, in milliseconds.
  *
  * PER GROUP, NEVER PER ROW. A list holds 50+ rows; at any stagger worth

@@ -751,10 +751,17 @@ export default function InboxList({
             <Button variant="outline" className="w-full" onClick={loadMore} disabled={isLoadingMore}>
               {isLoadingMore ? 'Loading…' : 'Load more'}
             </Button>
+            {/* `<Settle>` like every other failure in this app. It was
+                the one banner that materialised between two frames —
+                which, arriving directly under the button the user just
+                pressed, read as the button having redrawn itself rather
+                than as an answer. */}
             {loadMoreError !== null && (
-              <Alert variant="destructive">
-                <AlertDescription>{loadMoreError}</AlertDescription>
-              </Alert>
+              <Settle>
+                <Alert variant="destructive">
+                  <AlertDescription>{loadMoreError}</AlertDescription>
+                </Alert>
+              </Settle>
             )}
           </div>
         )}

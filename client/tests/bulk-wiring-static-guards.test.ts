@@ -9,6 +9,7 @@ import messageRowSource from '../src/components/MessageRow.tsx?raw';
 import runnerSource from '../src/bulkRunner.ts?raw';
 import selectionSource from '../src/bulkSelection.ts?raw';
 import conversationsSource from '../src/conversations.ts?raw';
+import closingRowSource from '../src/motion/ClosingRow.tsx?raw';
 
 /**
  * The WIRING checks for bulk selection — the same `?raw`-import-and-regex
@@ -42,6 +43,7 @@ const ROW = stripComments(messageRowSource);
 const RUNNER = stripComments(runnerSource);
 const SELECTION = stripComments(selectionSource);
 const CONVERSATIONS = stripComments(conversationsSource);
+const LEAVING = stripComments(closingRowSource);
 
 describe('the rollback is applied UNCONDITIONALLY', () => {
   it('reveals the failed rows BEFORE the generation guard, not after it', () => {
@@ -196,7 +198,11 @@ describe('a row can be ticked, at both widths', () => {
   it('the desktop box is a SIBLING of the row button, never nested inside it', () => {
     // A <button> inside a <button> is invalid and browsers silently
     // un-nest it, which would move the control out of the row entirely.
-    expect(/<li className="group relative">/.test(ROW)).toBe(true);
+    // Spelled `<ClosingRow>` since the row gained a layout slide. Both
+    // halves are checked: the row asks for `group relative`, and
+    // src/motion/ClosingRow.tsx puts that className on a real <li>.
+    expect(/<ClosingRow className="group relative">/.test(ROW)).toBe(true);
+    expect(/<motion\.li[\s\S]{0,80}className=\{className\}/.test(LEAVING)).toBe(true);
     expect(/<SelectBox[\s\S]{0,400}absolute left-4/.test(ROW)).toBe(true);
   });
 

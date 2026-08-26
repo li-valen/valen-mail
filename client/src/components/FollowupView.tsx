@@ -281,10 +281,16 @@ export default function FollowupView({ account, onOpenMessage }: FollowupViewPro
           <Button variant="outline" className="w-full" onClick={loadMore} disabled={isLoadingMore}>
             {isLoadingMore ? 'Loading…' : 'Load more'}
           </Button>
+          {/* `<Settle>`, matching InboxList's own load-more failure and
+              every other banner in this app. It was the one that
+              materialised between two frames, directly under the button
+              the user had just pressed. */}
           {loadMoreError !== null && (
-            <Alert variant="destructive">
-              <AlertDescription>{loadMoreError}</AlertDescription>
-            </Alert>
+            <Settle>
+              <Alert variant="destructive">
+                <AlertDescription>{loadMoreError}</AlertDescription>
+              </Alert>
+            </Settle>
           )}
         </div>
       )}

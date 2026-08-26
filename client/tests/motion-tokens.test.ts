@@ -6,6 +6,7 @@ import {
   EASE_CSS,
   EASE_CSS_VARIABLE,
   GROUP_STAGGER_MS,
+  BAR_ENTER_PX,
   LIFT_PX,
   MAX_DURATION_MS,
   MAX_STAGGERED_GROUPS,
@@ -192,6 +193,11 @@ describe('travel distances and the stagger budget', () => {
     // below, where the older events are.
     expect(ROW_ENTER_PX).toBeLessThan(0);
     expect(Math.abs(ROW_ENTER_PX)).toBeLessThanOrEqual(8);
+  });
+
+  it('the bulk bar enters from above, at the rail row’s distance', () => {
+    expect(BAR_ENTER_PX).toBeLessThan(0);
+    expect(Math.abs(BAR_ENTER_PX)).toBeLessThanOrEqual(8);
   });
 
   it('the stagger is inside the 30–80ms band and cannot add up to a wipe', () => {

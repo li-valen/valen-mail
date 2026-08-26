@@ -1,4 +1,5 @@
 import {
+  BAR_ENTER_PX,
   DURATION_MS,
   EASE,
   GROUP_STAGGER_MS,
@@ -212,6 +213,64 @@ export function panelVariantsFor(isReduced: boolean): MotionVariants {
     visible: {
       ...AT_REST,
       transition: { duration: seconds(DURATION_MS.panel), ease: EASE.out },
+    },
+  };
+}
+
+/**
+ * HOW LONG THE LIST TAKES TO CLOSE over an archived row — the FLIP slide
+ * in ./ClosingRow.tsx's `ClosingRow`, not an entrance or an exit.
+ *
+ * A transition rather than a variant pair, because `layout` has no two
+ * ends to name: `motion` measures where each row was and where it now is,
+ * and this says only how it should travel between them. That is also why
+ * it cannot go through `MotionTarget` — there is no target.
+ *
+ * `settle` speed: the list closing IS content arriving in the content
+ * column, seen from the other side, and it should take exactly as long as
+ * a list settling in. Slower and the gap dawdles; faster and it snaps,
+ * which is the thing being fixed.
+ *
+ * REDUCED MOTION gets a zero duration rather than a quick one. The rows
+ * are simply already in their new places on the next frame, exactly as
+ * they were before any of this existed — removal, not speed, the same
+ * answer `removedVariants` gives above.
+ */
+export function closingRowTransitionFor(isReduced: boolean): MotionTransition {
+  if (isReduced) return { duration: 0 };
+  return { duration: seconds(DURATION_MS.settle), ease: EASE.out };
+}
+
+/**
+ * THE BULK ACTION BAR arriving over the list, and leaving it.
+ *
+ * The one surface in this app that appears in direct response to a click
+ * WITHOUT replacing anything — ticking the first row conjures it above
+ * fifty rows of mail that stay exactly where they were. Its arrival IS
+ * the feedback that the tick registered (see components/BulkActionBar.tsx),
+ * and an element that is simply present on the next frame does not read
+ * as an arrival at all.
+ *
+ * DOWN FROM ABOVE, like the drawer and the rail rows: it comes from the
+ * top of the column, so it enters from the direction it came from.
+ *
+ * NO HEIGHT, so the rows below do not stay where they were — they slide
+ * down as the bar takes its space, because they carry `layout` for the
+ * archive case already (./ClosingRow.tsx). One mechanism, two gestures.
+ *
+ * The bar is `position: sticky`, which is why these variants belong to
+ * the BAR ITSELF and never to a wrapper around it: a transform on an
+ * ancestor makes that ancestor a containing block and un-sticks
+ * everything beneath it. On the sticky element itself a transform is
+ * harmless.
+ */
+export function barVariantsFor(isReduced: boolean): MotionVariants {
+  if (isReduced) return removedVariants();
+  return {
+    hidden: { opacity: 0, transform: `translateY(${BAR_ENTER_PX}px)` },
+    visible: {
+      ...AT_REST,
+      transition: { duration: seconds(DURATION_MS.settle), ease: EASE.out },
     },
   };
 }

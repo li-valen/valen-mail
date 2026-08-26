@@ -1,5 +1,7 @@
 import type { ReactNode } from 'react';
+import { motion, useReducedMotion } from 'motion/react';
 import { Archive, MailOpen, Mails, Trash2, X } from 'lucide-react';
+import { barVariantsFor } from '../motion';
 import { Button } from '../ui/Button';
 import { cn } from '../ui/cn';
 import type { MoveDestination } from '../mailboxActions';
@@ -12,7 +14,27 @@ import { SELECT_BOX, SelectBox } from './SelectBox';
  * greyed: absent. A row of inert Archive/Trash buttons sitting over an
  * inbox nobody has ticked anything in is permanent chrome the user has to
  * read past on every visit, and this app's list is deliberately quiet.
- * Its arrival IS the feedback that the first tick registered.
+ * Its arrival IS the feedback that the first tick registered — which is
+ * exactly why it ARRIVES rather than simply being there on the next
+ * frame. It fades down from the top of the column (`barVariantsFor` in
+ * src/motion/variants.ts, the same direction the drawer and the rail rows
+ * come from) while the rows beneath slide down to make room for it.
+ *
+ * ENTRANCE ONLY, and the asymmetry is argued rather than forgotten —
+ * `src/motion/Panel.tsx` makes the same call for the reader, and App.tsx
+ * makes it for the send confirmation. The bar appears because the user
+ * ticked something and needs to see that it registered; it goes because
+ * the user cleared the selection, which is their own deliberate act and
+ * does not need confirming back to them slowly. src/motion/ClosingRow.tsx
+ * records what happened when an exit WAS attempted here: under React's
+ * `<StrictMode>`, `AnimatePresence` left the cleared bar on screen, fully
+ * opaque and fully interactive, still reading "1 selected".
+ *
+ * THE ANIMATION IS ON THE BAR ITSELF, NEVER ON A WRAPPER. This element is
+ * `position: sticky`; a transform on an ancestor would make that ancestor
+ * a containing block and un-stick it permanently — the same trap
+ * src/motion/variants.ts's `settleVariantsFor` documents for the opens
+ * rail. On the sticky element itself a transform is harmless.
  *
  * **STICKY, WHICH IS THE ONE PLACE THIS DEPARTS FROM "IN PLACE, NEVER A
  * TOAST".** Every other banner in this app sits in the flow and scrolls
@@ -78,14 +100,19 @@ export default function BulkActionBar({
   onMove,
   onMarkSeen,
 }: BulkActionBarProps) {
+  const isReduced = useReducedMotion() ?? false;
+
   return (
     // `role="toolbar"` and not a landmark: this is a set of controls
     // acting on one thing, which is exactly what a toolbar is, and it
     // keeps the bar out of landmark navigation where it would appear and
     // disappear as the user ticks rows.
-    <div
+    <motion.div
       role="toolbar"
       aria-label={`Actions for ${countLabel}`}
+      variants={barVariantsFor(isReduced)}
+      initial="hidden"
+      animate="visible"
       className={cn(
         // `pl-4 pr-2`, not a symmetric `px-`: the leading padding is the
         // desktop ROW's own `px-4`, so the select-all box lands on the
@@ -164,6 +191,6 @@ export default function BulkActionBar({
           Clear
         </BarAction>
       </span>
-    </div>
+    </motion.div>
   );
 }

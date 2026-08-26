@@ -26,7 +26,7 @@ import {
   seedReplyDraft,
 } from '../replyDraft';
 import type { ReplySource, SeededDraft } from '../replyDraft';
-import { Panel } from '../motion';
+import { Panel, Settle } from '../motion';
 import ComposeOutcome from './ComposeOutcome';
 import RecipientField from './RecipientField';
 import { includesRecipient, mergeRecipients, parseRecipients } from './composeRecipients';
@@ -764,10 +764,20 @@ export default function Compose({ reply, onClose, onSent, onDirtyChange }: Compo
                can still drop a file or a recipient. An Alert rather than
                the quiet muted line below it because this is a decision,
                not a footnote: what the message can tell them afterwards
-               is about to change. */
-            <Alert variant="warning">
-              <AlertDescription>{degradationNotice()}</AlertDescription>
-            </Alert>
+               is about to change.
+
+               `<Settle>` because of WHEN it appears: mid-compose, in
+               answer to the file the user just attached, with the form
+               already on screen around it. Every other banner in this app
+               settles in for exactly that reason (see App.tsx's), and
+               this was the one that punched into the layout between two
+               frames — which reads as the form having jumped rather than
+               as the app answering. */
+            <Settle>
+              <Alert variant="warning">
+                <AlertDescription>{degradationNotice()}</AlertDescription>
+              </Alert>
+            </Settle>
           )}
 
           {quoteNotice !== null && (
