@@ -205,7 +205,7 @@ describe('the removal is optimistic AND rolls back', () => {
     // defect in a quieter costume. The list reports CONVERSATIONS now, so
     // this is two links: the conversations are grouped from `visible`
     // (post-hidden-key), and it is those that are reported upward.
-    expect(/groupIntoConversations\(visible\)/.test(LIST)).toBe(true);
+    expect(/groupIntoConversations\(visible,/.test(LIST)).toBe(true);
     expect(/onConversationsChange\?\.\(conversations\)/.test(LIST)).toBe(true);
   });
 
@@ -214,10 +214,17 @@ describe('the removal is optimistic AND rolls back', () => {
     // if only some members moved, the survivors come back as a smaller
     // conversation with an honest count. Grouping `messages` instead
     // would keep an archived conversation on screen at full size.
-    expect(/const conversations = useMemo\(\(\) => groupIntoConversations\(visible\)/.test(LIST)).toBe(
+    expect(
+      /const conversations = useMemo\(\s*\(\) => groupIntoConversations\(visible,/.test(LIST),
+    ).toBe(true);
+    expect(/groupIntoConversations\(messages/.test(LIST)).toBe(false);
+    // The membership predicate is the SECOND argument and must be the
+    // shared one: a literal written inline here would be a second answer
+    // to "is this message in the folder being browsed" that no test of
+    // ../src/conversations.ts can reach.
+    expect(/groupIntoConversations\(visible, folderMembershipFor\(folder, isSearching\)\)/.test(LIST)).toBe(
       true,
     );
-    expect(/groupIntoConversations\(messages\)/.test(LIST)).toBe(false);
   });
 });
 

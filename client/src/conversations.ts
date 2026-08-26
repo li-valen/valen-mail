@@ -1,6 +1,8 @@
 import type { InboxMessage } from './api';
 import { messageKey } from './components/messageBody';
 import { rowLayoutFor } from './components/messageRowLayout';
+import type { FolderId } from './inboxFilters';
+import { INBOX_FOLDER } from './mailboxActions';
 
 /**
  * WHAT A CONVERSATION IS, AND WHAT ONE ROW SAYS ABOUT IT — as pure data
@@ -79,16 +81,47 @@ export interface Conversation {
    * newest message changes really has become a different row.
    */
   readonly key: string;
-  /** The row's message: the newest member. See `newestFirst`. */
+  /** The row's message: the newest member IN THE BROWSED FOLDER. See
+   *  `newestFirst` for "newest", and `actionable` below for why the
+   *  qualifier exists — a Sent reply is newer than what it replies to,
+   *  and a row whose sender and preview came from the user's own outgoing
+   *  copy would be a different row than the one they are looking for. */
   readonly representative: InboxMessage;
-  /** Every loaded member, newest first. Within the current filter — see
-   *  the route's own doc comment: the inbox view's conversation is the
-   *  thread's INBOX messages, and a search's is its matching ones. */
+  /**
+   * EVERYTHING THE USER CAN SEE IN THIS CONVERSATION, newest first —
+   * what the count, the participants and the unread/star/paperclip
+   * rollups are read from.
+   *
+   * Since the Inbox view's member query widens to Sent (sync/src/api/
+   * conversations.ts), this includes the user's OWN replies: *"reply
+   * feature should be sent in the same email chain."* In every other view
+   * it is what it always was, the thread's messages within that view's
+   * own filter.
+   */
   readonly messages: readonly InboxMessage[];
-  /** `messages.length`, named because it is what the row prints and what
-   *  a bulk action acts on. The two are the same number BY
-   *  CONSTRUCTION — there is no truncated member list anywhere, so the
-   *  badge can never promise more than an archive would take. */
+  /**
+   * THE SUBSET A BULK ACTION MAY ACT ON: the members that are in the
+   * folder actually being browsed.
+   *
+   * **THIS IS WHAT KEEPS ARCHIVE ARMED.** Widening `messages` to Sent
+   * without this would put a Sent message inside nearly every Inbox
+   * conversation, and `isConversationSelectable`'s `every` would then
+   * refuse to tick any conversation the user had ever replied to — the
+   * whole inbox, silently un-archivable. Acting on the Inbox members and
+   * leaving the Sent copy in Sent is also simply what archiving a thread
+   * MEANS (and what Gmail does): the conversation leaves the inbox, the
+   * user's own outgoing copy stays where they sent it, and
+   * ../mailboxActions.ts's `canMoveFrom` already refuses to move Sent
+   * mail for reasons of its own.
+   *
+   * Identical to `messages` in every view that does not widen, so the
+   * action path is byte-for-byte what it was before the widening existed.
+   */
+  readonly actionable: readonly InboxMessage[];
+  /** `messages.length` — what the row PRINTS. Not necessarily what a bulk
+   *  action moves: see `actionable`. The badge counts the conversation
+   *  the user can see, which is the honest number for a row that exists
+   *  to say how big this conversation is. */
   readonly count: number;
 }
 
@@ -168,45 +201,126 @@ export function newestFirst(messages: readonly InboxMessage[]): readonly InboxMe
  * Total by construction: an empty list produces no conversations, and
  * every input message ends up in exactly one — nothing is dropped, so
  * `conversations.reduce((n, c) => n + c.count, 0)` always equals
- * `messages.length`. That is what makes "the badge says what an archive
- * takes" a property rather than an intention.
+ * `messages.length`.
+ *
+ * ---------------------------------------------------------------------
+ * `isFolderMember` — WHICH MEMBERS THE VIEW IS ACTUALLY BROWSING.
+ * ---------------------------------------------------------------------
+ * The Inbox view's page now carries the thread's Sent messages too, so
+ * that a conversation contains the user's own replies (sync/src/api/
+ * conversations.ts). Those members must count and must be drawn, but they
+ * must NOT decide three things, and this predicate is what keeps them
+ * out of all three:
+ *
+ *  - **the representative.** A reply is newer than what it replies to, so
+ *    position zero would hand the row the user's own outgoing copy and
+ *    the list would show their own name and their own words back at them.
+ *  - **the list's ORDER.** Order is first appearance, which is
+ *    conversation-by-recency only while the first sighting of a
+ *    conversation is the message the server ranked it by. A Sent reply
+ *    sighted first would move a conversation up the page past ones the
+ *    server put above it — the client silently disagreeing with the
+ *    pagination it is drawing.
+ *  - **`actionable`**, and therefore every tick, hide and archive.
+ *
+ * Defaults to "every member", which is exactly what every view that does
+ * not widen wants — and makes this function's output identical, field for
+ * field, to what it produced before the parameter existed.
  */
+const EVERY_MEMBER = (): boolean => true;
+
+/** The Inbox view's own members. `INBOX` is imported rather than spelled
+ *  again here: ../mailboxActions.ts already owns that literal and already
+ *  explains why this one folder name may be hardcoded at all (RFC 3501
+ *  reserves it; every other name is a per-account discovery result). */
+const IS_INBOX_MEMBER = (message: InboxMessage): boolean => message.folder === INBOX_FOLDER;
+
+/**
+ * Which of a page's messages belong to the view that asked for them —
+ * the predicate `groupIntoConversations` needs, chosen from the same two
+ * values the request was built from.
+ *
+ * ONLY THE UN-SEARCHED INBOX WIDENS, so only it needs to narrow again.
+ * That is not a coincidence to be tidied up later: it is the same
+ * condition sync/src/api/conversations.ts's `resolveMemberFolder` tests
+ * before it widens, and the two must agree or the client would either
+ * classify Sent replies as inbox mail (arming Archive against them) or
+ * discard members nothing widened in (emptying `actionable`, disarming
+ * Archive everywhere). Keeping both sides written as the same two
+ * conditions in the same order is what makes that agreement checkable.
+ *
+ * Both branches return MODULE-LEVEL constants, so a re-render with an
+ * unchanged folder hands `useMemo` the identity it had last time.
+ */
+export function folderMembershipFor(
+  folder: FolderId,
+  isSearching: boolean,
+): (message: InboxMessage) => boolean {
+  return folder === 'inbox' && !isSearching ? IS_INBOX_MEMBER : EVERY_MEMBER;
+}
+
 export function groupIntoConversations(
   messages: readonly InboxMessage[],
+  isFolderMember: (message: InboxMessage) => boolean = EVERY_MEMBER,
 ): readonly Conversation[] {
   const order: string[] = [];
+  const placed = new Set<string>();
   const buckets = new Map<string, InboxMessage[]>();
 
   for (const message of messages) {
     const key = conversationKeyFor(message);
     const bucket = buckets.get(key);
-    if (bucket === undefined) {
+    if (bucket === undefined) buckets.set(key, [message]);
+    else bucket.push(message);
+
+    // Position is claimed by the first FOLDER member, not the first
+    // message — see the doc above. With the default predicate the two are
+    // the same sighting, so `order` is unchanged.
+    if (!placed.has(key) && isFolderMember(message)) {
+      placed.add(key);
       order.push(key);
-      buckets.set(key, [message]);
-    } else {
-      bucket.push(message);
     }
+  }
+
+  // Totality: a conversation whose every loaded member was widened in
+  // still has to be drawn, or messages would silently vanish from the
+  // list and the count invariant above would stop holding. Unreachable
+  // with the default predicate, and unreachable from the Inbox view too
+  // (the page is built FROM inbox rows), which is exactly why it must be
+  // written down rather than assumed away.
+  for (const key of buckets.keys()) {
+    if (placed.has(key)) continue;
+    placed.add(key);
+    order.push(key);
   }
 
   return order.map((key) => {
     const members = newestFirst(buckets.get(key)!);
-    // Non-null by construction: a key is only in `order` because a
-    // message created its bucket.
-    const representative = members[0]!;
+    const actionable = members.filter(isFolderMember);
+    // `members[0]` is non-null by construction (a key exists only because
+    // a message created its bucket); `actionable[0]` is not, hence the
+    // fallback — the same unreachable-but-written-down case as the loop
+    // above, and a conversation with no home folder is still better
+    // represented by its own newest message than by nothing.
+    const representative = actionable[0] ?? members[0]!;
     return {
       key: messageKey(representative),
       representative,
       messages: members,
+      actionable,
       count: members.length,
     };
   });
 }
 
-/** Every member's `messageKey` — what a bulk action ticks, hides and
- *  moves. In list order, so a partially-failed batch fails in a pattern
- *  the user can read down their own screen (../bulkSelection.ts). */
+/** Every ACTIONABLE member's `messageKey` — what a bulk action ticks,
+ *  hides and moves. `actionable`, not `messages`: a Sent reply the Inbox
+ *  view widened in is drawn and counted but is not the inbox's to move
+ *  (see `Conversation.actionable`). In list order, so a partially-failed
+ *  batch fails in a pattern the user can read down their own screen
+ *  (../bulkSelection.ts). */
 export function conversationMessageKeys(conversation: Conversation): readonly string[] {
-  return conversation.messages.map(messageKey);
+  return conversation.actionable.map(messageKey);
 }
 
 /**
@@ -264,7 +378,14 @@ export function isConversationSelectable(
   conversation: Conversation,
   canSelectOne: (message: InboxMessage) => boolean,
 ): boolean {
-  return conversation.messages.every(canSelectOne);
+  // OVER `actionable`, AND `every` IS STILL THE RULE. The two are the
+  // same array in every view that does not widen, so the Starred case
+  // above is decided exactly as it always was. What changes is only that
+  // a Sent reply the Inbox view added for DISPLAY cannot disarm the tick
+  // on a conversation whose inbox members are all perfectly movable —
+  // which, before `actionable` existed, is precisely what it did to every
+  // conversation the user had ever replied to.
+  return conversation.actionable.length > 0 && conversation.actionable.every(canSelectOne);
 }
 
 /** One sender's display text — the SAME resolution one row already uses,
@@ -448,7 +569,7 @@ export function representativesOf(
 export function allMessagesOf(
   conversations: readonly Conversation[],
 ): readonly InboxMessage[] {
-  return conversations.flatMap((conversation) => conversation.messages);
+  return conversations.flatMap((conversation) => conversation.actionable);
 }
 
 /**
@@ -469,8 +590,11 @@ export function membersByMessageKey(
 ): ReadonlyMap<string, readonly InboxMessage[]> {
   const index = new Map<string, readonly InboxMessage[]>();
   for (const conversation of conversations) {
+    // Keyed by every VISIBLE member so a widened Sent row still resolves
+    // to its conversation, but resolving TO `actionable`, because every
+    // caller of this index is an action (`expandConversation`).
     for (const member of conversation.messages) {
-      index.set(messageKey(member), conversation.messages);
+      index.set(messageKey(member), conversation.actionable);
     }
   }
   return index;

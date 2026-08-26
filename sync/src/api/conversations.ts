@@ -104,6 +104,53 @@ function resolveFolder(
   return resolveFolderFilter(folderParam, accountFilter, accounts, pool);
 }
 
+/**
+ * The folders a conversation's MEMBERS may come from — the Inbox view's
+ * answer to *"reply feature should be sent in the same email chain"*.
+ *
+ * **ONLY THE INBOX VIEW WIDENS, AND THAT IS A DELIBERATE FLOOR RATHER
+ * THAN A HALF-MEASURE.** Two reasons, and the second is the binding one:
+ *
+ *  - It is where the complaint lives. A user reads mail in the Inbox,
+ *    replies, and the reply lands in Sent — so the Inbox is the one list
+ *    whose conversations are systematically missing the user's own half.
+ *    Browsing Sent already shows nothing but the user's own mail, so a
+ *    union with Sent there is a no-op by definition.
+ *  - The CLIENT has to be able to tell a widened member from a native
+ *    one, because the representative, the list order and every bulk
+ *    action must keep coming from the folder actually being browsed
+ *    (../db.ts's getConversationPage). `INBOX` is the single mailbox name
+ *    RFC 3501 reserves and the one the client can therefore recognise
+ *    without being told — see the client's `conversations.ts`. Widening
+ *    Archive or All Mail would hand the client members it cannot
+ *    classify, because those names are per-account discovery results.
+ *
+ * A SEARCH IS NEVER WIDENED. Under `q` a conversation is the MATCHING
+ * messages of a thread and the count means exactly that; quietly adding
+ * non-matching Sent mail would make the number describe something else.
+ *
+ * An account whose Sent folder was never discovered contributes no pair,
+ * so `resolveFolderFilter` hands back an EMPTY 'pairs' — which matches
+ * zero rows. Returning `undefined` for that case rather than a union with
+ * a false branch keeps the query byte-identical to the un-widened one
+ * whenever there is nothing to widen with.
+ */
+function resolveMemberFolder(
+  raw: string | null,
+  hasQuery: boolean,
+  folder: InboxFolderFilter,
+  accountFilter: string | null,
+  accounts: readonly AccountConfig[],
+  pool: ConnectionPool,
+): InboxFolderFilter | undefined {
+  if (hasQuery) return undefined;
+  if (parseFolderParam(raw) !== 'inbox') return undefined;
+
+  const sent = resolveFolderFilter('sent', accountFilter, accounts, pool);
+  if (sent.kind === 'pairs' && sent.pairs.length === 0) return undefined;
+  return { kind: 'any', of: [folder, sent] };
+}
+
 export async function handleConversations(
   db: Db,
   pool: ConnectionPool,
@@ -141,6 +188,14 @@ export async function handleConversations(
     limit,
     cursor,
     folder,
+    memberFolder: resolveMemberFolder(
+      url.searchParams.get('folder'),
+      search !== null,
+      folder,
+      accountParam,
+      accounts,
+      pool,
+    ),
     accountId: accountParam,
     search,
   });

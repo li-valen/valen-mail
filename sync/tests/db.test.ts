@@ -262,6 +262,84 @@ maybe('db', () => {
       expect(page.messages.map((m: any) => Number(m.uid))).toEqual([13, 12, 11, 10]);
     });
 
+    /**
+     * A conversation contains the user's own replies — *"reply feature
+     * should be sent in the same email chain."*
+     *
+     * T4 in the fixture above is exactly that shape: uid 30 arrived in
+     * INBOX and uid 31 is the newer Sent copy. `memberFolder` is the only
+     * knob that changes, so these two cases differ in nothing else.
+     */
+    const SENT_PAIRS = {
+      kind: 'pairs',
+      pairs: [{ accountId: 'test-a', folder: '[Gmail]/Sent Mail' }],
+    } as const;
+    const INBOX_OR_SENT = { kind: 'any', of: [INBOX, SENT_PAIRS] } as const;
+
+    function membersOf(page: { messages: readonly any[] }, threadId: string) {
+      return page.messages
+        .filter((m: any) => m.thread_id === threadId && m.account_id === 'test-a')
+        .map((m: any) => Number(m.uid));
+    }
+
+    it('leaves the reply out when the member folder is not widened', async () => {
+      // The DEFECT, pinned. This is what the Inbox view did for every
+      // thread the user had replied to.
+      const page = await db.getConversationPage({
+        limit: 100, cursor: null, folder: INBOX, accountId: 'test-a',
+      });
+      expect(membersOf(page, 'T4')).toEqual([30]);
+    });
+
+    it('brings the Sent reply into the conversation when memberFolder widens', async () => {
+      const page = await db.getConversationPage({
+        limit: 100, cursor: null, folder: INBOX, memberFolder: INBOX_OR_SENT, accountId: 'test-a',
+      });
+      // Newest first, so the reply leads the conversation's members.
+      expect(membersOf(page, 'T4')).toEqual([31, 30]);
+    });
+
+    it('does NOT let the widened member become the representative or move the page', async () => {
+      // The representative and the ordering stay driven by `folder`. The
+      // Sent copy (uid 31) is newer than the inbox message it replies to,
+      // so a widening that leaked into either would put the user's own
+      // outgoing mail at the head of the row and shuffle the page.
+      const narrow = await db.getConversationPage({
+        limit: 100, cursor: null, folder: INBOX, accountId: 'test-a',
+      });
+      const widened = await db.getConversationPage({
+        limit: 100, cursor: null, folder: INBOX, memberFolder: INBOX_OR_SENT, accountId: 'test-a',
+      });
+      expect(widened.representatives.map((r: any) => Number(r.uid))).toEqual(
+        narrow.representatives.map((r: any) => Number(r.uid)),
+      );
+      const t4 = widened.representatives.find((r: any) => r.thread_id === 'T4');
+      expect(Number(t4.uid)).toBe(30);
+      expect(t4.folder).toBe('INBOX');
+    });
+
+    it('adds nothing to a conversation that has no Sent copy', async () => {
+      const page = await db.getConversationPage({
+        limit: 100, cursor: null, folder: INBOX, memberFolder: INBOX_OR_SENT, accountId: 'test-a',
+      });
+      expect(membersOf(page, 'T1')).toEqual([13, 12, 11, 10]);
+    });
+
+    it('runs the union as real SQL against a real Postgres', async () => {
+      // The union is built by string concatenation around bound
+      // placeholders; a mis-numbered one is a Bind error at runtime and a
+      // green suite everywhere a fake pool is used instead.
+      const page = await db.getConversationPage({
+        limit: 100,
+        cursor: null,
+        folder: INBOX,
+        memberFolder: INBOX_OR_SENT,
+        accountId: 'test-a',
+        search: 'c3',
+      });
+      expect(page.messages.every((m: any) => String(m.subject).startsWith('c3'))).toBe(true);
+    });
+
     it('never merges two accounts’ threads that share a Gmail thread id', async () => {
       // THE COLLISION. test-a and test-b both hold thread "T1". Keyed on
       // thread_id alone this is one conversation of six messages, and

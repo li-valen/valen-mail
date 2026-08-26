@@ -95,7 +95,7 @@ export interface PendingUndo {
  * looks like. Every DESTINATION is still discovered server-side; this is
  * only a question about where the message currently is.
  */
-const INBOX_FOLDER = 'INBOX';
+export const INBOX_FOLDER = 'INBOX';
 
 /**
  * True when archive / trash / spam may be offered for a message in this

@@ -256,12 +256,19 @@ describe('a row can be ticked, at both widths', () => {
 
   it('offers ticking exactly where moving is offered', () => {
     // A selection holding one row that cannot be archived would make the
-    // bar's Archive button partly inert. Decided per CONVERSATION now,
-    // and by `every`: `canBulkSelect` IS `canMoveFrom`, so this is the
-    // same predicate asked of all of what the row stands for.
+    // bar's Archive button partly inert. Decided per CONVERSATION, and by
+    // `every`: `canBulkSelect` IS `canMoveFrom`, so this is the same
+    // predicate asked of all of what the row can act on.
+    //
+    // `actionable`, not `messages`. The Inbox view's conversations now
+    // carry the thread's Sent replies so the count and the participants
+    // describe the whole chain; asking `every` of THOSE would refuse to
+    // tick any conversation the user had replied to, i.e. most of the
+    // inbox. The two arrays are identical wherever nothing was widened.
     expect(/isConversationSelectable\(conversation, canBulkSelect\)/.test(LIST)).toBe(true);
     expect(/onToggleSelect=\{isSelectable \? onToggleSelect : undefined\}/.test(LIST)).toBe(true);
-    expect(/return conversation\.messages\.every\(canSelectOne\);/.test(CONVERSATIONS)).toBe(true);
+    expect(/conversation\.actionable\.every\(canSelectOne\)/.test(CONVERSATIONS)).toBe(true);
+    expect(/conversation\.messages\.every\(canSelectOne\)/.test(CONVERSATIONS)).toBe(false);
   });
 
   it('ticking a row ticks EVERY message the row stands for', () => {

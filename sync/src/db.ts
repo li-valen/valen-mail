@@ -148,12 +148,22 @@ export interface NativeFolderPair {
  *  - 'starred': not a folder at all — matches the `\Flagged` flag across
  *    every synced folder instead (Plan 5: Starred is virtual and is never
  *    synced as its own mailbox — see imap/folders.ts).
+ *  - 'any': the UNION of the filters it holds — a row matching any one of
+ *    them matches. Exists for getConversationPage's `memberFolder`, whose
+ *    whole job is "the folder being browsed, OR Sent"; expressing that as
+ *    a disjunction of the existing kinds means the Sent half is still
+ *    resolved per account from IMAP LIST (a 'pairs') and the Inbox half
+ *    is still the reserved literal, rather than a fifth spelling of
+ *    either. An EMPTY `of` matches zero rows, for the same reason an
+ *    empty `pairs` does; an 'all' anywhere inside makes the whole union
+ *    unrestricted, because a union with "everything" is everything.
  */
 export type InboxFolderFilter =
   | { readonly kind: 'all' }
   | { readonly kind: 'literal'; readonly folder: string }
   | { readonly kind: 'pairs'; readonly pairs: readonly NativeFolderPair[] }
-  | { readonly kind: 'starred' };
+  | { readonly kind: 'starred' }
+  | { readonly kind: 'any'; readonly of: readonly InboxFolderFilter[] };
 
 /**
  * One page of conversations, as two views of the same page.
@@ -220,18 +230,39 @@ export interface Db {
    * threads in half and the count beside a row would grow every time the
    * user pressed "Load more".
    *
-   * A CONVERSATION IS SCOPED BY THE FILTER, not by the mailbox. Under
-   * `folder=inbox` it is the messages of one thread that are IN THE
-   * INBOX; the same thread's Sent copies are a different conversation in
-   * a different list, and are neither counted here nor archived when the
-   * user archives this one. Under a search it is the MATCHING messages of
-   * one thread, so the result count means what it says.
+   * WHICH CONVERSATIONS ARE ON THE PAGE, AND WHERE EACH ONE SITS, IS
+   * DECIDED BY `folder`. WHAT A CONVERSATION CONTAINS IS DECIDED BY
+   * `memberFolder`. The two were one filter until a user reported that
+   * *"reply feature should be sent in the same email chain"*: their own
+   * reply lives in Sent, a conversation opened from the Inbox was
+   * filtered to Inbox rows, and so the reply was not among the messages
+   * that row was drawn from — its count, its participants and its unread
+   * rollup all described half a conversation.
+   *
+   * Splitting them fixes that and moves nothing else. The representative
+   * and the ordering still come from `folder` alone, so a thread appears
+   * in the Inbox only while it HAS an Inbox message, at the position of
+   * its newest INBOX message: replying does not bump a conversation up
+   * the list, and never hands its row a Sent representative to draw the
+   * sender and preview from. `memberFolder` widens membership only.
+   *
+   * Absent, it defaults to `folder` and this method behaves exactly as it
+   * always did. ./api/conversations.ts is the one caller that passes it,
+   * because resolving what "Sent" NAMES needs each account's own IMAP
+   * LIST and that lives up there, not here.
+   *
+   * Under a search, both filters still carry `q`, so the result count
+   * still means what it says.
    */
   getConversationPage(options: {
     /** How many CONVERSATIONS, not how many messages. */
     limit: number;
     cursor: InboxCursor | null;
     folder: InboxFolderFilter;
+    /** The folders a conversation's MEMBERS may come from. Defaults to
+     *  `folder`; see this method's doc comment for why widening this and
+     *  not `folder` is the whole of the fix. */
+    memberFolder?: InboxFolderFilter;
     accountId: string | null;
     search?: string | null;
   }): Promise<ConversationPage>;
@@ -468,6 +499,33 @@ function pushFolderClause(
 ): void {
   const { alias, offset } = ctx;
   if (folder.kind === 'all') return;
+
+  if (folder.kind === 'any') {
+    // BOTH SHORT-CIRCUITS HAPPEN BEFORE ANYTHING IS BOUND, and that is
+    // not tidiness. `values` is shared with every other clause in the
+    // statement, so bailing out AFTER a member had pushed its parameters
+    // would leave values bound that no placeholder references — and
+    // Postgres rejects a Bind with more parameters than the statement
+    // takes, turning a filter that should have widened into a 500.
+    if (folder.of.some((member) => member.kind === 'all')) return;
+    if (folder.of.length === 0) {
+      clauses.push('false');
+      return;
+    }
+    const parts: string[] = [];
+    for (const member of folder.of) {
+      // Each member goes through THIS function, so a union's Sent half is
+      // built by the very code path a plain `folder=sent` request uses —
+      // including its parameterization. A member that contributes several
+      // clauses (none do today) is re-joined with `and`, since that is
+      // what buildInboxFilter would have done with them.
+      const memberClauses: string[] = [];
+      pushFolderClause(memberClauses, values, member, ctx);
+      parts.push(memberClauses.length === 1 ? memberClauses[0]! : `(${memberClauses.join(' and ')})`);
+    }
+    clauses.push(parts.length === 1 ? parts[0]! : `(${parts.join(' or ')})`);
+    return;
+  }
 
   if (folder.kind === 'starred') {
     // Bound, not inlined, even though this value is a compile-time
@@ -736,7 +794,7 @@ export function openDb(databaseUrl: string): Db {
       return result.rows;
     },
 
-    async getConversationPage({ limit, cursor, folder, accountId, search }) {
+    async getConversationPage({ limit, cursor, folder, memberFolder, accountId, search }) {
       // Two filters over the SAME statement. The first narrows the
       // candidate rows (`m`); the second re-applies the folder and search
       // narrowing to the sibling probe (`sib`), and leaving it off is a
@@ -815,7 +873,22 @@ export function openDb(databaseUrl: string): Db {
       // The cursor is deliberately absent from this filter: a
       // conversation's older messages are exactly the rows a cursor would
       // exclude, and excluding them is what a partial thread IS.
-      const memberFilter = buildInboxFilter({ cursor: null, folder, accountId, search });
+      //
+      // `memberFolder`, NOT `folder`, and that difference is this query's
+      // whole contribution to "a reply belongs in its own chain". The two
+      // filters above (candidate row, sibling probe) still use `folder`,
+      // because they decide which conversations exist on this page and
+      // where each one sits; this one decides what each conversation
+      // CONTAINS, and the user's own Sent reply is a member of the
+      // conversation it replies to however the list is being browsed.
+      // Defaulting to `folder` keeps every caller that does not care
+      // (and every existing test) on the exact query they had.
+      const memberFilter = buildInboxFilter({
+        cursor: null,
+        folder: memberFolder ?? folder,
+        accountId,
+        search,
+      });
       const accountIds = representatives.map((row: any) => String(row.account_id));
       const threadKeys = representatives.map((row: any) =>
         row.thread_id === null ? `u${row.uid}` : `t${row.thread_id}`,

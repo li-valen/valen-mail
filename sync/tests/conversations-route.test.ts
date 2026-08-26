@@ -26,6 +26,7 @@ const ACCOUNTS: readonly AccountConfig[] = [
 interface SeenQuery {
   readonly search?: unknown;
   readonly folder?: unknown;
+  readonly memberFolder?: unknown;
   readonly accountId?: unknown;
   readonly limit?: unknown;
   readonly cursor?: unknown;
@@ -223,5 +224,90 @@ describe('GET /api/conversations — `q` makes it the grouped view of /api/searc
     );
     expect(response.status).toBe(400);
     expect(seen).toHaveLength(0);
+  });
+});
+
+/**
+ * A conversation must contain the user's own replies — the defect behind
+ * *"reply feature should be sent in the same email chain."*
+ *
+ * The route's whole contribution is `memberFolder`: which folders a
+ * conversation's MEMBERS may come from, resolved here because "Sent" is a
+ * per-account IMAP LIST result and ../src/db.ts must not know that. What
+ * `memberFolder` then does to the SQL is proven in db-filter.test.ts.
+ *
+ * The four cases below are the four the widening must get right, and the
+ * negative ones are not padding: each is a way of widening that would
+ * silently change what a different list means.
+ */
+describe('GET /api/conversations — a conversation includes the user\'s own replies', () => {
+  const SENT = '[Gmail]/Sent Mail';
+  const discovered = {
+    harvard: { inbox: 'INBOX', sent: SENT, spam: null, trash: null, archive: null },
+    personal: { inbox: 'INBOX', sent: SENT, spam: null, trash: null, archive: null },
+  };
+
+  it('widens the INBOX view\'s members to the account\'s Sent folder', async () => {
+    const { router, seen } = routerWith(undefined, discovered);
+    await router(new Request('http://x/api/conversations', { headers: auth }));
+
+    // The BROWSED folder is untouched: it still decides which
+    // conversations are on the page and where each one sits.
+    expect(seen[0]?.folder).toEqual({ kind: 'literal', folder: 'INBOX' });
+    // The MEMBER folder is the union of that and every account's Sent.
+    expect(seen[0]?.memberFolder).toEqual({
+      kind: 'any',
+      of: [
+        { kind: 'literal', folder: 'INBOX' },
+        {
+          kind: 'pairs',
+          pairs: [
+            { accountId: 'harvard', folder: SENT },
+            { accountId: 'personal', folder: SENT },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('narrows the Sent half to a named account, exactly as folder=sent would', async () => {
+    const { router, seen } = routerWith(undefined, discovered);
+    await router(new Request('http://x/api/conversations?account=harvard', { headers: auth }));
+    const member = seen[0]?.memberFolder as { of: readonly unknown[] };
+    expect(member.of[1]).toEqual({
+      kind: 'pairs',
+      pairs: [{ accountId: 'harvard', folder: SENT }],
+    });
+  });
+
+  it('does NOT widen a search: the count has to mean "messages that matched"', async () => {
+    // Quietly adding non-matching Sent mail to a search result would make
+    // the number beside a row describe something other than the search.
+    const { router, seen } = routerWith(undefined, discovered);
+    await router(new Request('http://x/api/conversations?q=invoice', { headers: auth }));
+    expect(seen[0]?.memberFolder).toBeUndefined();
+  });
+
+  it('does NOT widen any other folder, including Sent itself', async () => {
+    // Browsing Sent already shows nothing but the user's own mail, so the
+    // union would be a no-op; and the client can only recognise a widened
+    // member for INBOX, whose name RFC 3501 reserves. Every other folder
+    // name is a per-account discovery result.
+    for (const folder of ['sent', 'starred', 'spam', 'trash']) {
+      const { router, seen } = routerWith(undefined, discovered);
+      await router(new Request(`http://x/api/conversations?folder=${folder}`, { headers: auth }));
+      expect(seen[0]?.memberFolder).toBeUndefined();
+    }
+  });
+
+  it('leaves the query untouched when no account has a discovered Sent folder', async () => {
+    // An empty 'pairs' matches zero rows, so a union with it would add a
+    // dead OR branch and two bound arrays to every inbox page forever.
+    const { router, seen } = routerWith(undefined, {
+      harvard: { inbox: 'INBOX', sent: null, spam: null, trash: null, archive: null },
+      personal: { inbox: 'INBOX', sent: null, spam: null, trash: null, archive: null },
+    });
+    await router(new Request('http://x/api/conversations', { headers: auth }));
+    expect(seen[0]?.memberFolder).toBeUndefined();
   });
 });

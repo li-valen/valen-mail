@@ -7,6 +7,7 @@ import {
   conversationHasAttachment,
   conversationKeyFor,
   conversationMessageKeys,
+  folderMembershipFor,
   groupIntoConversations,
   isConversationSelectable,
   isConversationStarred,
@@ -567,5 +568,117 @@ describe('representativesOf, allMessagesOf and membersByMessageKey', () => {
 
   it('knows nothing about a message that was never in the list', () => {
     expect(membersByMessageKey(conversations).get('harvard:404')).toBeUndefined();
+  });
+});
+
+/**
+ * A conversation contains the user's own replies — the client half of
+ * *"reply feature should be sent in the same email chain."*
+ *
+ * The Inbox view's page now carries the thread's Sent messages too
+ * (sync/src/api/conversations.ts widens the member query). Everything
+ * below is about the line between what that adds to and what it must
+ * leave alone: it adds to what the row SAYS, and it must not touch which
+ * message the row IS, where the row sits, or what an archive moves.
+ */
+describe('a conversation includes the user\'s own replies', () => {
+  const SENT = '[Gmail]/Sent Mail';
+  const inboxView = folderMembershipFor('inbox', false);
+
+  /** The real shape: they wrote, the user replied, so the reply is NEWER. */
+  function threadWithReply() {
+    return [
+      message({ uid: '20', folder: SENT, from_name: 'Valen', date: '2026-08-02T10:00:00.000Z' }),
+      message({ uid: '10', folder: 'INBOX', from_name: 'Ann Lei', date: '2026-08-01T09:00:00.000Z' }),
+    ];
+  }
+
+  it('counts the reply, so the badge describes the whole chain', () => {
+    const [conversation] = groupIntoConversations(threadWithReply(), inboxView);
+    expect(conversation!.count).toBe(2);
+    expect(conversation!.messages).toHaveLength(2);
+  });
+
+  it('names the user among the participants', () => {
+    const [conversation] = groupIntoConversations(threadWithReply(), inboxView);
+    expect(participantsOf(conversation!)).toContain('Valen');
+  });
+
+  it('does NOT let the reply become the row', () => {
+    // The reply is the newest message, so position zero would hand the
+    // row the user's own name and their own words — a row they would not
+    // recognise as the thread they are looking for.
+    const [conversation] = groupIntoConversations(threadWithReply(), inboxView);
+    expect(conversation!.representative.folder).toBe('INBOX');
+    expect(conversation!.representative.uid).toBe('10');
+  });
+
+  it('does NOT let the reply move the conversation up the page', () => {
+    // Order is first appearance, which is conversation-by-recency ONLY
+    // while the first sighting is the message the server ranked the
+    // conversation by. The server put `other` first; a Sent reply sighted
+    // ahead of its own inbox message must not overturn that.
+    const other = message({ uid: '99', thread_id: 't9', date: '2026-08-03T00:00:00.000Z' });
+    const groups = groupIntoConversations([other, ...threadWithReply()], inboxView);
+    expect(groups.map((c) => c.representative.uid)).toEqual(['99', '10']);
+  });
+
+  it('does NOT offer the reply to an archive', () => {
+    // THE MUTATION GUARD. `actionable` is what a tick, a hide and a move
+    // act on; a Sent copy in there would archive mail out of the user's
+    // own Sent folder, which ../src/mailboxActions.ts's `canMoveFrom`
+    // refuses for reasons of its own.
+    const [conversation] = groupIntoConversations(threadWithReply(), inboxView);
+    expect(conversation!.actionable.map((m) => m.uid)).toEqual(['10']);
+    expect(conversationMessageKeys(conversation!)).toHaveLength(1);
+    expect(allMessagesOf([conversation!]).map((m) => m.uid)).toEqual(['10']);
+  });
+
+  it('KEEPS the conversation tickable, which widening naively would not', () => {
+    // The regression this whole split exists to prevent: asking `every`
+    // of the widened members would refuse to tick any conversation the
+    // user had ever replied to — i.e. most of the inbox.
+    const [conversation] = groupIntoConversations(threadWithReply(), inboxView);
+    expect(isConversationSelectable(conversation!, (m) => m.folder === 'INBOX')).toBe(true);
+  });
+
+  it('expands a row to its actionable members only', () => {
+    const [conversation] = groupIntoConversations(threadWithReply(), inboxView);
+    const index = membersByMessageKey([conversation!]);
+    // Keyed by every VISIBLE member — including the Sent one, which has
+    // no row of its own but must still resolve — and resolving to the
+    // actionable set in both cases.
+    for (const member of conversation!.messages) {
+      expect(index.get(`${member.account_id}:${member.folder}:${member.uid}`)?.length ?? 1).toBe(1);
+    }
+  });
+
+  it('still rolls unread and star up over EVERYTHING the user can see', () => {
+    // Display, not action: a starred reply still stars the row.
+    const messages = [
+      message({ uid: '20', folder: SENT, flags: ['\\Flagged'], date: '2026-08-02T10:00:00.000Z' }),
+      message({ uid: '10', folder: 'INBOX', flags: ['\\Seen'], date: '2026-08-01T09:00:00.000Z' }),
+    ];
+    const [conversation] = groupIntoConversations(messages, inboxView);
+    expect(isConversationStarred(conversation!, (m) => (m.flags ?? []).includes('\\Flagged'))).toBe(true);
+  });
+
+  it('changes NOTHING in a view that does not widen', () => {
+    // Every other folder, and every search, passes the default predicate,
+    // and `actionable` is then the same array as `messages` — the action
+    // path is byte-for-byte what it was before the widening existed.
+    for (const view of [folderMembershipFor('sent', false), folderMembershipFor('inbox', true)]) {
+      const [conversation] = groupIntoConversations(threadWithReply(), view);
+      expect(conversation!.actionable).toEqual(conversation!.messages);
+      expect(conversation!.representative.uid).toBe('20');
+    }
+  });
+
+  it('never drops a message, however the predicate answers', () => {
+    // The totality invariant: every input message lands in exactly one
+    // conversation, so the badge total always equals the page size.
+    const input = [...threadWithReply(), message({ uid: '77', thread_id: 't7', folder: SENT })];
+    const groups = groupIntoConversations(input, inboxView);
+    expect(groups.reduce((n, c) => n + c.count, 0)).toBe(input.length);
   });
 });

@@ -271,3 +271,110 @@ describe('buildInboxFilter — alias and offset', () => {
     expect(filter.where).toContain('$5::bigint');
   });
 });
+
+/**
+ * The 'any' folder filter — a union of the existing kinds, and the SQL
+ * half of "a conversation includes the user's own replies".
+ *
+ * getConversationPage's `memberFolder` is the only thing that builds one:
+ * "the folder being browsed, OR that account's Sent". What matters here
+ * is that a union composes with everything else in the statement without
+ * either half learning about the other — same placeholder discipline,
+ * same alias, same offset.
+ */
+describe("buildInboxFilter — the 'any' union", () => {
+  const INBOX = { kind: 'literal', folder: 'INBOX' } as const;
+  const SENT = {
+    kind: 'pairs',
+    pairs: [{ accountId: 'work', folder: '[Gmail]/Sent Mail' }],
+  } as const;
+
+  it('ORs its members and binds every one of their parameters exactly once', () => {
+    const filter = buildInboxFilter({
+      cursor: null,
+      folder: { kind: 'any', of: [INBOX, SENT] },
+      accountId: null,
+    });
+    expect(filter.where).toBe(
+      'where (m.folder = $1 or exists (select 1 from unnest($2::text[], $3::text[]) as pair(account_id, folder) ' +
+        'where pair.account_id = m.account_id and pair.folder = m.folder))',
+    );
+    expect(filter.values).toEqual([
+      'INBOX',
+      ['work'],
+      ['[Gmail]/Sent Mail'],
+    ]);
+  });
+
+  it('keeps every value parameterised — a folder name is never inlined', () => {
+    // The Sent name comes from the server's own IMAP LIST, so it is not
+    // attacker-controlled; it is bound anyway, because "which strings are
+    // safe to inline" is not a question this file should ever have to
+    // answer twice.
+    const filter = buildInboxFilter({
+      cursor: null,
+      folder: {
+        kind: 'any',
+        of: [INBOX, { kind: 'pairs', pairs: [{ accountId: "a'--", folder: "x'; drop table messages--" }] }],
+      },
+      accountId: null,
+    });
+    expect(filter.where).not.toContain('drop table');
+    // Bound as the folder ARRAY half of the unnest pair, never as SQL text.
+    expect(filter.values).toContainEqual(["x'; drop table messages--"]);
+  });
+
+  it('carries the alias and the offset into every member', () => {
+    // A union written against the outer row inside the sibling subquery
+    // would match everything — the same failure `alias` exists for, once
+    // per member instead of once.
+    const filter = buildInboxFilter({
+      cursor: null,
+      folder: { kind: 'any', of: [INBOX, SENT] },
+      accountId: null,
+      alias: 'sib',
+      offset: 4,
+    });
+    expect(filter.where).toContain('sib.folder = $5');
+    expect(filter.where).toContain('unnest($6::text[], $7::text[])');
+    expect(filter.where).toContain('pair.account_id = sib.account_id');
+    expect(filter.where).not.toContain('m.');
+  });
+
+  it('composes with the cursor, the account and the search around it', () => {
+    const filter = buildInboxFilter({
+      cursor: { date: new Date('2026-08-01T00:00:00Z'), accountId: 'work', uid: 42 },
+      folder: { kind: 'any', of: [INBOX, SENT] },
+      accountId: 'work',
+      search: 'invoice',
+    });
+    // Cursor binds $1-$3, the union $4-$6, the account $7, the search $8.
+    expect(filter.where).toContain('m.folder = $4');
+    expect(filter.where).toContain('unnest($5::text[], $6::text[])');
+    expect(filter.where).toContain('m.account_id = $7');
+    expect(filter.values).toHaveLength(8);
+  });
+
+  it('matches zero rows when it holds nothing, rather than every row', () => {
+    // Same rule as an empty 'pairs': "no folders to look in" is not "no
+    // filter", or an empty union would silently widen a page to the whole
+    // mailbox.
+    const filter = buildInboxFilter({ cursor: null, folder: { kind: 'any', of: [] }, accountId: null });
+    expect(filter.where).toBe('where false');
+    expect(filter.values).toEqual([]);
+  });
+
+  it("an 'all' member makes the whole union unrestricted, and binds NOTHING", () => {
+    // A union with "everything" is everything. The bail-out has to happen
+    // before any member binds, because Postgres rejects a Bind carrying
+    // more parameters than the statement references — an orphaned value
+    // would turn a widened filter into a 500.
+    const filter = buildInboxFilter({
+      cursor: null,
+      folder: { kind: 'any', of: [SENT, { kind: 'all' }] },
+      accountId: null,
+    });
+    expect(filter.where).toBe('');
+    expect(filter.values).toEqual([]);
+  });
+});
