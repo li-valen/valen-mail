@@ -61,7 +61,36 @@ function accountNameClass(isSelected: boolean): string {
 const AVATAR_CLASS =
   'h-6 w-6 rounded-md bg-neutral-100 text-neutral-700 dark:bg-secondary dark:text-secondary-foreground flex items-center justify-center text-[10px] font-semibold shrink-0';
 
-const COUNT_CLASS = 'text-xs text-neutral-400 tabular-nums font-mono dark:text-muted-foreground';
+/**
+ * The unread count beside an account name, and it is a FUNCTION of the
+ * selection for the same reason `accountNameClass` is: the selected row
+ * paints a different ground under it.
+ *
+ * This was one constant, `text-neutral-400 dark:text-muted-foreground`,
+ * measured from rendered pixels during the interface audit at 2.58:1 on
+ * the unselected row's white and 2.37:1 on the selected row's
+ * `bg-neutral-100` — both far under WCAG 1.4.3's 4.5:1 for text this
+ * size. The dark half missed too, at 4.45:1 on `bg-accent`, which is the
+ * kind of near-miss no amount of looking at hex values would have found.
+ *
+ * The selected branch reuses the row's OWN selected-state tokens rather
+ * than inventing a shade: `neutral-600` is what the name beside it moves
+ * toward in light, and `accent-foreground` is the token the palette
+ * already defines as "text on `bg-accent`". A count that gets slightly
+ * louder on the row the user has chosen is the correct direction anyway
+ * — the name above it does exactly the same thing.
+ *
+ * Measured after the change: 4.7:1 / 7.2:1 light (unselected /
+ * selected), 5.9:1 / 15.9:1 dark.
+ */
+function accountCountClass(isSelected: boolean): string {
+  return cn(
+    'text-xs tabular-nums font-mono',
+    isSelected
+      ? 'text-neutral-600 dark:text-accent-foreground'
+      : 'text-neutral-500 dark:text-muted-foreground',
+  );
+}
 
 export interface AccountListProps {
   readonly accounts: readonly AccountSummary[];
@@ -101,7 +130,7 @@ export default function AccountList({ accounts, selected, onSelect }: AccountLis
               <Users className="h-3.5 w-3.5" />
             </span>
             <span className={accountNameClass(isAllSelected)}>All accounts</span>
-            <span className={COUNT_CLASS}>{totalOf(accounts)}</span>
+            <span className={accountCountClass(isAllSelected)}>{totalOf(accounts)}</span>
           </button>
         </li>
 
@@ -125,7 +154,7 @@ export default function AccountList({ accounts, selected, onSelect }: AccountLis
                     sync service's config, and every string this app
                     renders goes through JSX escaping. */}
                 <span className={accountNameClass(isSelected)}>{account.id}</span>
-                <span className={COUNT_CLASS}>{account.count}</span>
+                <span className={accountCountClass(isSelected)}>{account.count}</span>
               </button>
             </li>
           );

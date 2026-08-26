@@ -528,7 +528,7 @@ export default function InboxList({
   const banner = !isSearching ? null : (
     <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2">
       <p className="min-w-0 flex-1 text-sm text-neutral-700 dark:text-muted-foreground">
-        <SearchX className="mr-1.5 inline h-4 w-4 align-[-3px] text-neutral-400 dark:text-muted-foreground" aria-hidden="true" />
+        <SearchX className="mr-1.5 inline h-4 w-4 align-[-3px] text-neutral-500 dark:text-muted-foreground" aria-hidden="true" />
         Results for{' '}
         <span className="font-semibold text-neutral-900 dark:text-foreground">{search}</span> in{' '}
         {scopeLabel}

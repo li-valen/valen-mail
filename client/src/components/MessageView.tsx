@@ -140,7 +140,7 @@ function MessageHeader({ message, headingRef }: MessageHeaderProps) {
       {copies !== '' && (
         <p className="truncate text-xs text-neutral-500 dark:text-muted-foreground">cc {copies}</p>
       )}
-      <p className="mt-1 font-mono text-xs text-neutral-400 dark:text-muted-foreground">
+      <p className="mt-1 font-mono text-xs text-neutral-500 dark:text-muted-foreground">
         {formatReceived(message.date)}
       </p>
     </header>

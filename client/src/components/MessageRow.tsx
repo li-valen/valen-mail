@@ -645,7 +645,7 @@ export default function MessageRow({
           <span className="min-w-0 flex-1 truncate text-neutral-500 dark:text-muted-foreground">
             {subject}
             {preview !== null && (
-              <span className="text-neutral-400 dark:text-muted-foreground"> — {preview}</span>
+              <span className="text-neutral-500 dark:text-muted-foreground"> — {preview}</span>
             )}
           </span>
 
@@ -673,7 +673,7 @@ export default function MessageRow({
             {hasAttach && (
               <>
                 <Paperclip
-                  className="h-3.5 w-3.5 text-neutral-400 dark:text-muted-foreground"
+                  className="h-3.5 w-3.5 text-neutral-500 dark:text-muted-foreground"
                   aria-hidden="true"
                 />
                 <span className="sr-only">Has attachment</span>
@@ -688,7 +688,7 @@ export default function MessageRow({
             <Badge variant="neutral" className="px-1.5 py-0 font-mono text-[10px] font-medium uppercase">
               {accountChip(message.account_id)}
             </Badge>
-            <span className="w-16 whitespace-nowrap text-right font-mono text-xs tabular-nums text-neutral-400 dark:text-muted-foreground">
+            <span className="w-16 whitespace-nowrap text-right font-mono text-xs tabular-nums text-neutral-500 dark:text-muted-foreground">
               {when}
             </span>
           </span>

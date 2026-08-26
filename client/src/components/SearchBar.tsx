@@ -210,7 +210,13 @@ export default function SearchBar({ value, onChange, scopeLabel }: SearchBarProp
              placeholder. */
           <kbd
             aria-hidden="true"
-            className="hidden shrink-0 rounded border border-border px-1.5 py-0.5 font-mono text-[10px] font-medium text-muted-foreground sm:block"
+            /* `text-neutral-600`, not `text-muted-foreground`: the token
+               measures 4.34:1 against this pill's `bg-muted` in light
+               mode, which is under WCAG 1.4.3's 4.5:1 for 10px text and
+               was found by measuring the rendered pixels rather than by
+               reading the hex. The dark half keeps the token, where the
+               same pairing is 5.5:1 and fine. */
+            className="hidden shrink-0 rounded border border-border px-1.5 py-0.5 font-mono text-[10px] font-medium text-neutral-600 dark:text-muted-foreground sm:block"
           >
             {shortcutHint()}
           </kbd>

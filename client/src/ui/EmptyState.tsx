@@ -26,7 +26,7 @@ export function EmptyState({ icon: Icon, title, description, action, className }
   return (
     <div className={cn('text-center py-14', className)}>
       <div className="inline-flex items-center justify-center w-10 h-10 rounded-md border border-neutral-200 bg-neutral-50 dark:border-border dark:bg-muted mb-4">
-        <Icon className="h-5 w-5 text-neutral-400 dark:text-muted-foreground" aria-hidden="true" />
+        <Icon className="h-5 w-5 text-neutral-500 dark:text-muted-foreground" aria-hidden="true" />
       </div>
       <h3 className="text-sm font-semibold text-neutral-900 dark:text-foreground mb-1">{title}</h3>
       {/* `mb-5` ONLY when something follows. Ported from Plunk with the

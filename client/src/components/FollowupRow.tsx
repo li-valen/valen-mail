@@ -115,7 +115,7 @@ export default function FollowupRow({ row, now, onOpen }: FollowupRowProps) {
           <span className="min-w-0 flex-1">
             <span className="flex items-baseline gap-2">
               <span className={cn('min-w-0 flex-1 truncate', tone)}>{copy.lead}</span>
-              <span className="shrink-0 font-mono text-xs tabular-nums text-neutral-400 dark:text-muted-foreground">
+              <span className="shrink-0 font-mono text-xs tabular-nums text-neutral-500 dark:text-muted-foreground">
                 {when}
               </span>
             </span>
@@ -138,7 +138,7 @@ export default function FollowupRow({ row, now, onOpen }: FollowupRowProps) {
           <span className="min-w-0 flex-1 truncate text-neutral-500 dark:text-muted-foreground">
             {subject}
           </span>
-          <span className="w-20 shrink-0 whitespace-nowrap text-right font-mono text-xs tabular-nums text-neutral-400 dark:text-muted-foreground">
+          <span className="w-20 shrink-0 whitespace-nowrap text-right font-mono text-xs tabular-nums text-neutral-500 dark:text-muted-foreground">
             {when}
           </span>
         </span>

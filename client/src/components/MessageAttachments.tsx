@@ -38,7 +38,7 @@ function AttachmentEntry({ message, attachment }: AttachmentEntryProps) {
 
   return (
     <li className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm lg:px-4">
-      <Paperclip className="h-4 w-4 shrink-0 text-neutral-400 dark:text-muted-foreground" aria-hidden="true" />
+      <Paperclip className="h-4 w-4 shrink-0 text-neutral-500 dark:text-muted-foreground" aria-hidden="true" />
       <span className="min-w-0 flex-1 truncate text-neutral-900 dark:text-foreground">{name}</span>
       {attachment.isInline && (
         <Badge variant="neutral" className="px-1.5 py-0 text-[10px] font-medium uppercase">
@@ -58,7 +58,7 @@ function AttachmentEntry({ message, attachment }: AttachmentEntryProps) {
         </a>
       ) : (
         <span
-          className="shrink-0 text-xs text-neutral-400 dark:text-muted-foreground"
+          className="shrink-0 text-xs text-neutral-500 dark:text-muted-foreground"
           title="This part has no IMAP part number, so Postbox has no address to download it from. A guessed one would fetch the wrong bytes."
         >
           Unavailable

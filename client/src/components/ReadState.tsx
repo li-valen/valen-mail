@@ -242,7 +242,7 @@ export interface ReadStateProps {
  * Mailspring restyle) reduced this from Plunk's `Badge` atom carrying a
  * visible mono token ("OPEN"/"MPP"/"PREFETCH"/"SCANNER") down to JUST the
  * mark — `StateMark`'s silhouette, wrapped in a `currentColor`-setting
- * `<span>` — green for confirmed, neutral (`text-neutral-400`) for every
+ * `<span>` — green for confirmed, neutral (`text-neutral-500`) for every
  * unconfirmable state. The two never differ by colour alone: the mark
  * SHAPE differs too (see `StateMark` above — a filled disc vs an error
  * bar), which is what keeps this legible for colour-blind users once the
@@ -259,9 +259,19 @@ export interface ReadStateProps {
  *     mark is supposed to be, which is the one tone in this whole product
  *     that means "a person really read this." `dark:text-green-400`
  *     measures 11.4:1 against the dark ground — vivid on purpose.
- *   - unconfirmable: `text-neutral-400` measures only 2.6:1 against
- *     WHITE already (acceptable for a small decorative mark, not
- *     reused as a standard for anything else). Rather than pick another
+ *   - unconfirmable: `text-neutral-500`. This was `text-neutral-400`,
+ *     and the note here recorded 2.6:1 against WHITE as "acceptable for
+ *     a small decorative mark". The interface audit overruled that, and
+ *     the reason is that the premise was wrong rather than the number:
+ *     this mark is not decorative. It is the one place in the product
+ *     where "a person read this" and "a machine did" are distinguished
+ *     visually, which makes it a user-interface component under WCAG
+ *     1.4.11 and puts its floor at 3:1, not at whatever a decorative
+ *     glyph could get away with. `text-neutral-500` measures 4.7:1
+ *     against white and is still, unmistakably, the quiet one beside a
+ *     saturated green. The distinction never rested on colour alone
+ *     anyway — `StateMark`'s silhouette differs too — so nothing about
+ *     the colour-blind story changes. Rather than pick another
  *     arbitrary neutral shade for dark, `dark:text-muted-foreground`
  *     routes it through the palette's own "secondary text" token — 6.0:1
  *     against the dark ground, and semantically the same "the machine
@@ -303,7 +313,7 @@ export function ReadState({ classification }: ReadStateProps) {
   const toneClassName =
     state.tone === 'confirmed'
       ? 'text-green-600 dark:text-green-400'
-      : 'text-neutral-400 dark:text-muted-foreground';
+      : 'text-neutral-500 dark:text-muted-foreground';
   return (
     <span
       className={`inline-flex shrink-0 items-center ${toneClassName}`}

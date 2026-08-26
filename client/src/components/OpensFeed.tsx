@@ -532,7 +532,7 @@ function OpenEntry({ event, now, onOpen, variants, isNew }: OpenEntryProps) {
                 style={{ transitionDuration: `${DURATION_MS.hover}ms` }}
               >
                 <User
-                  className="mt-0.5 h-3 w-3 shrink-0 text-neutral-400 dark:text-muted-foreground"
+                  className="mt-0.5 h-3 w-3 shrink-0 text-neutral-500 dark:text-muted-foreground"
                   aria-hidden="true"
                 />
                 <span className="min-w-0 space-y-0.5 break-words">

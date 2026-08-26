@@ -58,7 +58,7 @@ function HelpRow({ entry }: { readonly entry: ShortcutHelpEntry }) {
         {entry.keys.map((key, index) => (
           <span key={key} className="flex items-center gap-1">
             {index > 0 && (
-              <span className="text-[11px] text-neutral-400 dark:text-muted-foreground">{joiner}</span>
+              <span className="text-[11px] text-neutral-500 dark:text-muted-foreground">{joiner}</span>
             )}
             <Key>{key}</Key>
           </span>
@@ -118,7 +118,7 @@ export default function ShortcutHelp({ onClose }: ShortcutHelpProps) {
           className={cn(
             // `overscroll-contain`: this panel is an overlay over a
             // scrolling list. Without it, reaching the end of a long
-            // shortcut table keeps scrolling - the mail behind the
+            // shortcut table keeps scrolling — the mail behind the
             // dialog moves instead, under a scrim the user cannot see
             // through.
             'max-h-full overflow-y-auto overscroll-contain rounded-lg border border-neutral-200 bg-card p-6 shadow-lg',
