@@ -225,8 +225,28 @@ export function moveFailureFor(destination: MoveDestination): string {
  * looking in the wrong folder.
  */
 export function undoFailureFor(destination: MoveDestination): string {
-  const where = destination === 'archive' ? 'archived' : destination === 'trash' ? 'trashed' : 'reported';
-  return `That message stayed ${where} — Postbox couldn't move it back.`;
+  return `That message stayed ${pastParticipleFor(destination)} — Postbox couldn't move it back.`;
+}
+
+/**
+ * Where a message ENDED UP, as the word a failed-undo sentence needs:
+ * "stayed archived", "stayed trashed", "stayed reported".
+ *
+ * Exported only because ./bulkActions.ts needs the identical word for the
+ * batch form of the same sentence, and two hand-written copies of a
+ * three-way ternary is how "trashed" becomes "moved to Trash" in one
+ * place and not the other. Behaviour is unchanged — `undoFailureFor`
+ * above produces exactly the strings it always did.
+ */
+export function pastParticipleFor(destination: MoveDestination): string {
+  switch (destination) {
+    case 'archive':
+      return 'archived';
+    case 'trash':
+      return 'trashed';
+    case 'spam':
+      return 'reported';
+  }
 }
 
 /** What the undo bar's own button says, and what a screen reader

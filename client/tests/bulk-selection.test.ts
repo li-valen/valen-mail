@@ -31,16 +31,23 @@ function message(accountId: string, uid: string, overrides: Partial<InboxMessage
   return {
     account_id: accountId,
     uid,
+    message_id: null,
+    thread_id: null,
     folder: 'INBOX',
     subject: `Subject ${accountId}/${uid}`,
     from_name: 'Sender',
     from_email: 'sender@example.com',
-    date: 1_700_000_000_000,
-    flags: [],
-    has_attach: false,
+    to_emails: [],
+    cc_emails: [],
+    date: '2026-08-24T10:00:00Z',
     snippet: null,
+    flags: [],
+    labels: [],
+    has_attach: false,
+    size_bytes: null,
+    attachments: [],
     ...overrides,
-  } as InboxMessage;
+  };
 }
 
 const A1 = message('primary', '1');
