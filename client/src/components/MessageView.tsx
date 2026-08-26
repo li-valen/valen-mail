@@ -11,6 +11,7 @@ import { Button } from '../ui/Button';
 import { cn } from '../ui/cn';
 import { EmptyState } from '../ui/EmptyState';
 import { Skeleton } from '../ui/Skeleton';
+import { useTheme } from '../useTheme';
 import { Panel, SKELETON_DELAY_MS } from '../motion';
 import AttachmentList from './MessageAttachments';
 import ThreadContext from './ThreadContext';
@@ -242,30 +243,68 @@ function useFrameWidth(ref: RefObject<HTMLIFrameElement | null>): number {
 function BodyFrame({ html, subject }: BodyFrameProps) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const width = useFrameWidth(frameRef);
+  const { resolved } = useTheme();
+
+  /**
+   * Per-message escape back to the sender's own colours.
+   *
+   * Keyed off nothing but this frame's own state, so it resets when the
+   * reader moves to another message — which is the behaviour we want:
+   * "show this one as sent" is a judgement about ONE message, and
+   * carrying it forward would silently turn dark mode off for the rest of
+   * the session after a single awkward newsletter.
+   *
+   * It exists because ../components/messageBody.ts's inversion has two
+   * failure modes it cannot fix from inside the frame — a CSS
+   * `background-image` inverts with the page, and mail already authored
+   * dark comes out light. Outlook ships the same escape for the same two
+   * reasons.
+   */
+  const [showOriginal, setShowOriginal] = useState(false);
+  const isDark = resolved === 'dark' && !showOriginal;
 
   // Memoised: the estimate walks a string that is routinely 60–90KB, and
   // it must not be redone on every unrelated re-render of the reader.
   // `srcDocFor` is memoised beside it for a different and sharper reason —
   // handing React a fresh `srcDoc` string reloads the frame, so a new
-  // string on a width change would restart the message.
+  // string on a width change would restart the message. `isDark` joins the
+  // deps for exactly that reason: toggling it MUST rebuild the document,
+  // and must not rebuild it for anything else.
   const height = useMemo(() => estimatedBodyHeightPx(html, width), [html, width]);
-  const doc = useMemo(() => srcDocFor(html), [html]);
+  const doc = useMemo(() => srcDocFor(html, isDark ? 'dark' : 'light'), [html, isDark]);
 
   return (
-    <iframe
-      ref={frameRef}
-      // Named for what it contains: a screen reader user tabbing into an
-      // unlabelled frame is told only "frame".
-      title={`Message body: ${subject}`}
-      sandbox={IFRAME_SANDBOX}
-      srcDoc={doc}
-      referrerPolicy="no-referrer"
-      // The height is a computed pixel value, so it is an inline style
-      // rather than a class — Tailwind cannot emit a utility for a number
-      // that only exists at runtime. Everything else stays in classes.
-      style={{ height: `${height}px` }}
-      className="block w-full rounded-lg border-0 bg-white shadow-sm dark:bg-white"
-    />
+    <div className="flex flex-col gap-2">
+      <iframe
+        ref={frameRef}
+        // Named for what it contains: a screen reader user tabbing into an
+        // unlabelled frame is told only "frame".
+        title={`Message body: ${subject}`}
+        sandbox={IFRAME_SANDBOX}
+        srcDoc={doc}
+        referrerPolicy="no-referrer"
+        // The height is a computed pixel value, so it is an inline style
+        // rather than a class — Tailwind cannot emit a utility for a number
+        // that only exists at runtime. Everything else stays in classes.
+        style={{ height: `${height}px` }}
+        // The frame's own ground must match what the document inverts to,
+        // or the message flashes white for the frame's first paint before
+        // its stylesheet applies. `bg-card` in dark resolves to the same
+        // near-black the inversion produces.
+        className="block w-full rounded-lg border-0 bg-white shadow-sm dark:bg-card"
+      />
+      {resolved === 'dark' ? (
+        // Dark only: in light mode the message is already rendered exactly
+        // as sent, so a control offering to do that would toggle nothing.
+        <button
+          type="button"
+          onClick={() => setShowOriginal((previous) => !previous)}
+          className="cursor-pointer self-start rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {showOriginal ? 'Use dark colours' : 'Show original colours'}
+        </button>
+      ) : null}
+    </div>
   );
 }
 

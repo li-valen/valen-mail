@@ -520,3 +520,43 @@ describe('formatReceived — the reader header timestamp', () => {
     expect(formatReceived('not a date')).toBe('—');
   });
 });
+
+describe('srcDocFor dark scheme', () => {
+  const HTML = '<p style="color:#333">hello</p>';
+
+  it('leaves the document light when no scheme is asked for', () => {
+    // Back-compat: the one-argument call MessageView used before dark mode
+    // existed must produce exactly what it always did.
+    expect(srcDocFor(HTML)).toBe(srcDocFor(HTML, 'light'));
+    expect(srcDocFor(HTML)).not.toContain('invert(1)');
+  });
+
+  it('inverts the page in dark, so a sender-set text colour cannot go black-on-black', () => {
+    const doc = srcDocFor(HTML, 'dark');
+    expect(doc).toContain('html{color-scheme:dark;filter:invert(1) hue-rotate(180deg)}');
+  });
+
+  it('re-inverts media so a photo is not served as a negative', () => {
+    const doc = srcDocFor(HTML, 'dark');
+    // The SECOND inversion is the whole point: it must apply to media and
+    // must be the same transform, or it does not cancel.
+    expect(doc).toMatch(/img,picture,video,canvas,svg,embed,object\{filter:invert\(1\) hue-rotate\(180deg\)\}/);
+  });
+
+  it('keeps the pre-filter background WHITE, since white is what inverts to near-black', () => {
+    // A dark literal here would invert to WHITE and hand the user the exact
+    // bright rectangle this change exists to remove — the inverted-twice
+    // trap. Pin it so nobody "fixes" the background to a dark value.
+    const doc = srcDocFor(HTML, 'dark');
+    expect(doc).toContain('background:#ffffff');
+    expect(doc).not.toContain('background:#000');
+  });
+
+  it('still carries the CSP and sandbox-critical head in dark', () => {
+    // Dark mode is a stylesheet concern and must not disturb the security
+    // boundary; this asserts the two cannot drift apart.
+    const doc = srcDocFor(HTML, 'dark');
+    expect(doc).toContain('Content-Security-Policy');
+    expect(doc).toContain('<base target="_blank">');
+  });
+});

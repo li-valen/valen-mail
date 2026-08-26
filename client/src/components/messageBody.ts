@@ -177,6 +177,68 @@ const BODY_STYLE = [
   'body>table{display:block;max-width:100%;overflow-x:auto}',
 ].join('');
 
+/** Which ground the message is rendered on. */
+export type BodyScheme = 'light' | 'dark';
+
+/**
+ * DARK MODE FOR THE MESSAGE ITSELF, by inversion rather than by restyling.
+ *
+ * **THIS REVERSES THE DECISION ABOVE, AT THE USER'S REQUEST:** *"Fix the
+ * dark mode. When you click into emails the email section still white…
+ * you can try to also change the background whites to the dark theme."*
+ * The reasoning that kept this card light is still correct and is worth
+ * restating, because it is exactly what this rule set has to survive: an
+ * email hardcodes its colours against the white ground every client has
+ * ever given it, so simply setting a dark `background` produces
+ * black-on-black paragraphs wherever the sender set `color:#333` inline
+ * and no background to go with it. That failure is not cosmetic — the
+ * text becomes unreadable, which is worse than a white card.
+ *
+ * **SO WE INVERT INSTEAD OF RECOLOURING, and the distinction is the whole
+ * point.** Recolouring has to guess which of the sender's colours to keep
+ * and which to override, and it guesses wrong on any message that sets
+ * one half of a foreground/background pair. Inverting cannot: it is a
+ * uniform transform over whatever the sender actually specified, so the
+ * CONTRAST the sender chose is preserved exactly while the lightness
+ * flips. Black-on-white becomes white-on-black; grey-on-white becomes
+ * grey-on-black. There is no combination of sender styles that inverts
+ * into an unreadable one, which is the property no recolouring rule set
+ * can offer. This is what Outlook and Apple Mail do for the same reason.
+ *
+ * `hue-rotate(180deg)` follows the inversion because `invert()` alone
+ * also flips hue — a blue link would come back orange. Rotating the wheel
+ * a half turn puts it back, so brand colours stay recognisably themselves
+ * at inverted lightness.
+ *
+ * **MEDIA IS INVERTED A SECOND TIME, back to normal.** A photograph, a
+ * logo, a screenshot — anything whose pixels are content rather than
+ * styling — must not come out as a negative. Applying the same transform
+ * again is exactly self-cancelling, so these elements render as the
+ * sender authored them.
+ *
+ * **WHAT THIS COSTS, stated plainly rather than buried.** Two things it
+ * genuinely cannot fix. A CSS `background-image` (common in marketing
+ * mail) is not reachable by any selector that names the element carrying
+ * it, so it inverts and looks wrong. And a message already authored dark
+ * inverts to light — legible, still contrasty, but not what its sender
+ * intended. Both are why MessageView.tsx offers a per-message escape back
+ * to the original rendering, which is the same mitigation Outlook ships;
+ * neither is a reason to hand the user a white rectangle at night.
+ *
+ * `color-scheme:dark` replaces the `light` set above so the UA's own
+ * scrollbars and form controls inside the frame match the inverted page.
+ * The `background` stays WHITE deliberately: it is the input to the
+ * filter, and inverting white is what produces the near-black ground.
+ */
+const DARK_BODY_STYLE = [
+  'html{color-scheme:dark;filter:invert(1) hue-rotate(180deg)}',
+  // Re-inverted so their pixels survive the page-level transform. `svg` is
+  // included because inline SVG in mail is nearly always a logo or icon,
+  // i.e. content; where it is used as decoration the double inversion is
+  // no worse than the single one would have been.
+  'img,picture,video,canvas,svg,embed,object{filter:invert(1) hue-rotate(180deg)}',
+].join('');
+
 /**
  * Builds the complete document handed to the body iframe's `srcdoc`.
  *
@@ -203,7 +265,7 @@ const BODY_STYLE = [
  * and it has one possible value now, so a parameter nothing sets would be
  * a config knob pretending to still be a decision.
  */
-export function srcDocFor(html: string): string {
+export function srcDocFor(html: string, scheme: BodyScheme = 'light'): string {
   const csp = contentSecurityPolicyFor();
   return (
     '<!doctype html><html><head>' +
@@ -216,7 +278,7 @@ export function srcDocFor(html: string): string {
     // frame away from the message. `base-uri 'none'` above still blocks a
     // message supplying its own <base href> to re-point relative URLs.
     '<base target="_blank">' +
-    `<style>${BODY_STYLE}</style>` +
+    `<style>${BODY_STYLE}${scheme === 'dark' ? DARK_BODY_STYLE : ''}</style>` +
     '</head><body>' +
     html +
     '</body></html>'
