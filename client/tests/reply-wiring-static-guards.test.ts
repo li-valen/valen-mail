@@ -138,8 +138,15 @@ describe('the composer is opened pre-filled', () => {
 });
 
 describe('the send call carries the threading', () => {
-  it('the composer spreads the reply fields into sendMail', () => {
-    expect(/sendMail\([\s\S]{0,120}replyWireFields\(reply\)/.test(COMPOSE)).toBe(true);
+  it('the composer spreads the reply fields into the send it submits', () => {
+    // Plan 11 put an await between the two — the files are read before
+    // the request goes out — so the reply fields now reach `sendMail`
+    // through `submitDraft`. What must stay true is that the object
+    // handed to the send carries them, and that NOTHING else is handed
+    // to `sendMail` instead.
+    expect(/submitDraft\([\s\S]{0,120}replyWireFields\(reply\)/.test(COMPOSE)).toBe(true);
+    expect(/sendMail\(\{ \.\.\.wire, attachments \}\)/.test(COMPOSE)).toBe(true);
+    expect(/async function submitDraft\(wire: SendRequest\)/.test(COMPOSE)).toBe(true);
   });
 
   it('composeApi puts inReplyTo, references and quote on the wire', () => {
@@ -155,7 +162,10 @@ describe('the send call carries the threading', () => {
   });
 
   it('the send-call guard is not vacuous', () => {
-    expect(/sendMail\([\s\S]{0,120}replyWireFields\(reply\)/.test('sendMail(draft).then(')).toBe(false);
+    expect(/submitDraft\([\s\S]{0,120}replyWireFields\(reply\)/.test('submitDraft(draft);')).toBe(
+      false,
+    );
+    expect(/sendMail\(\{ \.\.\.wire, attachments \}\)/.test('sendMail(draft)')).toBe(false);
   });
 });
 

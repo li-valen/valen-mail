@@ -61,6 +61,14 @@ export interface SendResult {
   readonly ok: boolean;
 }
 
+/** One file as POST /api/send takes it (sync/src/send/attachments.ts
+ *  `SendAttachment`). */
+export interface SendAttachment {
+  readonly filename: string;
+  readonly contentType: string;
+  readonly contentBase64: string;
+}
+
 export interface SendRequest {
   readonly identityId: string;
   readonly to: readonly string[];
@@ -90,6 +98,21 @@ export interface SendRequest {
    * re-fire the original recipient's token forever.
    */
   readonly quote?: QuoteSource;
+  /**
+   * The files riding on this message, already base64-encoded, or absent
+   * for a message with none.
+   *
+   * BASE64 IN THE SAME JSON BODY — no second request and no multipart
+   * encoding anywhere in this client. The route already accepts a JSON
+   * body and `nodemailer` already turns parts into MIME on the other
+   * side, so a multipart parser would be a dependency bought to solve a
+   * problem neither end has.
+   *
+   * `contentBase64` is the ENCODED text; the route decodes it and
+   * measures the result. The two differ by 4/3, and spec §5.3.1's budget
+   * is in decoded bytes.
+   */
+  readonly attachments?: readonly SendAttachment[];
 }
 
 /**
@@ -254,6 +277,22 @@ export async function sendMail(
       ...(request.references === undefined || request.references.length === 0
         ? {}
         : { references: [...request.references] }),
+      // OMITTED WHEN EMPTY, exactly like `references` above: a message
+      // with no files must put the bytes on the wire it always has, and
+      // the route's own tests assert that a send with no attachments is
+      // byte-identical to what shipped before Plan 11.
+      ...(request.attachments === undefined || request.attachments.length === 0
+        ? {}
+        : {
+            // Named field by field for the same reason the request itself
+            // is: whatever the picker carries locally must not ride onto
+            // the wire because someone added a field to the type.
+            attachments: request.attachments.map((attachment) => ({
+              filename: attachment.filename,
+              contentType: attachment.contentType,
+              contentBase64: attachment.contentBase64,
+            })),
+          }),
       ...(request.quote === undefined
         ? {}
         : {

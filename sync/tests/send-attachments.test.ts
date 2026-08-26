@@ -302,3 +302,67 @@ describe('parseAttachments — shape', () => {
     expect(JSON.stringify(input)).toBe(frozen);
   });
 });
+
+/**
+ * The shared-token sentinel, and the reason it is a WORD.
+ *
+ * Nothing downstream was changed to support degraded tracking. The opens
+ * feed renders `{recipientEmail} opened "{subject}"` and push renders
+ * `{recipientEmail} opened your mail`, both verbatim — so putting the
+ * honest value in that field makes the degraded state render itself, in
+ * every surface, with no branch anywhere.
+ */
+
+import { SHARED_TOKEN_RECIPIENT } from '../src/send/attachments';
+import { isOwnAddress } from '../src/addresses';
+import { tallyOpens } from '../src/followup/query';
+import { buildOpenNotification, shouldNotifyOpen } from '../src/push/dispatch';
+import type { OpenEvent } from '../src/api/opens';
+
+const OWN = ['me@gmail.com', 'me@college.example.edu'];
+
+function sharedOpen(overrides: Partial<OpenEvent> = {}): OpenEvent {
+  return {
+    token: 'a'.repeat(32),
+    accountId: 'primary',
+    messageId: '<m@example.com>',
+    recipientEmail: SHARED_TOKEN_RECIPIENT,
+    subject: 'Deck',
+    sentAt: 1,
+    occurredAt: 2,
+    classification: 'open',
+    deviceClass: null,
+    os: null,
+    ...overrides,
+  };
+}
+
+describe('SHARED_TOKEN_RECIPIENT', () => {
+  it('is not an address, so it can never collide with a real recipient', () => {
+    expect(SHARED_TOKEN_RECIPIENT).not.toContain('@');
+  });
+
+  it('reads as the honest state everywhere it is rendered verbatim', () => {
+    // "someone opened your mail" — §7A.2's exact requirement, with no
+    // branch in the push path and none in the opens feed.
+    expect(buildOpenNotification(sharedOpen()).title).toBe(`${SHARED_TOKEN_RECIPIENT} opened your mail`);
+  });
+
+  it('is never mistaken for one of the user own addresses', () => {
+    // If it were, a genuine open would be suppressed as the sender
+    // reading their own Sent copy, and the degraded message would report
+    // nothing at all.
+    expect(isOwnAddress(SHARED_TOKEN_RECIPIENT, OWN)).toBe(false);
+    expect(shouldNotifyOpen(sharedOpen(), OWN)).toBe(true);
+  });
+
+  it('under-claims rather than over-claims in the follow-up tally', () => {
+    // Five people may have opened a shared-token message; the tally can
+    // only ever say one. That is the direction §7A.2 requires uncertainty
+    // to fall — never a name, never a count it cannot support.
+    const tally = tallyOpens([sharedOpen(), sharedOpen({ occurredAt: 9 })], OWN);
+    const entry = [...tally.values()][0]!;
+    expect(entry.openCount).toBe(2);
+    expect(entry.distinctRecipientOpens).toBe(1);
+  });
+});

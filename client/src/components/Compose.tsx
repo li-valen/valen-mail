@@ -1,10 +1,22 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import type { FormEvent, KeyboardEvent } from 'react';
-import { Loader2, Send } from 'lucide-react';
+import type { ChangeEvent, FormEvent, KeyboardEvent } from 'react';
+import { Loader2, Paperclip, Send, X } from 'lucide-react';
 
 import { ApiError } from '../api';
 import { getIdentities, identityIdForAccount, primaryIdentityId, sendMail } from '../composeApi';
-import type { Identity } from '../composeApi';
+import type { Identity, SendAttachment, SendRequest } from '../composeApi';
+import {
+  attachmentError,
+  base64FromDataUrl,
+  contentTypeFor,
+  degradationNotice,
+  formatFileSize,
+  mergePicked,
+  totalBytes,
+  willDegradeTracking,
+  withoutPickedAt,
+} from '../attachmentPicker';
+import type { PickedFile } from '../attachmentPicker';
 import {
   composerTitleFor,
   initialFocusFor,
@@ -18,6 +30,7 @@ import { Panel } from '../motion';
 import ComposeOutcome from './ComposeOutcome';
 import RecipientField from './RecipientField';
 import { includesRecipient, mergeRecipients, parseRecipients } from './composeRecipients';
+import { CHIP_BASE, CHIP_NEUTRAL, CHIP_REMOVE, CHIP_SECONDARY } from './chip';
 import { validateCompose } from './composeValidation';
 import type { ComposeDraft, ComposeErrors } from './composeValidation';
 import { describeSendFailure, summarizeResults } from './composeResults';
@@ -29,6 +42,7 @@ import { Input } from '../ui/Input';
 import { Label } from '../ui/Label';
 import { Select } from '../ui/Select';
 import { Textarea } from '../ui/Textarea';
+import { cn } from '../ui/cn';
 
 /**
  * The composer: pick an account, name some recipients, write plain text,
@@ -79,6 +93,56 @@ export const DISCARD_DRAFT_PROMPT = 'Discard this draft? What you have written w
 const TRACKING_NOTE = 'Tracked — each recipient gets their own tracking pixel.';
 
 const RECIPIENT_HINT = 'Separate addresses with a comma or a space.';
+
+/** Shown when the browser could not hand over a file the user picked — a
+ *  file moved or deleted between picking and sending is the usual cause. */
+const ATTACHMENT_READ_ERROR = 'Postbox could not read one of these files. Remove it and try again.';
+
+/** One picked file, with the browser's own `File` kept alongside the
+ *  plain shape ../attachmentPicker.ts works on. The `File` never reaches
+ *  that module — it is pure, and a `File` is not. */
+interface PickedAttachment extends PickedFile {
+  readonly file: File;
+}
+
+/**
+ * Reads one file into base64.
+ *
+ * `readAsDataURL` rather than `readAsArrayBuffer` + a hand-rolled
+ * encoder: the browser already knows how to base64 a file, and the only
+ * part that needs judgement — pulling the payload out of the data URL,
+ * including the empty-file case — is ../attachmentPicker.ts's
+ * `base64FromDataUrl`, which is tested.
+ *
+ * Rejects rather than resolving with a partial value. An attachment the
+ * recipient cannot open is worse than a send that did not happen.
+ */
+function readAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('unreadable'));
+    reader.onload = () => {
+      const encoded = typeof reader.result === 'string' ? base64FromDataUrl(reader.result) : null;
+      if (encoded === null) reject(new Error('unreadable'));
+      else resolve(encoded);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+/** Every picked file, as the route takes them. One rejection fails the
+ *  whole send — there is no partial attach. */
+function encodeAttachments(
+  files: readonly PickedAttachment[],
+): Promise<readonly SendAttachment[]> {
+  return Promise.all(
+    files.map(async (picked) => ({
+      filename: picked.name,
+      contentType: contentTypeFor(picked.type),
+      contentBase64: await readAsBase64(picked.file),
+    })),
+  );
+}
 
 /** Nothing is wrong until the user has actually tried to send. */
 const NO_ERRORS: ComposeErrors = {};
@@ -133,6 +197,14 @@ export default function Compose({ reply, onClose, onSent, onDirtyChange }: Compo
    *  identities land, and for a plain compose forever. */
   const [seed, setSeed] = useState<SeededDraft | null>(null);
   const [textBody, setTextBody] = useState('');
+
+  const [picked, setPicked] = useState<readonly PickedAttachment[]>([]);
+  /** Monotonic, so a React key stays stable across removals — two files
+   *  can share a name, and an index key would re-associate the chips
+   *  around a removal. */
+  const pickedIdRef = useRef(0);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [readError, setReadError] = useState<string | null>(null);
 
   const [isSending, setSending] = useState(false);
   // Errors are shown only after a send has been attempted, and are
@@ -278,13 +350,41 @@ export default function Compose({ reply, onClose, onSent, onDirtyChange }: Compo
   const errors = hasAttemptedSend ? validation.errors : NO_ERRORS;
 
   /**
+   * The attachment state, all three parts of it.
+   *
+   * `attachmentProblem` is shown IMMEDIATELY rather than waiting for a
+   * send attempt, unlike the field errors above: picking an eleventh file
+   * is a deliberate act with an instant, visible consequence, and holding
+   * the reason back until Send would leave the button disabled with no
+   * explanation beside it.
+   *
+   * `isTrackingDegraded` is spec §5.3.1, and it is deliberately computed
+   * from the LIVE recipient count — adding a sixth person to a message
+   * that was fine with five is exactly when the notice needs to appear.
+   */
+  const recipientCount = draft.to.length + draft.cc.length;
+  const attachmentProblem = useMemo(() => attachmentError(picked), [picked]);
+  const attachedBytes = useMemo(() => totalBytes(picked), [picked]);
+  const isTrackingDegraded = useMemo(
+    // Suppressed while an attachment is over a hard cap: that send cannot
+    // happen at all, so telling the user what its tracking would look like
+    // is noise stacked on top of the thing they actually have to fix.
+    // Found in the browser, with both alerts on screen at once.
+    () => attachmentProblem === undefined && willDegradeTracking(picked, recipientCount),
+    [attachmentProblem, picked, recipientCount],
+  );
+
+  /**
    * A reply opens with its recipients and subject already filled in, so
    * "is there anything in these fields?" reports an untouched reply as
    * dirty and puts a native confirm in front of a user who typed nothing.
    * Found by opening a forward in the running app and pressing Escape.
    * ../replyDraft.ts's `isDraftDirty` compares against what was SEEDED.
    */
-  const isDirty = isDraftDirty(draft, seed);
+  // An attached file is work too. Without `|| picked.length > 0` a user
+  // who attached a deck and pressed Escape would lose it with no prompt —
+  // ../replyDraft.ts's `isDraftDirty` only compares the text fields.
+  const isDirty = isDraftDirty(draft, seed) || picked.length > 0;
   useEffect(() => {
     onDirtyChange(isDirty);
   }, [isDirty, onDirtyChange]);
@@ -296,6 +396,33 @@ export default function Compose({ reply, onClose, onSent, onDirtyChange }: Compo
     if (isDirty && !window.confirm(DISCARD_DRAFT_PROMPT)) return;
     onClose();
   }, [isDirty, onClose]);
+
+  function handleFilesPicked(event: ChangeEvent<HTMLInputElement>): void {
+    const chosen: readonly PickedAttachment[] = Array.from(event.target.files ?? []).map(
+      (file) => {
+        pickedIdRef.current += 1;
+        return {
+          id: `picked-${pickedIdRef.current}`,
+          name: file.name,
+          // DECODED bytes, which is what File.size already is. The wire
+          // carries base64 at 4/3 this size; the budget is measured here.
+          size: file.size,
+          type: file.type,
+          file,
+        };
+      },
+    );
+    setPicked((current) => mergePicked(current, chosen));
+    setReadError(null);
+    // Cleared so picking the SAME file again still fires a change event —
+    // otherwise removing a file and re-adding it silently does nothing.
+    event.target.value = '';
+  }
+
+  function removeAttachment(index: number): void {
+    setPicked((current) => withoutPickedAt(current, index));
+    setReadError(null);
+  }
 
   function handleKeyDown(event: KeyboardEvent<HTMLElement>): void {
     if (event.key !== 'Escape') return;
@@ -318,7 +445,8 @@ export default function Compose({ reply, onClose, onSent, onDirtyChange }: Compo
 
     setAttemptedSend(true);
     setFailure(null);
-    if (!validation.isValid) return;
+    setReadError(null);
+    if (!validation.isValid || attachmentProblem !== undefined) return;
 
     inFlightRef.current = true;
     setSending(true);
@@ -329,27 +457,52 @@ export default function Compose({ reply, onClose, onSent, onDirtyChange }: Compo
     // and none of these three is editable. `replyWireFields` bundles all
     // of them so this call cannot carry the threading and forget the
     // quote, or the other way round.
-    sendMail(reply === undefined ? draft : { ...draft, ...replyWireFields(reply) }).then(
-      (results) => {
-        inFlightRef.current = false;
-        setSending(false);
-        const summary = summarizeResults(results);
-        if (summary.outcome === 'all-ok') {
-          onSent(summary);
-          onClose();
-          return;
-        }
-        setPartial(summary);
-      },
-      (error: unknown) => {
-        inFlightRef.current = false;
-        setSending(false);
-        // ../composeApi.ts's thrown message is the path and the status,
-        // nothing else — this cannot leak a recipient or a subject.
-        console.error('Compose: send failed', error);
-        setFailure(describeSendFailure(error));
-      },
-    );
+    void submitDraft(reply === undefined ? draft : { ...draft, ...replyWireFields(reply) });
+  }
+
+  /**
+   * Reads the files, then sends.
+   *
+   * Two awaits with two distinct failure meanings, which is why this is
+   * not one `.then` chain: a file that could not be read means NOTHING
+   * was sent and the user should fix the attachment, while a send failure
+   * means copies may already have gone out (./composeResults.ts's
+   * `describeSendFailure` is what decides how to say so). Collapsing them
+   * would report an unreadable file as a possibly-half-sent message.
+   */
+  async function submitDraft(wire: SendRequest): Promise<void> {
+    let attachments: readonly SendAttachment[];
+    try {
+      attachments = await encodeAttachments(picked);
+    } catch {
+      inFlightRef.current = false;
+      setSending(false);
+      // The error is discarded rather than logged: a FileReader error can
+      // quote the file it failed on, and the filename is the user's.
+      console.error('Compose: an attached file could not be read');
+      setReadError(ATTACHMENT_READ_ERROR);
+      return;
+    }
+
+    try {
+      const results = await sendMail({ ...wire, attachments });
+      inFlightRef.current = false;
+      setSending(false);
+      const summary = summarizeResults(results);
+      if (summary.outcome === 'all-ok') {
+        onSent(summary);
+        onClose();
+        return;
+      }
+      setPartial(summary);
+    } catch (error: unknown) {
+      inFlightRef.current = false;
+      setSending(false);
+      // ../composeApi.ts's thrown message is the path and the status,
+      // nothing else — this cannot leak a recipient or a subject.
+      console.error('Compose: send failed', error);
+      setFailure(describeSendFailure(error));
+    }
   }
 
   /** After a partial failure, drops everyone whose copy DID go out, so
@@ -366,7 +519,11 @@ export default function Compose({ reply, onClose, onSent, onDirtyChange }: Compo
   const quoteNotice = useMemo(() => quoteNoticeFor(reply), [reply]);
 
   const isLoadingIdentities = identityLoad.status === 'loading';
-  const canSend = !isSending && identityLoad.status === 'ready' && identities.length > 0;
+  const canSend =
+    !isSending &&
+    identityLoad.status === 'ready' &&
+    identities.length > 0 &&
+    attachmentProblem === undefined;
 
   return (
     // PLAN 7 TASK 2 — the composer arrives on the same curve and at the
@@ -523,6 +680,95 @@ export default function Compose({ reply, onClose, onSent, onDirtyChange }: Compo
               </p>
             )}
           </div>
+
+          {/* ATTACHMENTS. A real <input type="file"> does the work; the
+              Button is its accessible surrogate, because a <label>
+              styled as a button is clickable but not focusable, and a
+              bare file input cannot be styled to match anything else on
+              this form. The input is taken out of the tab order and
+              hidden from the accessibility tree so there is exactly ONE
+              control announced here, not two.
+
+              Fluid at every width: the row wraps rather than gaining a
+              second layout, and the chips wrap with it, so nothing here
+              is gated to `lg:`. Attaching a file on a phone is not a
+              desktop affordance. */}
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                tabIndex={-1}
+                aria-hidden="true"
+                onChange={handleFilesPicked}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={isSending}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <Paperclip aria-hidden="true" />
+                Attach files
+              </Button>
+              {picked.length > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  {picked.length === 1 ? '1 file' : `${picked.length} files`} ·{' '}
+                  {formatFileSize(attachedBytes)}
+                </p>
+              )}
+            </div>
+
+            {picked.length > 0 && (
+              <ul aria-label="Attached files" className="flex flex-wrap items-center gap-1.5">
+                {picked.map((attachment, index) => (
+                  <li key={attachment.id}>
+                    <span className={cn(CHIP_BASE, CHIP_NEUTRAL)}>
+                      {/* Filenames are user input rendered as a text
+                          child, like every address chip beside them —
+                          nothing here goes near a raw-HTML sink. */}
+                      <span className="truncate">{attachment.name}</span>
+                      <span className={CHIP_SECONDARY}>{formatFileSize(attachment.size)}</span>
+                      <button
+                        type="button"
+                        onClick={() => removeAttachment(index)}
+                        disabled={isSending}
+                        className={CHIP_REMOVE}
+                      >
+                        <X className="h-3 w-3" aria-hidden="true" />
+                        <span className="sr-only">Remove {attachment.name}</span>
+                      </button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {attachmentProblem !== undefined && (
+              <p role="alert" className="text-xs text-red-600 dark:text-red-400">
+                {attachmentProblem}
+              </p>
+            )}
+            {readError !== null && (
+              <p role="alert" className="text-xs text-red-600 dark:text-red-400">
+                {readError}
+              </p>
+            )}
+          </div>
+
+          {isTrackingDegraded && (
+            /* SPEC §5.3.1 / §7A.2 — said BEFORE the send, while the user
+               can still drop a file or a recipient. An Alert rather than
+               the quiet muted line below it because this is a decision,
+               not a footnote: what the message can tell them afterwards
+               is about to change. */
+            <Alert variant="warning">
+              <AlertDescription>{degradationNotice()}</AlertDescription>
+            </Alert>
+          )}
 
           {quoteNotice !== null && (
             /* Quiet, and stated where the user is looking when they

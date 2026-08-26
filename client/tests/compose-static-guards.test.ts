@@ -4,6 +4,7 @@ import recipientFieldSource from '../src/components/RecipientField.tsx?raw';
 import sentNoticeSource from '../src/components/SentNotice.tsx?raw';
 import appSource from '../src/App.tsx?raw';
 import appShellSource from '../src/AppShell.tsx?raw';
+import { degradationNotice } from '../src/attachmentPicker';
 
 /**
  * Static guards on the composer, using the `?raw`-import-and-regex
@@ -157,5 +158,90 @@ describe('the Compose control is reachable and announced', () => {
 
   it('closing the composer returns focus to the trigger', () => {
     expect(app).toMatch(/composeTriggerRef\.current\?\.focus\(\)/);
+  });
+});
+
+/**
+ * Plan 11 — attachments, and spec §5.3.1's notice.
+ *
+ * The RULES are tested in tests/attachment-picker.test.ts, which is where
+ * they live. What is guarded here is that the composer actually WIRES
+ * them: a perfectly correct predicate nothing renders is a rule the user
+ * never sees.
+ */
+describe('the composer can attach files', () => {
+  it('renders a real file input rather than a fake drop zone', () => {
+    expect(compose).toMatch(/type="file"/);
+    expect(compose).toMatch(/multiple/);
+  });
+
+  it('gives the file input an accessible surrogate control, and only one', () => {
+    // A <label> styled as a button is clickable but not focusable, and a
+    // visible input plus a visible button would announce two controls for
+    // one action.
+    expect(compose).toMatch(/fileInputRef\.current\?\.click\(\)/);
+    expect(compose).toMatch(/aria-hidden="true"/);
+    expect(compose).toMatch(/tabIndex=\{-1\}/);
+  });
+
+  it('labels every remove control with the file it removes', () => {
+    expect(compose).toMatch(/Remove \{attachment\.name\}/);
+  });
+
+  it('names the attached list for a screen reader', () => {
+    expect(compose).toMatch(/aria-label="Attached files"/);
+  });
+});
+
+describe('the §5.3.1 notice is rendered before the send, not after', () => {
+  it('renders the notice the picker writes, not a second copy of the words', () => {
+    // One sentence, one place. A literal pasted here could drift into
+    // saying something subtly different about the same trade.
+    expect(compose).toMatch(/\{degradationNotice\(\)\}/);
+    expect(compose).not.toContain(degradationNotice());
+  });
+
+  it('shows it on the DEGRADE PREDICATE, not on a raw size check', () => {
+    // The rule is bytes x recipients. A notice driven by the file size
+    // alone would stay silent on the only case it exists for.
+    expect(compose).toMatch(/willDegradeTracking\(picked, recipientCount\)/);
+    expect(compose).toMatch(/isTrackingDegraded &&/);
+  });
+
+  it('feeds the predicate the LIVE recipient count, including cc', () => {
+    expect(compose).toMatch(/draft\.to\.length \+ draft\.cc\.length/);
+  });
+
+  it('the notice sits in the form, above the Send control', () => {
+    const noticeAt = compose.indexOf('degradationNotice()');
+    const sendAt = compose.indexOf("type=\"submit\"");
+    expect(noticeAt).toBeGreaterThan(-1);
+    expect(sendAt).toBeGreaterThan(noticeAt);
+  });
+});
+
+describe('an attached file is work that must not be discarded silently', () => {
+  it('counts attachments as a dirty draft', () => {
+    // Found the same way the reply-seeding bug was: attaching a deck and
+    // pressing Escape must ask, and isDraftDirty only compares text.
+    expect(compose).toMatch(/picked\.length > 0/);
+  });
+
+  it('blocks Send while an attachment cap is broken', () => {
+    expect(compose).toMatch(/attachmentProblem === undefined/);
+  });
+});
+
+describe('attachment failures are told apart', () => {
+  it('reads the files and sends in separate steps with separate messages', () => {
+    // A file that could not be read means NOTHING was sent; a send
+    // failure means copies may already have gone out. One catch for both
+    // would report the first as the second.
+    expect(compose).toMatch(/encodeAttachments\(picked\)/);
+    expect(compose).toMatch(/setReadError\(ATTACHMENT_READ_ERROR\)/);
+  });
+
+  it('never logs the file that failed', () => {
+    expect(compose).not.toMatch(/console\.\w+\([^)]*\b(filename|attachment\.name|picked)\b/);
   });
 });

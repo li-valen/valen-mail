@@ -315,3 +315,74 @@ describe('identityIdForAccount', () => {
     expect(identityIdForAccount('personal', [])).toBe('');
   });
 });
+
+/**
+ * Plan 11 — attachments on the wire.
+ *
+ * The files ride as base64 inside the same JSON body; there is no second
+ * request and no multipart encoding anywhere in this client.
+ */
+describe('sendMail — attachments', () => {
+  const REQUEST_WITH = {
+    identityId: 'primary',
+    to: ['a@x.com'],
+    cc: [],
+    subject: 'Hello',
+    textBody: 'Hi.',
+  };
+
+  it('omits the field entirely when nothing is attached', async () => {
+    // The same rule `references` follows: a plain compose must put the
+    // bytes on the wire it always has.
+    const f = vi.fn().mockResolvedValue(jsonResponse({ results: [] }));
+    await sendMail({ ...REQUEST_WITH, attachments: [] }, f);
+    const body = JSON.parse(String(f.mock.calls[0]?.[1]?.body));
+    expect('attachments' in body).toBe(false);
+    expect(Object.keys(body).sort()).toEqual(
+      ['cc', 'identityId', 'subject', 'textBody', 'to'].sort(),
+    );
+  });
+
+  it('carries filename, content type and base64 for each file', async () => {
+    const f = vi.fn().mockResolvedValue(jsonResponse({ results: [] }));
+    await sendMail(
+      {
+        ...REQUEST_WITH,
+        attachments: [
+          { filename: 'notes.txt', contentType: 'text/plain', contentBase64: 'aGk=' },
+          { filename: 'deck.pdf', contentType: 'application/pdf', contentBase64: 'JVBE' },
+        ],
+      },
+      f,
+    );
+    const body = JSON.parse(String(f.mock.calls[0]?.[1]?.body));
+    expect(body.attachments).toEqual([
+      { filename: 'notes.txt', contentType: 'text/plain', contentBase64: 'aGk=' },
+      { filename: 'deck.pdf', contentType: 'application/pdf', contentBase64: 'JVBE' },
+    ]);
+  });
+
+  it('names each attachment field rather than spreading the object onto the wire', async () => {
+    const f = vi.fn().mockResolvedValue(jsonResponse({ results: [] }));
+    await sendMail(
+      {
+        ...REQUEST_WITH,
+        attachments: [
+          {
+            filename: 'notes.txt',
+            contentType: 'text/plain',
+            contentBase64: 'aGk=',
+            // A field a future version of the picker might carry locally.
+            // It must not ride onto the wire unnoticed.
+            localOnly: 'secret',
+          } as never,
+        ],
+      },
+      f,
+    );
+    const body = JSON.parse(String(f.mock.calls[0]?.[1]?.body));
+    expect(Object.keys(body.attachments[0]).sort()).toEqual(
+      ['contentBase64', 'contentType', 'filename'].sort(),
+    );
+  });
+});

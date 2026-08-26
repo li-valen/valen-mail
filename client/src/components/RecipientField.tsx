@@ -10,6 +10,7 @@ import {
 } from './composeRecipients';
 import { Label } from '../ui/Label';
 import { cn } from '../ui/cn';
+import { CHIP_BASE, CHIP_BAD, CHIP_NEUTRAL, CHIP_REMOVE } from './chip';
 
 /**
  * One recipient field — To or Cc — as a row of removable chips followed
@@ -59,19 +60,6 @@ interface RecipientFieldProps {
   readonly inputRef?: Ref<HTMLInputElement>;
   readonly placeholder?: string;
 }
-
-const CHIP_BASE =
-  'inline-flex max-w-full items-center gap-1 rounded-md border py-0.5 pl-2 pr-0.5 text-xs font-medium';
-
-/** An address that is fine. Semantic tokens throughout, so it follows the
- *  palette in both modes with no light literal to pair. */
-const CHIP_OK = 'border-border bg-secondary text-secondary-foreground';
-
-/** An address that cannot be sent to, or that a send failed to reach.
- *  Explicit light AND dark reds: no semantic token carries a "subtle
- *  destructive" role (see ui/Alert.tsx's note on the same gap). */
-const CHIP_BAD =
-  'border-red-300 bg-red-50 text-red-900 dark:border-red-900 dark:bg-red-950 dark:text-red-200';
 
 export default function RecipientField({
   id,
@@ -153,13 +141,13 @@ export default function RecipientField({
               const isBad = !isValidRecipient(address) || includesRecipient(failed, address);
               return (
                 <li key={address}>
-                  <span className={cn(CHIP_BASE, isBad ? CHIP_BAD : CHIP_OK)}>
+                  <span className={cn(CHIP_BASE, isBad ? CHIP_BAD : CHIP_NEUTRAL)}>
                     <span className="truncate">{address}</span>
                     <button
                       type="button"
                       onClick={() => removeAddress(address)}
                       disabled={isDisabled}
-                      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm opacity-70 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed"
+                      className={CHIP_REMOVE}
                     >
                       <X className="h-3 w-3" aria-hidden="true" />
                       <span className="sr-only">Remove {address}</span>
