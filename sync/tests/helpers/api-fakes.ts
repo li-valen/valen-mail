@@ -191,6 +191,15 @@ export function makeFakePool(options: {
   budgetAllowed?: boolean;
   remaining?: number;
   discoveredFolders?: Readonly<Record<string, DiscoveredFolders>>;
+  /**
+   * Stands in for ConnectionPool.getUidValidity — the last UIDVALIDITY the
+   * sync loop observed for a mailbox, which ../src/api/message-cache.ts
+   * uses to drop a folder the server has renumbered. Keyed by the same
+   * NATIVE folder path the route takes as its path segment. An unlisted
+   * folder gets `null` back, exactly like a real pool that has not synced
+   * that mailbox yet — which is the ordinary state for every suite here.
+   */
+  uidValidity?: Readonly<Record<string, bigint>>;
 } = {}) {
   const lockKeys: string[] = [];
   const reserved: BudgetCall[] = [];
@@ -198,11 +207,13 @@ export function makeFakePool(options: {
   const statuses = new Map<string, string>(options.statuses ?? [['primary', 'connected']]);
   const connections = options.connections ?? {};
   const discoveredFolders = options.discoveredFolders ?? {};
+  const uidValidity = options.uidValidity ?? {};
 
   const pool = {
     status: statuses,
     getConnection: (id: string) => connections[id],
     getDiscoveredFolders: (id: string) => discoveredFolders[id],
+    getUidValidity: (_id: string, folder: string) => uidValidity[folder] ?? null,
     async withAccountLock<T>(accountId: string, fn: () => Promise<T>): Promise<T> {
       lockKeys.push(accountId);
       return fn();

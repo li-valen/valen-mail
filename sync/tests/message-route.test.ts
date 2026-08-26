@@ -3,6 +3,7 @@ import path from 'node:path';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createRouter } from '../src/api/routes';
 import { handleMessage, type ParsedMessage } from '../src/api/message.ts';
+import { MessageCache } from '../src/api/message-cache.ts';
 import {
   AUTH as auth,
   TOKEN,
@@ -204,7 +205,7 @@ describe('parsed message route / hostile and malformed MIME', () => {
       connections: { acct1: makeFakeConnection({ chunks: [fixture('malformed')] }) },
     });
 
-    const response = await handleMessage(makeFakeDb(), pool, 'acct1', 'INBOX', '42', null, {
+    const response = await handleMessage(makeFakeDb(), pool, 'acct1', 'INBOX', '42', null, new MessageCache(), {
       parseImpl: async () => {
         throw new Error('boom: SENTINEL-BODY-DO-NOT-LOG leaked into the error');
       },

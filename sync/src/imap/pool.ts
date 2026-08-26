@@ -11,6 +11,7 @@ import { folderSyncOrder, type DiscoveredFolders, type FolderKind } from './fold
 import { FolderCache } from './folder-cache.ts';
 import { KeyedMutex } from './keyed-mutex.ts';
 import { NewMailMarks } from './new-mail-marks.ts';
+import { UidValidityLog } from './uid-validity.ts';
 import { ByteBudget } from '../budget.ts';
 import { withTimeout } from '../timeout.ts';
 import { computeBackoffMs, MAX_BACKOFF_MS } from './backoff.ts';
@@ -181,6 +182,11 @@ export class ConnectionPool {
   // missing-folder log policy — see ./folder-cache.ts.
   private readonly folderCache = new FolderCache();
 
+  // Last observed UIDVALIDITY per (account, folder) — see
+  // ./uid-validity.ts, including why this is NOT syncOnce()'s own
+  // per-cycle map and who reads it.
+  private readonly uidValidity = new UidValidityLog();
+
   // Fix round 2, Fix A: every detached dispatch chain currently running
   // (Fix round 1, Fix 5 made dispatch fire-and-forget from syncOnce(), so
   // more than one of these can be live per account at once during a mail
@@ -246,6 +252,14 @@ export class ConnectionPool {
    *  deliberately indistinguishable to the caller. */
   getDiscoveredFolders(accountId: string): DiscoveredFolders | undefined {
     return this.folderCache.forAccount(accountId);
+  }
+
+  /** The API layer's read of the UIDVALIDITY this pool has already
+   *  observed, so it need not SELECT the mailbox itself once per request
+   *  on the connection the sync loop is sharing — see ./uid-validity.ts
+   *  for the contract and ../api/message-cache.ts for who asks. */
+  getUidValidity(accountId: string, folder: string): bigint | null {
+    return this.uidValidity.get(accountId, folder);
   }
 
   /**
@@ -531,6 +545,7 @@ export class ConnectionPool {
           const synced = await this.syncFolder(accountId, connection, target.path);
           newByFolder.set(target.kind, synced.newMessages);
           if (synced.uidValidity !== null) liveUidValidity.set(target.path, synced.uidValidity);
+          this.uidValidity.record(accountId, target.path, synced.uidValidity);
         } catch (error) {
           // INBOX keeps its existing semantics: its failure IS the
           // connection's health signal (a mailbox that will not open on an

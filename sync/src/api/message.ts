@@ -5,6 +5,7 @@ import type { ConnectionPool } from '../imap/pool';
 import { json, PRIVATE_NO_STORE } from './http.ts';
 import { fetchBudgetedPart, parsePositiveInt, resolveConnection } from './fetch-part.ts';
 import { stripOwnTrackingPixels } from './strip-pixel.ts';
+import type { MessageCache } from './message-cache';
 
 /**
  * GET /api/message/{accountId}/{folder}/{uid} (Plan 6 Task 1) — the PARSED
@@ -284,6 +285,36 @@ function describeFailure(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
 }
 
+/**
+ * Caches the FINAL response body and returns it.
+ *
+ * "Final" is the point: what goes in is post-pixel-strip and
+ * post-partId-correction, so a cache HIT is byte-identical to the miss
+ * that produced it. Caching `shaped` instead — the value one line before
+ * ./strip-pixel.ts runs — would mean the first open of a message strips
+ * our own tracking pixel and every later open serves it back, firing a
+ * pixel this installation minted and manufacturing an open attributed to
+ * a recipient who did nothing. That is spec 5.6 defeated by a cache, and
+ * it is exactly the kind of regression a cache introduces quietly, so it
+ * has its own test (tests/message-cache.test.ts) rather than only this
+ * comment.
+ *
+ * Caching the corrected attachments also means a hit skips the Postgres
+ * round trip lookupStoredParts would otherwise do, which is the second
+ * cost this route pays per open.
+ */
+function cachedJson(
+  cache: MessageCache,
+  accountId: string,
+  folder: string,
+  uid: number,
+  message: ParsedMessage,
+  uidValidity: bigint | null,
+): Response {
+  cache.set(accountId, folder, uid, message, uidValidity);
+  return json(message, 200, PRIVATE_NO_STORE);
+}
+
 export async function handleMessage(
   db: Db,
   pool: ConnectionPool,
@@ -299,6 +330,15 @@ export async function handleMessage(
    * opposite — real configuration production must always supply.
    */
   pixelBase: string | null,
+  /**
+   * The process-wide parsed-message cache (./message-cache.ts). Positional
+   * and required for the same reason `pixelBase` is: it is real production
+   * state the router owns and always supplies, not a test seam. Giving it
+   * a default would make a caller that forgot it silently lose the whole
+   * feature — every request would build a private cache, hit it never, and
+   * look exactly like the uncached route this replaced.
+   */
+  cache: MessageCache,
   deps: MessageHandlerDeps = {},
 ): Promise<Response> {
   const uid = parsePositiveInt(uidRaw);
@@ -306,6 +346,24 @@ export async function handleMessage(
 
   const resolved = resolveConnection(pool, accountId);
   if (resolved instanceof Response) return resolved;
+
+  // AFTER the account and connection checks, deliberately. A cache hit
+  // needs no IMAP at all, so serving one for a reconnecting account would
+  // be defensible — but it would also change what 404 and 503 mean on this
+  // route depending on what somebody happened to read earlier, and a
+  // status code whose meaning depends on cache state is worse than a
+  // slightly-less-available cache. The four routes that share
+  // ./fetch-part.ts still fail identically for identical reasons.
+  //
+  // The UIDVALIDITY the pool last observed for this mailbox rides along:
+  // on a renumbered mailbox every cached uid addresses a different message
+  // now, and MessageCache.get drops the folder rather than answering. Read
+  // from the pool's own observation — the sync loop already pays for it
+  // once per cycle — never by SELECTing the mailbox again here, which
+  // would be the IMAP round trip this whole file exists to avoid.
+  const uidValidity = pool.getUidValidity(accountId, folder);
+  const cached = cache.get(accountId, folder, uid, uidValidity);
+  if (cached !== undefined) return json(cached, 200, PRIVATE_NO_STORE);
 
   let bytes: Buffer;
   try {
@@ -341,13 +399,16 @@ export async function handleMessage(
   // why the rule is this narrow and what it deliberately leaves alone.
   const message = { ...shaped, html: stripOwnTrackingPixels(shaped.html, pixelBase) };
   if (message.attachments.length === 0) {
-    return json(message, 200, PRIVATE_NO_STORE);
+    return cachedJson(cache, accountId, folder, uid, message, uidValidity);
   }
 
   const stored = await lookupStoredParts(db, accountId, folder, uid);
-  return json(
+  return cachedJson(
+    cache,
+    accountId,
+    folder,
+    uid,
     { ...message, attachments: withCorrectedPartIds(message.attachments, stored) },
-    200,
-    PRIVATE_NO_STORE,
+    uidValidity,
   );
 }

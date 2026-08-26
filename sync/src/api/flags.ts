@@ -2,6 +2,7 @@ import type { Db } from '../db';
 import type { ConnectionPool } from '../imap/pool';
 import { json, PRIVATE_NO_STORE } from './http.ts';
 import { parsePositiveInt, resolveConnection } from './fetch-part.ts';
+import type { MessageCache } from './message-cache';
 import {
   FLAG_FIELDS,
   isFlagField,
@@ -210,6 +211,9 @@ export async function handleSetFlag(
   accountId: string,
   folder: string,
   uidRaw: string,
+  /** The parsed-message cache this route must invalidate — see the
+   *  eviction below, and ./message-cache.ts for the policy. */
+  cache: MessageCache,
 ): Promise<Response> {
   const uid = parsePositiveInt(uidRaw);
   if (uid === null) return json({ error: 'invalid uid' }, 400, PRIVATE_NO_STORE);
@@ -240,6 +244,29 @@ export async function handleSetFlag(
     );
     return json({ error: 'failed to update message flag' }, 502, PRIVATE_NO_STORE);
   }
+
+  // INVALIDATION, immediately after the write we know landed and before
+  // anything else can read the route again. ./message-cache.ts holds a
+  // SNAPSHOT of this message taken before the STORE; the STORE changed the
+  // message on the server, so the snapshot is by definition out of date
+  // and the next open must re-read rather than serve it.
+  //
+  // Ordered before the local row update on purpose: that update is a
+  // Postgres round trip that can fail (see applyStoredFlag's contract),
+  // and an eviction that only happened on the happy path would leave a
+  // stale body cached in exactly the case where local and remote state
+  // already disagree. This call cannot fail and cannot throw — it deletes
+  // a Map entry — so there is no ordering in which it does less.
+  //
+  // What this does and does not buy, stated honestly: ParsedMessage
+  // carries no flag field today, so the body a stale hit would serve is
+  // not visibly wrong — the read/starred state the UI renders comes from
+  // the inbox ROW, not from this route. The eviction is here because a
+  // route that mutates a message while a cache holds a copy of it must
+  // drop that copy, whatever the copy currently happens to contain; the
+  // alternative is a correctness bug that arrives silently the day
+  // ParsedMessage grows a field the STORE touches.
+  cache.evict(accountId, folder, uid);
 
   const stored = await applyStoredFlag(db, accountId, folder, uid, flag, change.value);
 

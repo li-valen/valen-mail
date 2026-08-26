@@ -21,6 +21,7 @@ import type { VapidConfig } from '../push/vapid';
 import { handleIdentities } from './identities.ts';
 import { handleMessage } from './message.ts';
 import { handleSetFlag } from './flags.ts';
+import { MessageCache } from './message-cache.ts';
 import {
   handleSend,
   SEND_RATE_LIMIT_MAX_ATTEMPTS,
@@ -452,6 +453,16 @@ export function createRouter(
   // once at startup, not on every request.
   const serveStaticRequest = createStaticHandler(staticRoot);
 
+  // The parsed-message cache, built once per router for the same reason
+  // the two limiters above are: production builds exactly one router, and
+  // giving each call its own instance keeps tests from sharing warm state
+  // and becoming order-dependent. Not a constructor parameter, because
+  // nothing outside this file has any reason to hold one — the two routes
+  // that touch it are both below. Everything about it (the byte ceiling
+  // and its arithmetic, the LRU, both invalidation triggers) lives in
+  // ./message-cache.ts; this line is the whole of its presence here.
+  const messageCache = new MessageCache();
+
   /**
    * Everything that was, before Task 8, this function's entire body —
    * unchanged in content, only moved. `path` is guaranteed by the
@@ -522,7 +533,9 @@ export function createRouter(
       const decoded = decodeSegments([flagsMatch[1] ?? '', flagsMatch[2] ?? '']);
       if (decoded instanceof Response) return decoded;
       const [accountId, folder] = decoded;
-      return handleSetFlag(db, pool, request, accountId!, folder!, flagsMatch[3] ?? '');
+      return handleSetFlag(
+        db, pool, request, accountId!, folder!, flagsMatch[3] ?? '', messageCache,
+      );
     }
 
     if (request.method !== 'GET') {
@@ -590,7 +603,9 @@ export function createRouter(
       // pixelBase is TRACKING_BASE_URL: the render path strips our own
       // tracking pixel out of the Sent copy (spec 5.6, ./strip-pixel.ts).
       const uidRaw = parsedMessageMatch[3] ?? '';
-      return handleMessage(db, pool, accountId!, folder!, uidRaw, trackingConfig?.baseUrl ?? null);
+      return handleMessage(
+        db, pool, accountId!, folder!, uidRaw, trackingConfig?.baseUrl ?? null, messageCache,
+      );
     }
 
     const attachmentMatch = path.match(/^\/api\/attachment\/([^/]+)\/([^/]+)\/([^/]+)\/([^/]+)$/);
