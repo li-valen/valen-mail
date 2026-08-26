@@ -33,6 +33,7 @@ import {
 import UndoNotice, { UndoBar } from './components/UndoNotice';
 import BulkActionBar from './components/BulkActionBar';
 import { moveTargetsFor } from './bulkActions';
+import { markReadOnOpen } from './readOnOpen';
 import { useBulkSelection } from './useBulkSelection';
 import { replyKey } from './replyDraft';
 import type { ReplyMode, ReplySource } from './replyDraft';
@@ -44,6 +45,7 @@ import SentNotice from './components/SentNotice';
 import { messageKey } from './components/messageBody';
 import {
   resolveStar,
+  resolveUnread,
   withFlagOverrides,
   withoutFlagOverrides,
   withStar,
@@ -331,11 +333,37 @@ export default function App() {
    * The `starOverrides` contract exactly, for `\Seen` instead of
    * `\Flagged`, including the revert rule: a failed write DELETES the
    * entry rather than inverting it, so the row falls back to the truth.
-   * Written today only by the bulk bar's mark read/unread — there is no
-   * single-message read control yet, and this is deliberately the same
-   * mechanism one would use.
+   * TWO WRITERS, and they are the same mechanism on purpose: the bulk
+   * bar's mark read/unread, and `openMessage` below marking one message
+   * read because a person actually opened it (../src/readOnOpen.ts).
+   *
+   * Declared with their state rather than down beside the bulk overlays,
+   * because `openMessage` is defined hundreds of lines earlier and a
+   * `useCallback` declared after it could not appear in its dependency
+   * array without a temporal-dead-zone throw at render.
    */
   const [seenOverrides, setSeenOverrides] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+
+  const applySeen = useCallback((keys: readonly string[], seen: boolean) => {
+    setSeenOverrides((overrides) => withFlagOverrides(overrides, keys, seen));
+  }, []);
+
+  const revertSeen = useCallback((keys: readonly string[]) => {
+    setSeenOverrides((overrides) => withoutFlagOverrides(overrides, keys));
+  }, []);
+
+  /**
+   * Read by `openMessage` to ask whether the message it is opening is
+   * still unread, WITHOUT taking a dependency on the map.
+   *
+   * The same discipline as `cursorRef` below and for a sharper reason:
+   * `openMessage` is handed to InboxList, the reader and the opens rail,
+   * so a new identity re-renders all three — and this map changes on
+   * every single mark-read, which would mean each open invalidated the
+   * callback that performed it.
+   */
+  const seenOverridesRef = useRef(seenOverrides);
+  seenOverridesRef.current = seenOverrides;
   /**
    * Rows this session has archived, trashed or reported, keyed by
    * `messageKey` and drawn over the list by filtering
@@ -507,6 +535,24 @@ export default function App() {
    */
   const shouldRevealRef = useRef(false);
 
+  /**
+   * THE ONE FUNNEL EVERY REAL OPEN GOES THROUGH — a list row, a thread
+   * row inside the reader, a click in the opens rail — and therefore the
+   * only place a message may be marked read.
+   *
+   * **NOT IN THE LOADER, AND THAT IS THE WHOLE POINT.**
+   * ./messagePrefetch.ts warms hovered and adjacent messages through
+   * `fetchMessage`; a mark-read that hung off the fetch would clear mail
+   * the user merely swept a pointer past. Hanging it off the OPEN also
+   * gets the cached case right for free: this runs whether or not
+   * anything went to the network, so a message the reader paints from
+   * cache on the first frame is marked read exactly like a cold one.
+   *
+   * The decision, the optimistic write and the rollback are all in
+   * ./readOnOpen.ts — nothing here decides anything, per client/CLAUDE.md.
+   * `resolveUnread` is what it asks, rather than `message.flags`, so a
+   * re-open of a message this session already marked read writes nothing.
+   */
   const openMessage = useCallback(
     (next: InboxMessage) => {
       // Only the FIRST open records where the list was. Opening another
@@ -518,8 +564,17 @@ export default function App() {
         openedKeyRef.current = messageKey(next);
       }
       setSelected(next);
+
+      const key = messageKey(next);
+      void markReadOnOpen(next, {
+        isUnread: resolveUnread(next, seenOverridesRef.current, key),
+        key,
+        setSeen: applySeen,
+        revertSeen,
+        onError: (error) => console.error('App: marking the opened message read failed', error),
+      });
     },
-    [selected],
+    [selected, applySeen, revertSeen],
   );
 
   const closeMessage = useCallback(() => setSelected(null), []);
@@ -948,6 +1003,12 @@ export default function App() {
    * The two `useCallback`s below take ARRAYS of keys rather than being
    * called per row: forty separate `setHiddenKeys` updates would be forty
    * new `Set` identities and forty passes over a fifty-row list.
+   *
+   * `applySeen`/`revertSeen` are the same shape and are declared up beside
+   * `seenOverrides` itself, because `openMessage` — which is defined long
+   * before this point — now writes through them too. A `useCallback` here
+   * would be in its own temporal dead zone by the time that dependency
+   * array was evaluated.
    */
   const hideKeys = useCallback((keys: readonly string[]) => {
     if (keys.length === 0) return;
@@ -965,14 +1026,6 @@ export default function App() {
       for (const key of keys) next.delete(key);
       return next;
     });
-  }, []);
-
-  const applySeen = useCallback((keys: readonly string[], seen: boolean) => {
-    setSeenOverrides((overrides) => withFlagOverrides(overrides, keys, seen));
-  }, []);
-
-  const revertSeen = useCallback((keys: readonly string[]) => {
-    setSeenOverrides((overrides) => withoutFlagOverrides(overrides, keys));
   }, []);
 
   const clearSingleUndo = useCallback(() => setPendingUndo(null), []);
