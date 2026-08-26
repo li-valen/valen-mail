@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { ReactNode, Ref } from 'react';
-import { Activity, Mailbox, Menu, SquarePen, X } from 'lucide-react';
+import { Activity, MailQuestion, Mailbox, Menu, SquarePen, X } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { motion, useReducedMotion } from 'motion/react';
 
 import AccountList from './components/AccountList';
@@ -92,7 +93,13 @@ import { cn } from './ui/cn';
  * It is still reached by an ACTION — the primary button below, not a nav
  * item — because "write a new message" is not a place in the mailbox.
  */
-export type ViewId = 'inbox' | 'opens' | 'compose';
+export type ViewId = 'inbox' | 'opens' | 'followup' | 'compose';
+
+/** The two Activity destinations. Genuinely different PLACES rather than
+ *  mailboxes, which is why they sit under their own section title instead
+ *  of among the five folders — the same reasoning that kept Opens out of
+ *  the folder list when it was the only one. */
+type ActivityViewId = Extract<ViewId, 'opens' | 'followup'>;
 
 /** Re-exported so the existing
  *  `import type { AccountSummary } from './AppShell'` call sites keep
@@ -103,8 +110,20 @@ export type { AccountSummary };
 const VIEW_TITLES: Readonly<Record<ViewId, string>> = {
   inbox: 'Inbox',
   opens: 'Opens',
+  followup: 'Follow-up',
   compose: 'New message',
 };
+
+/**
+ * Follow-up FIRST, Opens second. Spec 7A calls the follow-up queue "the
+ * highest-signal follow-up queue in the product, and the reason this
+ * client exists"; Opens is the live feed beside it. Sidebar order is a
+ * claim about importance, so the more important one is on top.
+ */
+const ACTIVITY_VIEWS: readonly { readonly id: ActivityViewId; readonly icon: LucideIcon }[] = [
+  { id: 'followup', icon: MailQuestion },
+  { id: 'opens', icon: Activity },
+];
 
 /** Plunk's own nav-item classes, lifted to a helper so the folder list,
  *  the Opens item, and the desktop and mobile copies of the whole sidebar
@@ -348,10 +367,10 @@ export default function AppShell({
 
   const isInbox = view === 'inbox';
   const heading = isInbox ? headingFor(folder, account) : VIEW_TITLES[view];
-  // Where the travelling pill lives — see FolderNavProps.hasPill. Opens
-  // is the only view that moves it off the folder list; Compose leaves it
-  // wherever it was.
-  const isPillOnOpens = view === 'opens';
+  // Where the travelling pill lives — see FolderNavProps.hasPill. The two
+  // Activity destinations are the only views that move it off the folder
+  // list; Compose leaves it wherever it was.
+  const isPillOffFolders = view === 'opens' || view === 'followup';
   // What a search WOULD be scoped to, which is not the same string as the
   // page heading: `heading` says "Opens" or "New message" while those
   // views are up, but the search field still searches the selected
@@ -410,7 +429,7 @@ export default function AppShell({
         <FolderNav
           folder={folder}
           isActive={isInbox}
-          hasPill={!isPillOnOpens}
+          hasPill={!isPillOffFolders}
           onSelect={selectFolder}
           scope={scope}
         />
@@ -418,18 +437,20 @@ export default function AppShell({
         <div className="mt-6">
           <p className={SECTION_TITLE_CLASS}>Activity</p>
           <ul className="space-y-1">
-            <li>
-              <button
-                type="button"
-                onClick={() => selectView('opens')}
-                aria-current={view === 'opens' ? 'page' : undefined}
-                className={navItemClass(view === 'opens')}
-              >
-                {isPillOnOpens && <NavPill scope={scope} />}
-                <Activity className="h-5 w-5 shrink-0" aria-hidden="true" />
-                {VIEW_TITLES.opens}
-              </button>
-            </li>
+            {ACTIVITY_VIEWS.map(({ id, icon: Icon }) => (
+              <li key={id}>
+                <button
+                  type="button"
+                  onClick={() => selectView(id)}
+                  aria-current={view === id ? 'page' : undefined}
+                  className={navItemClass(view === id)}
+                >
+                  {view === id && <NavPill scope={scope} />}
+                  <Icon className="h-5 w-5 shrink-0" aria-hidden="true" />
+                  {VIEW_TITLES[id]}
+                </button>
+              </li>
+            ))}
           </ul>
         </div>
 

@@ -466,6 +466,18 @@ export interface MessageViewProps {
    *  row reads the same here as it does in the list. */
   readonly now: Date;
   readonly onBack: () => void;
+  /**
+   * What Back says it returns to. Defaults to the Inbox, which is where
+   * every reader opened from a mail list goes.
+   *
+   * A prop rather than a fixed string because the reader is no longer
+   * reached only from the Inbox: components/FollowupView.tsx opens it
+   * over the follow-up queue and Back returns THERE, so a hardcoded
+   * "Back to inbox" would name a destination the control does not go to.
+   * Small, and exactly the kind of small the rest of this product refuses
+   * to ship — a label that is wrong is a label the reader stops trusting.
+   */
+  readonly backLabel?: string;
   /** Opens a different message — used by the thread rows below. */
   readonly onOpen: (message: InboxMessage) => void;
   /** Whether this message is starred, already resolved through App.tsx's
@@ -494,6 +506,7 @@ export default function MessageView({
   neighbours = [],
   now,
   onBack,
+  backLabel = 'Back to inbox',
   onOpen,
   isStarred = false,
   onToggleStar,
@@ -633,7 +646,7 @@ export default function MessageView({
       <div className="flex items-center justify-between gap-3">
         <Button variant="ghost" size="sm" onClick={onBack}>
           <ArrowLeft aria-hidden="true" />
-          Back to inbox
+          {backLabel}
         </Button>
 
         {onToggleStar !== undefined && (

@@ -749,3 +749,125 @@ export async function setMessageFlag(
     throw new ApiError(response.status, `${path} returned ${response.status}`);
   }
 }
+
+/**
+ * The five engagement states GET /api/followup puts on every row
+ * (sync/src/followup/classify.ts `EngagementState`).
+ *
+ * `never-opened` and `unverifiable` are DIFFERENT FACTS and the whole
+ * reason this union is five values rather than a boolean: spec §7A.2
+ * makes "we cannot tell" a first-class state, and a client that collapsed
+ * the two would be the lying UI that spec forbids. The server decides
+ * which one applies, because only the server knows how much of the opens
+ * history it was able to read.
+ */
+export type EngagementState =
+  | 'opened-no-reply'
+  | 'opened-replied'
+  | 'opened-repeatedly'
+  | 'never-opened'
+  | 'unverifiable';
+
+/**
+ * One row of the follow-up queue (sync/src/followup/query.ts
+ * `FollowupRow`).
+ *
+ * TIMESTAMPS ARE EPOCH-MS NUMBERS, not ISO strings — matching `OpenEvent`
+ * above rather than `InboxMessage`, whose `date` is a verbatim mirror of a
+ * Postgres column. `uid` is a NUMBER here for the same reason: this row is
+ * shaped by the server rather than passed through from the driver, so it
+ * carries the type its consumers actually want.
+ */
+export interface FollowupRow {
+  readonly accountId: string;
+  readonly uid: number;
+  readonly folder: string;
+  readonly subject: string | null;
+  readonly fromName: string | null;
+  readonly fromEmail: string | null;
+  readonly recipients: readonly string[];
+  readonly sentAtMs: number;
+  readonly openCount: number;
+  readonly distinctRecipientOpens: number;
+  readonly lastOpenAtMs: number | null;
+  readonly hasReply: boolean;
+  readonly state: EngagementState;
+}
+
+/**
+ * One page of the follow-up queue.
+ *
+ * `opensAvailable` is the same distinction `OpensResponse.available`
+ * carries, for the same reason: "nobody has opened anything" and "we
+ * could not read the tracking service" are different facts, and the empty
+ * state must not report the second as the first.
+ */
+export interface FollowupPage {
+  readonly rows: readonly FollowupRow[];
+  readonly nextCursor: InboxCursor | null;
+  readonly opensAvailable: boolean;
+}
+
+export interface FollowupRequest {
+  readonly limit: number;
+  /** `null`/omitted = every account's sent mail merged. */
+  readonly account?: string | null;
+  readonly cursor?: InboxCursor | null;
+}
+
+/**
+ * Narrow boundary check. The identity triple is what a row is opened by,
+ * `sentAtMs` is what it is ordered and formatted by, and `state` is what
+ * it is ranked and labelled by — a row missing any of them cannot be
+ * rendered as something a user could act on. Everything else already
+ * tolerates a missing value downstream.
+ *
+ * `state` is checked as a plain non-empty string rather than against the
+ * five known literals: an unrecognised state must still reach
+ * `engagementCopy`, which degrades it to the honest unknown. Refusing the
+ * row here would silently shrink the queue instead.
+ */
+function isFollowupRow(value: unknown): value is FollowupRow {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.accountId === 'string' &&
+    typeof value.uid === 'number' &&
+    typeof value.folder === 'string' &&
+    typeof value.sentAtMs === 'number' &&
+    typeof value.state === 'string' &&
+    value.state.length > 0
+  );
+}
+
+/**
+ * Fetches a page of outbound mail with an engagement state on every row —
+ * spec §7A's "Sent & Waiting" and "Opened, no reply", which are one list
+ * the view filters rather than two endpoints.
+ *
+ * Throws ApiError on a non-2xx exactly like `getInbox`, so the session
+ * gate can turn a 401 into a login prompt. A tracking outage is NOT a
+ * non-2xx: the route answers 200 with `opensAvailable: false` and every
+ * row honestly unknown, so there is nothing to catch for that case.
+ */
+export async function getFollowup(
+  request: FollowupRequest,
+  fetchImpl: typeof fetch = fetch,
+): Promise<FollowupPage> {
+  const path = buildPath('/api/followup', {
+    limit: String(request.limit),
+    account: request.account ?? undefined,
+    before: request.cursor?.before ?? undefined,
+    beforeAccount: request.cursor?.beforeAccount ?? undefined,
+    beforeUid: request.cursor?.beforeUid ?? undefined,
+  });
+  const body = await getJson(path, fetchImpl);
+  const rows = isRecord(body) && Array.isArray(body.rows) ? body.rows : [];
+  return {
+    rows: keepValid(rows, isFollowupRow, 'follow-up row(s)'),
+    nextCursor: isRecord(body) ? parseNextCursor(body.nextCursor) : null,
+    // Absent or malformed reads as "not available", never as available:
+    // the failure direction that renders uncertainty as certainty is the
+    // one this whole feature exists to refuse.
+    opensAvailable: isRecord(body) && body.opensAvailable === true,
+  };
+}

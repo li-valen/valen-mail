@@ -29,6 +29,7 @@ import { useKeyboardShortcuts } from './keyboard/useKeyboardShortcuts';
 import { resolveOpenTarget } from './components/openEvents';
 import OpensRail from './components/OpensRail';
 import OpensView from './components/OpensView';
+import FollowupView from './components/FollowupView';
 import PushToggle from './components/PushToggle';
 import ThemeToggle from './components/ThemeToggle';
 import { Alert, AlertDescription } from './ui/Alert';
@@ -1078,6 +1079,37 @@ export default function App() {
                 neighbours={visibleMessages}
                 now={now}
                 onBack={closeMessage}
+                onOpen={openMessage}
+                isStarred={resolveStar(selected, starOverrides, messageKey(selected))}
+                onToggleStar={toggleStar}
+                onReply={replyToSelected}
+              />
+            )}
+          </>
+        ) : view === 'followup' ? (
+          /*
+           * Spec 7A's follow-up queue, with its OWN reader beside it
+           * rather than a hand-off to the Inbox's.
+           *
+           * The list is HIDDEN, not unmounted, while a message is open —
+           * the same `hidden` (display:none, so out of the tab order and
+           * the accessibility tree) the Inbox branch above uses, and for
+           * the same reason: Back returns to the queue instantly, with
+           * its scope, its loaded pages and its ranking intact. Routing
+           * this through `setView('inbox')` instead would have Back land
+           * the user in a mailbox they never asked for.
+           */
+          <>
+            <div className={cn(selected !== null && 'hidden')}>
+              <FollowupView account={account} onOpenMessage={openMessage} />
+            </div>
+            {selected !== null && (
+              <MessageView
+                key={messageKey(selected)}
+                message={selected}
+                now={now}
+                onBack={closeMessage}
+                backLabel="Back to follow-up"
                 onOpen={openMessage}
                 isStarred={resolveStar(selected, starOverrides, messageKey(selected))}
                 onToggleStar={toggleStar}

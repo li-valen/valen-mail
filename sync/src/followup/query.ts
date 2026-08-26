@@ -68,7 +68,7 @@ import { classifyWithEvidence, type EngagementState, type OpensEvidence } from '
  */
 const FOLLOWUP_SELECT = `
   select m.account_id, m.uid, m.folder, m.message_id, m.subject,
-         m.to_emails, m.cc_emails, m.date,
+         m.from_name, m.from_email, m.to_emails, m.cc_emails, m.date,
          coalesce(later.senders, '{}'::text[]) as later_senders
   from messages m
   left join lateral (
@@ -102,6 +102,12 @@ export interface FollowupRow {
   readonly uid: number;
   readonly folder: string;
   readonly subject: string | null;
+  /** Which identity sent it. Carried so the client can open the row in
+   *  the reader without inventing a sender for the user's own mail — the
+   *  reader's header is drawn from these fields before its body fetch
+   *  resolves. */
+  readonly fromName: string | null;
+  readonly fromEmail: string | null;
   /** `to` and `cc` folded into one list — who this went to, which is what
    *  a follow-up row leads with. */
   readonly recipients: readonly string[];
@@ -322,6 +328,8 @@ function toWireRow(
     uid: Number(raw.uid),
     folder: String(raw.folder),
     subject: typeof raw.subject === 'string' ? raw.subject : null,
+    fromName: typeof raw.from_name === 'string' ? raw.from_name : null,
+    fromEmail: typeof raw.from_email === 'string' ? raw.from_email : null,
     recipients: [...stringArray(raw.to_emails), ...stringArray(raw.cc_emails)],
     sentAtMs,
     openCount: tally.openCount,
