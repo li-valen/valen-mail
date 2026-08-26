@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
 import pg from 'pg';
+import { buildSearchClause } from './search/clause.ts';
+import { parseSearchQuery } from './search/terms.ts';
 
 /** Small fixed pool for the API and sync workers to share; comfortably under
  *  Postgres's default max_connections regardless of how many mail accounts
@@ -517,48 +519,39 @@ function pushAccountClause(
   clauses.push(`${ctx.alias}.account_id = $${idx}`);
 }
 
-/** The columns GET /api/search looks in. Snippet is one of them, which is
- *  what makes previews searchable and not merely decorative — and also why
- *  a row synced before Plan 7 Task 1 (snippet still NULL) can only ever
- *  match on the other three. */
-const SEARCH_COLUMNS = ['subject', 'from_name', 'from_email', 'snippet'] as const;
-
 /**
- * Escapes the three characters LIKE/ILIKE treat as syntax, so a user
- * searching for `100%` gets messages containing "100%" rather than every
- * message in the mailbox, and `a_b` does not also match `axb`.
- *
- * Backslash is escaped FIRST — reversing the order would double-escape the
- * backslashes this function itself just introduced.
- *
- * No `ESCAPE` clause accompanies this in the SQL, deliberately: backslash
- * is LIKE's default escape character regardless of any GUC, and writing
- * `escape '\'` would put a backslash inside a SQL STRING LITERAL, whose
- * meaning genuinely does depend on `standard_conforming_strings` (the same
- * hazard pushFolderClause documents for '\Flagged'). The pattern itself
- * travels as a bound parameter and is never parsed as a literal at all.
+ * Re-exported from ./search/like.ts, where it moved so that
+ * ./search/clause.ts can use it without importing this module (which
+ * imports that one). Every existing caller and test keeps the import it
+ * already has.
  */
-export function escapeLikePattern(raw: string): string {
-  return raw.replace(/[\\%_]/g, (char) => `\\${char}`);
-}
+export { escapeLikePattern } from './search/like.ts';
 
 /**
- * Appends the free-text search clause (Plan 7 Task 1): a case-insensitive
- * substring match across SEARCH_COLUMNS.
+ * Appends the search clause: the parsed query (./search/terms.ts) turned
+ * into SQL (./search/clause.ts), with the terms ANDed.
  *
- * ILIKE rather than a tsvector column, a GIN index or an extension — at
- * 461 rows on a personal mailbox a sequential scan is microseconds, and a
- * migration for full-text search nobody asked for would cost more than it
- * buys. Revisit if this mailbox ever grows two orders of magnitude.
+ * **THE PARSE HAPPENS HERE, not at the route**, which is why both
+ * GET /api/search and the grouped GET /api/conversations get operators
+ * from one change and cannot diverge: `search` stays the raw string all
+ * the way down, and the single place that gives it meaning is the single
+ * place that builds the WHERE. getConversationPage builds THREE filters
+ * from the same string (candidate row, sibling probe, member list), and
+ * a parse that lived further up would have to be threaded through all
+ * three — with a silently-wrong result set for whichever one was missed.
+ * Re-parsing a string the route has already capped at 200 characters is
+ * free.
  *
- * ONE bound parameter referenced four times, not four copies: the pattern
- * is identical for every column, and a single placeholder makes it
- * impossible for the escaping to be applied to three of them and forgotten
- * on the fourth.
+ * A query that parses to no terms adds NO CLAUSE, rather than a clause
+ * that matches nothing or everything. Unreachable from the route (which
+ * 400s an empty `q`), and reachable only by calling buildInboxFilter
+ * with whitespace — where "no filter" is the same answer as `search:
+ * null`, and is strictly safer than the `ilike '%%'` the previous
+ * implementation produced for that input.
  *
- * A NULL column yields NULL from ILIKE, which the surrounding OR treats as
- * "no match" — the correct answer for a message with no subject, and the
- * reason no coalesce is needed here.
+ * ILIKE rather than a tsvector column, a GIN index or an extension. See
+ * ./search/clause.ts for how the operators that CAN use an index
+ * (`before:`, `after:`) are written so that they do.
  */
 function pushSearchClause(
   clauses: string[],
@@ -567,10 +560,16 @@ function pushSearchClause(
   ctx: FilterContext,
 ): void {
   if (search === null) return;
-  const idx = ctx.offset + values.push(`%${escapeLikePattern(search)}%`);
-  clauses.push(
-    `(${SEARCH_COLUMNS.map((column) => `${ctx.alias}.${column} ilike $${idx}`).join(' or ')})`,
-  );
+
+  const terms = parseSearchQuery(search);
+  if (terms.length === 0) return;
+
+  // The placeholder number is derived from `values.push()`'s own return,
+  // exactly like every other clause in this file, so the search terms
+  // compose with whatever the cursor/folder/account clauses pushed
+  // before them and with a caller-supplied `offset` on top.
+  const bind = (value: unknown): number => ctx.offset + values.push(value);
+  clauses.push(buildSearchClause(terms, ctx.alias, bind));
 }
 
 /**

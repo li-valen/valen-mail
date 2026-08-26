@@ -47,13 +47,22 @@ describe('escapeLikePattern', () => {
 describe('buildInboxFilter — the search clause', () => {
   it('binds the query as a parameter and never interpolates it into the SQL', () => {
     // The injection guard. A query that reached the statement text would
-    // appear here; it must only ever appear in `values`.
+    // appear here; every piece of it must only ever appear in `values`.
+    //
+    // The payload tokenises into five ordinary text terms (it has
+    // spaces), which is why this asserts on the pieces rather than on
+    // the whole string — see the dedicated injection suite at the foot
+    // of this file for the stronger, character-level form.
     const hostile = "'; drop table messages; --";
     const filter = filterFor(hostile);
 
     expect(filter.where).not.toContain('drop table');
     expect(filter.where).not.toContain(hostile);
-    expect(filter.values).toContain(`%${hostile}%`);
+    for (const piece of ["'", 'drop', 'table', 'messages', '--']) {
+      expect(filter.where).not.toContain(piece);
+    }
+    expect(filter.values).toContain('%drop%');
+    expect(filter.values).toContain('%messages;%');
   });
 
   it('escapes wildcards in the BOUND pattern: "100%" cannot match everything', () => {

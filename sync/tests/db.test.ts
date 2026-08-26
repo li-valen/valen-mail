@@ -854,6 +854,210 @@ maybe('db', () => {
     });
   });
 
+  /**
+   * SEARCH OPERATORS — the half of the grammar only a real database can
+   * decide.
+   *
+   * tests/search-terms.test.ts proves what a query MEANS and
+   * tests/search-clause.test.ts proves what SQL that meaning becomes.
+   * Neither can prove the SQL selects the right rows: an `is:unread` that
+   * matched read mail too, an AND that is silently an OR, a `to:` written
+   * against `cc_emails` — all three generate a statement that runs, and
+   * all three are only visible against stored rows.
+   *
+   * Its own fixture set (uid 9000+) with its own account, so nothing here
+   * can be satisfied by a row another describe seeded.
+   */
+  describe('search operators', () => {
+    const DAY = (iso: string) => new Date(`${iso}T12:00:00Z`);
+
+    beforeAll(async () => {
+      await db.query(
+        'insert into accounts (id, email) values ($1, $2) on conflict do nothing',
+        ['test-ops', 'test-ops@gmail.com'],
+      );
+
+      const rows = [
+        {
+          uid: 9000, subject: 'Invoice 42', fromName: 'Ada Lovelace', fromEmail: 'ada@analytical.example',
+          to: ['bob@example.com'], cc: ['eve@example.com'], date: DAY('2026-03-01'),
+          flags: [], hasAttach: true, size: 12 * 1024 * 1024, snippet: 'please review',
+        },
+        {
+          uid: 9001, subject: 'Lunch', fromName: 'Bob Barker', fromEmail: 'bob@example.com',
+          to: ['ada@analytical.example'], cc: [], date: DAY('2026-03-02'),
+          flags: ['\\Seen'], hasAttach: false, size: 2048, snippet: 'thursday?',
+        },
+        {
+          uid: 9002, subject: 'Invoice 43', fromName: 'Ada Lovelace', fromEmail: 'ada@analytical.example',
+          to: [], cc: [], date: DAY('2025-06-01'),
+          flags: ['\\Seen', '\\Flagged'], hasAttach: false, size: 512 * 1024, snippet: 'paid',
+        },
+        {
+          uid: 9003, subject: null, fromName: null, fromEmail: null,
+          to: null, cc: null, date: DAY('2026-03-03'),
+          flags: null, hasAttach: false, size: null, snippet: null,
+        },
+      ] as const;
+
+      for (const row of rows) {
+        await db.upsertMessage({
+          accountId: 'test-ops', uid: row.uid, folder: 'INBOX',
+          messageId: `<o${row.uid}@x>`, threadId: `ops-${row.uid}`,
+          subject: row.subject, fromName: row.fromName, fromEmail: row.fromEmail,
+          toEmails: row.to as string[] | null, ccEmails: row.cc as string[] | null,
+          date: row.date, snippet: row.snippet, flags: row.flags as string[] | null,
+          labels: [], hasAttach: row.hasAttach, sizeBytes: row.size,
+        });
+      }
+    });
+
+    afterAll(async () => {
+      await db.query('delete from accounts where id = $1', ['test-ops']);
+    });
+
+    /** Every query below is scoped to the fixture account, so the real
+     *  mailbox this may be pointed at cannot make an assertion pass or
+     *  fail for reasons that have nothing to do with the operator. */
+    const uids = async (query: string): Promise<readonly string[]> => {
+      const rows = await db.getUnifiedInbox({
+        limit: 50, cursor: null, folder: ALL_FOLDERS, accountId: 'test-ops', search: query,
+      });
+      return rows.map((m) => m.uid.toString()).sort();
+    };
+
+    it('from: matches the display name and the address alike', async () => {
+      expect(await uids('from:lovelace')).toEqual(['9000', '9002']);
+      expect(await uids('from:analytical')).toEqual(['9000', '9002']);
+    });
+
+    it('to: matches an element of to_emails and NOT the sender of the same address', async () => {
+      // uid 9001 is FROM bob and TO ada; uid 9000 is TO bob. A `to:`
+      // written against the wrong column would return 9001 here.
+      expect(await uids('to:bob')).toEqual(['9000']);
+    });
+
+    it('cc: matches cc_emails only', async () => {
+      expect(await uids('cc:eve')).toEqual(['9000']);
+      expect(await uids('cc:bob')).toEqual([]);
+    });
+
+    it('subject: does not match a sender who happens to contain the word', async () => {
+      expect(await uids('subject:invoice')).toEqual(['9000', '9002']);
+      expect(await uids('subject:ada')).toEqual([]);
+    });
+
+    it('is:unread excludes READ mail, and counts a NULL-flags row as unread', async () => {
+      // THE MUTATION THIS EXISTS FOR. 9001 and 9002 carry \\Seen; an
+      // is:unread that also matched them would look entirely plausible.
+      // 9003 has NULL flags, which `any(NULL)` makes NULL — without the
+      // coalesce it would fall out of BOTH is:read and is:unread.
+      expect(await uids('is:unread')).toEqual(['9000', '9003']);
+      expect(await uids('is:read')).toEqual(['9001', '9002']);
+    });
+
+    it('is:starred matches the \\Flagged row only', async () => {
+      expect(await uids('is:starred')).toEqual(['9002']);
+    });
+
+    it('has:attachment matches the has_attach row only', async () => {
+      expect(await uids('has:attachment')).toEqual(['9000']);
+    });
+
+    it('before: is exclusive and after: is inclusive at the same instant', async () => {
+      // The partition property: every fixture is on exactly one side.
+      const before = await uids('before:2026-03-02');
+      const after = await uids('after:2026-03-02');
+      // 9000 is dated 2026-03-01T12:00Z, so it is on the `before` side of
+      // the 2026-03-02T00:00Z boundary — the day is a boundary, not a
+      // bucket.
+      expect(before).toEqual(['9000', '9002']);
+      expect(after).toEqual(['9001', '9003']);
+      expect(before.filter((uid) => after.includes(uid))).toEqual([]);
+    });
+
+    it('composes two date bounds into a window', async () => {
+      expect(await uids('after:2026-03-01 before:2026-03-03')).toEqual(['9000', '9001']);
+    });
+
+    it('larger: and smaller: bound size_bytes, excluding a NULL size from both', async () => {
+      expect(await uids('larger:10mb')).toEqual(['9000']);
+      expect(await uids('smaller:1mb')).toEqual(['9001', '9002']);
+      // 9003 has a NULL size and appears in neither — a message whose
+      // size was never recorded is not known to be large or small.
+      expect(await uids('larger:1')).not.toContain('9003');
+      expect(await uids('smaller:99gb')).not.toContain('9003');
+    });
+
+    it('ANDs two terms — it does not OR them', async () => {
+      // THE SECOND MUTATION. Under an OR this returns all of Ada's mail
+      // PLUS every unread message, which is a bigger, plausible-looking
+      // result set that nobody would question.
+      expect(await uids('from:ada is:unread')).toEqual(['9000']);
+      expect(await uids('from:ada')).toEqual(['9000', '9002']);
+      expect(await uids('is:unread')).toEqual(['9000', '9003']);
+    });
+
+    it('ANDs four terms of four different kinds', async () => {
+      expect(await uids('from:ada subject:invoice has:attachment after:2026-01-01')).toEqual(['9000']);
+    });
+
+    it('SEARCHES LITERALLY for an unknown operator rather than dropping it', async () => {
+      // THE THIRD MUTATION. Dropped, `foo:bar from:ada` would return both
+      // of Ada's messages — the search silently answering a different,
+      // broader question. Searched literally, no message contains the
+      // text "foo:bar", so the AND is empty.
+      expect(await uids('foo:bar')).toEqual([]);
+      expect(await uids('foo:bar from:ada')).toEqual([]);
+      // And the literal really is what is being searched for: a message
+      // whose subject contains the unknown-operator text matches it.
+      await db.upsertMessage({
+        accountId: 'test-ops', uid: 9004, folder: 'INBOX',
+        messageId: '<o9004@x>', threadId: 'ops-9004', subject: 'about foo:bar',
+        fromName: null, fromEmail: null, toEmails: [], ccEmails: [],
+        date: DAY('2026-03-04'), snippet: null, flags: [], labels: [],
+        hasAttach: false, sizeBytes: 1,
+      });
+      expect(await uids('foo:bar')).toEqual(['9004']);
+      await db.query('delete from messages where account_id=$1 and uid=$2', ['test-ops', 9004]);
+    });
+
+    it('searches literally for an empty operator value, and never for everything', async () => {
+      expect(await uids('from:')).toEqual([]);
+    });
+
+    it('negation keeps rows whose column is NULL', async () => {
+      // `-from:ada` must KEEP 9003, whose sender is unknown: it is
+      // certainly not from Ada. Bare `not (…)` yields NULL there and
+      // silently drops it.
+      expect(await uids('-from:ada')).toEqual(['9001', '9003']);
+      expect(await uids('-is:unread')).toEqual(['9001', '9002']);
+    });
+
+    it('treats a quoted phrase as one term and an unquoted pair as two', async () => {
+      // "Ada Lovelace" as a phrase needs the two words adjacent in one
+      // column; unquoted they only have to appear somewhere each.
+      expect(await uids('from:"ada lovelace"')).toEqual(['9000', '9002']);
+      expect(await uids('"invoice 42"')).toEqual(['9000']);
+      expect(await uids('invoice 42')).toEqual(['9000']);
+      // The superset property: an unquoted pair can match where the
+      // phrase cannot.
+      expect(await uids('"lovelace ada"')).toEqual([]);
+      expect(await uids('lovelace ada')).toEqual(['9000', '9002']);
+    });
+
+    it('is not fooled by an operator-shaped SQL payload', async () => {
+      await expect(uids("from:'; drop table messages; --")).resolves.toEqual([]);
+      const survived = await db.query('select count(*)::int as n from messages', []);
+      expect(survived[0].n).toBeGreaterThan(0);
+    });
+
+    it('runs a 500-term query without erroring', async () => {
+      const many = Array.from({ length: 500 }, (_unused, index) => `w${index}`).join(' ');
+      await expect(uids(many)).resolves.toEqual([]);
+    });
+  });
+
   // ---------------------------------------------------------------------------
   // F2: exactly one primary account (spec 7B.1)
   // ---------------------------------------------------------------------------
