@@ -58,3 +58,72 @@ const SEEN_FLAG = '\\Seen';
 export function isUnread(message: InboxMessage): boolean {
   return !(message.flags ?? []).includes(SEEN_FLAG);
 }
+
+/**
+ * IMAP's "starred" flag. Same normalisation caveat as `SEEN_FLAG` above —
+ * sync/src/normalize.ts sorts system flags alphabetically, so `\Flagged`
+ * arrives before `\Seen` in `['\Flagged', '\Seen']` and after nothing in
+ * particular anywhere else. Membership, never position.
+ */
+const FLAGGED_FLAG = '\\Flagged';
+
+/**
+ * True when `message` is starred — the presence of `\Flagged`.
+ *
+ * The mirror of `isUnread` above, and it inherits that function's entire
+ * STALENESS caveat unchanged: sync/ only re-reads flags for messages
+ * inside its ~50-UID window, so a message starred in the real mailbox
+ * after it aged out will never show a star here. The write path below is
+ * what keeps a star SET FROM THIS APP honest in the meantime.
+ */
+export function isStarred(message: InboxMessage): boolean {
+  return (message.flags ?? []).includes(FLAGGED_FLAG);
+}
+
+/**
+ * The optimistic layer over `isStarred`.
+ *
+ * **WHY AN OVERLAY RATHER THAN A MUTATED ROW.** The list rows are owned
+ * by components/InboxList.tsx's `messages` state; the reader's copy is
+ * owned by App.tsx's `selected`; the thread rows are owned by
+ * ThreadContext. Starring from a keyboard shortcut has to change what all
+ * three draw, and threading a setter into each one would put the same
+ * write in three places that can drift. A `Map<messageKey, boolean>` in
+ * App.tsx is read by every one of them through this function and is a
+ * single place to revert from when the PATCH fails.
+ *
+ * **AND WHY IT IS NOT A CACHE.** An entry means "this app changed this
+ * flag and the server agreed", not "this is the truth about this
+ * message". It lives for the session, and the next sync cycle's `flags`
+ * are what the row falls back to the moment the entry is dropped.
+ */
+export function resolveStar(
+  message: InboxMessage,
+  overrides: ReadonlyMap<string, boolean>,
+  key: string,
+): boolean {
+  return overrides.get(key) ?? isStarred(message);
+}
+
+/** A NEW map with one entry set. Never mutates its input — the whole
+ *  point of holding this in React state is that a changed map is a new
+ *  identity a render can key on. */
+export function withStar(
+  overrides: ReadonlyMap<string, boolean>,
+  key: string,
+  value: boolean,
+): ReadonlyMap<string, boolean> {
+  return new Map(overrides).set(key, value);
+}
+
+/** A NEW map with one entry removed — the revert path when the PATCH
+ *  fails, which drops back to whatever `flags` actually says rather than
+ *  asserting the opposite. */
+export function withoutStar(
+  overrides: ReadonlyMap<string, boolean>,
+  key: string,
+): ReadonlyMap<string, boolean> {
+  const next = new Map(overrides);
+  next.delete(key);
+  return next;
+}

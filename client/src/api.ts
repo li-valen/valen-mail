@@ -656,3 +656,48 @@ export async function getThread(
   const messages = isRecord(body) && Array.isArray(body.messages) ? body.messages : [];
   return keepValid(messages, isInboxMessage, 'thread message(s)');
 }
+
+/**
+ * PATCH /api/message/{accountId}/{folder}/{uid}/flags — the ONE call in
+ * this client that changes state in the user's real Gmail.
+ *
+ * Path shape mirrors `getMessage` above exactly (three percent-encoded
+ * segments, because a Gmail folder name can contain a literal `/`), plus
+ * a `/flags` suffix. The body names exactly one flag and one direction;
+ * sync/src/api/flags.ts refuses two keys, zero keys, an unknown key or a
+ * non-boolean with a 400 that reaches no IMAP call — so this function's
+ * signature is deliberately shaped so a caller CANNOT assemble an invalid
+ * body: one field name, one boolean.
+ *
+ * NOTHING HERE IS BULK, and nothing here should become bulk. The server
+ * says the same thing in the same words and for the same reason: one
+ * request changes one flag on one message, which is what bounds the
+ * damage a bug on either side can do to a live mailbox.
+ *
+ * Throws ApiError on any non-2xx, exactly like the GETs above, so a
+ * caller can tell a 401 (session gone) from a 502 (IMAP unreachable) and
+ * revert its optimistic state either way.
+ */
+export type FlagField = 'seen' | 'flagged';
+
+export async function setMessageFlag(
+  accountId: string,
+  folder: string,
+  uid: string,
+  field: FlagField,
+  value: boolean,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const segments = [accountId, folder, uid].map(encodeURIComponent);
+  const path = `/api/message/${segments.join('/')}/flags`;
+  const response = await fetchImpl(path, {
+    ...REQUEST_INIT,
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    // `{[field]: value}` and nothing else. Two keys is a 400 by design.
+    body: JSON.stringify({ [field]: value }),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, `${path} returned ${response.status}`);
+  }
+}

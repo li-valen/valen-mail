@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Ref, RefObject } from 'react';
-import { ArrowLeft, FileText } from 'lucide-react';
+import { ArrowLeft, FileText, Star } from 'lucide-react';
 import { ApiError } from '../api';
 import type { InboxMessage, ParsedMessage } from '../api';
 import { messageCache } from '../messageCache';
@@ -8,6 +8,7 @@ import { loadMessage, readCachedMessage, refetchMessage, targetFor } from '../me
 import { messagePrefetcher } from '../messagePrefetch';
 import { Alert, AlertDescription } from '../ui/Alert';
 import { Button } from '../ui/Button';
+import { cn } from '../ui/cn';
 import { EmptyState } from '../ui/EmptyState';
 import { Skeleton } from '../ui/Skeleton';
 import { Panel, SKELETON_DELAY_MS } from '../motion';
@@ -365,6 +366,15 @@ export interface MessageViewProps {
   readonly onBack: () => void;
   /** Opens a different message — used by the thread rows below. */
   readonly onOpen: (message: InboxMessage) => void;
+  /** Whether this message is starred, already resolved through App.tsx's
+   *  optimistic overrides (../components/messageFlags.ts's
+   *  `resolveStar`) — so a star set one keystroke ago draws the same as
+   *  one the last sync brought down. */
+  readonly isStarred?: boolean;
+  /** Stars or unstars this message. The SAME handler `s` runs, so the
+   *  button and the shortcut cannot diverge — and the button is what
+   *  makes the feature reachable without a keyboard. */
+  readonly onToggleStar?: () => void;
 }
 
 export default function MessageView({
@@ -373,6 +383,8 @@ export default function MessageView({
   now,
   onBack,
   onOpen,
+  isStarred = false,
+  onToggleStar,
 }: MessageViewProps) {
   const accountId = message.account_id;
   const folder = message.folder;
@@ -501,10 +513,36 @@ export default function MessageView({
     // underneath a stationary frame. There is no matching exit: see
     // src/motion/Panel.tsx for why Back is deliberately instant.
     <Panel className="space-y-4">
-      <Button variant="ghost" size="sm" onClick={onBack}>
-        <ArrowLeft aria-hidden="true" />
-        Back to inbox
-      </Button>
+      {/* The reader's one chrome row: leave, and star. Both are the same
+          controls the keyboard drives (`u`/Esc and `s`), wired to the
+          same handlers, so there is one behaviour with two ways in rather
+          than two implementations that agree today. */}
+      <div className="flex items-center justify-between gap-3">
+        <Button variant="ghost" size="sm" onClick={onBack}>
+          <ArrowLeft aria-hidden="true" />
+          Back to inbox
+        </Button>
+
+        {onToggleStar !== undefined && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onToggleStar}
+            /* `aria-pressed` rather than two labels: this is one toggle
+               in two states, and a screen reader announces the state
+               from the attribute without the name changing under the
+               user mid-session. */
+            aria-pressed={isStarred}
+            aria-keyshortcuts="s"
+          >
+            <Star
+              className={cn('h-4 w-4', isStarred && 'fill-current text-amber-500 dark:text-amber-400')}
+              aria-hidden="true"
+            />
+            {isStarred ? 'Starred' : 'Star'}
+          </Button>
+        )}
+      </div>
 
       {/* NO CARD AROUND THE HEADER AND BODY any more. They were one
           bordered box split by a hairline; they are now two things

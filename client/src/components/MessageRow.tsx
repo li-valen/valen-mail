@@ -1,4 +1,4 @@
-import { Paperclip } from 'lucide-react';
+import { Paperclip, Star } from 'lucide-react';
 import type { InboxMessage } from '../api';
 import { Badge } from '../ui/Badge';
 import { cn } from '../ui/cn';
@@ -27,6 +27,32 @@ export interface MessageRowProps {
    * not broken, and the opens rail's own row list has no reason to.
    */
   readonly onPrefetch?: (message: InboxMessage) => void;
+  /**
+   * True when this row is under the keyboard cursor. Draws the selection
+   * treatment (see SELECTED below) and sets `aria-current`.
+   *
+   * NOT the same thing as focus, and the difference is the whole reason
+   * this is a prop rather than a `:focus` style. The cursor survives the
+   * user clicking a folder in the sidebar, tabbing to the theme toggle,
+   * or opening and closing the reader — none of which leave focus on the
+   * row, all of which must leave the cursor where it was.
+   */
+  readonly isSelected?: boolean;
+  /** Whether to draw the star. Resolved by the caller through
+   *  ./messageFlags.ts's `resolveStar`, so an optimistic toggle that has
+   *  not yet been confirmed by the server draws the same as a real one. */
+  readonly isStarred?: boolean;
+  /**
+   * This row's place in the roving tab order — `0` for the one tab stop,
+   * `-1` for everything else. See the ROVING TABINDEX note in the
+   * component header for why this list uses that and not
+   * `aria-activedescendant`.
+   */
+  readonly tabIndex?: number;
+  /** Fired when the row takes focus, so a user driving with Tab (or a
+   *  screen reader moving through the list) brings the cursor with them
+   *  rather than leaving it behind on a row they are no longer on. */
+  readonly onSelect?: (message: InboxMessage) => void;
 }
 
 /**
@@ -80,6 +106,28 @@ export interface MessageRowProps {
  * ./messageRowLayout.ts owns that resolution and
  * tests/message-row-layout.test.ts holds it.
  *
+ * **ROVING TABINDEX, NOT `aria-activedescendant` — and the choice is
+ * forced by what a row already is.** Every row here is a real
+ * `<button>`: the platform gives it a role, an accessible name built from
+ * the text inside it, and activation on both Enter and Space, none of
+ * which this file has to implement or can get wrong.
+ * `aria-activedescendant` would require the opposite arrangement — one
+ * focusable container with `role="listbox"`, rows demoted to
+ * `role="option"`, and activation re-implemented by hand because focus
+ * would live on the container rather than on the thing being activated.
+ * It would also be a lie about what the list IS: a listbox is how you
+ * CHOOSE A VALUE, and opening a message is navigation. There is a
+ * structural obstacle on top of the semantic one — InboxList renders one
+ * `<ul>` per day group inside its own `<Card>`, so there is no single
+ * element that owns all the rows for an `aria-activedescendant`
+ * relationship to point through without `aria-owns` gymnastics.
+ *
+ * Roving keeps all of that and fixes a wart it inherits: the list used to
+ * be fifty tab stops, and is now one — Tab lands on the cursor row, and
+ * `j`/`k` move from there. Moving the cursor also moves real DOM focus
+ * (src/keyboard/revealRow.ts), which is what makes each move ANNOUNCED
+ * rather than merely drawn.
+ *
  * **XSS.** `subject`, `from_name`/`from_email`, `snippet` and
  * `account_id` are attacker-controlled — any sender picks their own
  * display name, subject line and message body. They are only ever
@@ -114,6 +162,30 @@ export const ROW_FOCUS =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset';
 
 /**
+ * The keyboard cursor's own treatment: a tint one step stronger than
+ * hover, plus a 2px bar down the leading edge.
+ *
+ * **`lg:` ONLY.** A phone has no keyboard, so below `lg:` there is no
+ * cursor to draw — and the user was explicit that the mobile list stays
+ * borderless and untinted. Drawing a selection band there would
+ * reintroduce exactly the highlight they asked to remove, for a feature
+ * that cannot be operated on that device.
+ *
+ * **AN INSET SHADOW, NOT A BORDER.** A border would add 2px to the row's
+ * box and shift every sender name sideways the moment the cursor arrived;
+ * an inset shadow paints inside the existing box and costs no layout.
+ * (The `Card` above is `overflow-hidden`, which is also why ROW_FOCUS
+ * uses `ring-inset` — same constraint, same answer.)
+ *
+ * **DISTINCT FROM THE FOCUS RING ON PURPOSE.** The two coincide most of
+ * the time (moving the cursor moves focus) and must not be the same mark,
+ * because they come apart exactly when it matters: click a folder, and
+ * focus goes to the sidebar while the cursor stays on the row it was on.
+ */
+export const ROW_SELECTED =
+  'lg:bg-neutral-100 dark:lg:bg-accent lg:shadow-[inset_2px_0_0_0_var(--color-primary)]';
+
+/**
  * The avatar circles, below `lg:` only.
  *
  * SIX HAND-CHECKED PAIRS, not a generated ramp. Each entry names its own
@@ -142,7 +214,16 @@ const AVATAR_TONES: readonly string[] = [
   'bg-teal-100 text-teal-900 dark:bg-teal-950 dark:text-teal-200',
 ];
 
-export default function MessageRow({ message, now, onOpen, onPrefetch }: MessageRowProps) {
+export default function MessageRow({
+  message,
+  now,
+  onOpen,
+  onPrefetch,
+  isSelected = false,
+  isStarred = false,
+  tabIndex,
+  onSelect,
+}: MessageRowProps) {
   const { sender, subject, preview, initial, tone } = rowLayoutFor(message);
   const unread = isUnread(message);
   const when = formatWhen(message.date, now);
@@ -169,8 +250,27 @@ export default function MessageRow({ message, now, onOpen, onPrefetch }: Message
         onPointerEnter={(event) => {
           if (event.pointerType === 'mouse') onPrefetch?.(message);
         }}
-        onFocus={() => onPrefetch?.(message)}
+        onFocus={() => {
+          onPrefetch?.(message);
+          // Tab (or a screen reader's own row-to-row movement) brings the
+          // cursor with it, so a following `j` continues from where the
+          // user actually is rather than from wherever the cursor was
+          // left. Idempotent: src/keyboard/revealRow.ts focuses the row
+          // the cursor just moved TO, so this fires with the index the
+          // caller already holds and React bails out of the update.
+          onSelect?.(message);
+        }}
         data-message-key={messageKey(message)}
+        /* Roving: `0` on the cursor row, `-1` on the rest. `undefined`
+           when the list is not being driven by the keyboard at all,
+           which leaves the platform's own default (every button a tab
+           stop) exactly as it was. */
+        tabIndex={tabIndex}
+        /* `aria-current`, not `aria-selected`: the latter is only
+           meaningful inside a listbox/grid, which this deliberately is
+           not (see the ROVING TABINDEX note above). `true` is the right
+           token for "the one in this set the user is on". */
+        aria-current={isSelected ? true : undefined}
         /* PLAN 7 TASK 2 — pressed feedback, as a TINT and never a scale.
            A 3% scale is right for a button-shaped button (see
            ui/Button.tsx); on a full-bleed row inside a divided list it
@@ -191,9 +291,11 @@ export default function MessageRow({ message, now, onOpen, onPrefetch }: Message
           'rounded-xl hover:bg-neutral-50 active:bg-neutral-100 dark:hover:bg-accent dark:active:bg-accent',
           'lg:rounded-none',
           ROW_FOCUS,
+          isSelected && ROW_SELECTED,
         )}
       >
         {unread && <span className="sr-only">Unread. </span>}
+        {isStarred && <span className="sr-only">Starred. </span>}
 
         {/* ── below lg: the Gmail-mobile row ───────────────────────── */}
         <span className="flex items-start gap-3 px-3 py-2.5 lg:hidden">
@@ -233,6 +335,16 @@ export default function MessageRow({ message, now, onOpen, onPrefetch }: Message
                   />
                   <span className="sr-only">Has attachment</span>
                 </>
+              )}
+              {isStarred && (
+                /* `aria-hidden`: the sr-only "Starred." above the row
+                   already says it once, at the start, where it is useful
+                   — repeating it here would put it in the middle of the
+                   sender's name. */
+                <Star
+                  className="h-3.5 w-3.5 shrink-0 fill-current text-amber-500 dark:text-amber-400"
+                  aria-hidden="true"
+                />
               )}
               <span className="shrink-0 font-mono text-[11px] uppercase text-neutral-500 dark:text-muted-foreground">
                 {accountChip(message.account_id)}
@@ -307,6 +419,12 @@ export default function MessageRow({ message, now, onOpen, onPrefetch }: Message
                 />
                 <span className="sr-only">Has attachment</span>
               </>
+            )}
+            {isStarred && (
+              <Star
+                className="h-3.5 w-3.5 fill-current text-amber-500 dark:text-amber-400"
+                aria-hidden="true"
+              />
             )}
             <Badge variant="neutral" className="px-1.5 py-0 font-mono text-[10px] font-medium uppercase">
               {accountChip(message.account_id)}

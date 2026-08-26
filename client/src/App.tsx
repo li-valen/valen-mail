@@ -7,6 +7,7 @@ import { foldAccountRoster } from './accountRoster';
 import { DEFAULT_FILTER } from './inboxFilters';
 import type { FolderId } from './inboxFilters';
 import type { InboxMessage, OpenEvent } from './api';
+import { setMessageFlag } from './api';
 import { foldMessageIndex } from './messageIndex';
 import { messagePrefetcher } from './messagePrefetch';
 import Compose, { DISCARD_DRAFT_PROMPT } from './components/Compose';
@@ -15,6 +16,12 @@ import InboxList from './components/InboxList';
 import MessageView from './components/MessageView';
 import SentNotice from './components/SentNotice';
 import { messageKey } from './components/messageBody';
+import { resolveStar, withStar, withoutStar } from './components/messageFlags';
+import ShortcutHelp from './components/ShortcutHelp';
+import { NO_SELECTION, reconcileSelection, snapshotSelection } from './keyboard/selection';
+import type { SelectionResult } from './keyboard/selection';
+import { revealRow } from './keyboard/revealRow';
+import { useKeyboardShortcuts } from './keyboard/useKeyboardShortcuts';
 import { resolveOpenTarget } from './components/openEvents';
 import OpensRail from './components/OpensRail';
 import OpensView from './components/OpensView';
@@ -247,6 +254,37 @@ export default function App() {
   // Compose.tsx because the composer closes on success — a confirmation
   // rendered inside it would appear and vanish in the same frame.
   const [sentNotice, setSentNotice] = useState<ResultSummary | null>(null);
+  /**
+   * THE KEYBOARD CURSOR — which row `j`/`k` are on, held as a
+   * `{key, index}` pair.
+   *
+   * Owned here for the same reason `selected` is: `j`/`k` keep working
+   * while the reader has REPLACED the list, so the list component cannot
+   * own the state that decides what the reader shows next.
+   *
+   * THE KEY IS THE CURSOR AND THE INDEX IS A CONVENIENCE. Everything that
+   * survives a list change is decided from the key (keyboard/selection.ts
+   * has the three cases and why they differ); the index exists because
+   * `j` means "+1" and because a clamp needs somewhere to clamp FROM.
+   * They are written together, always, so they cannot drift.
+   */
+  const [cursor, setCursor] = useState<SelectionResult>({ key: null, index: NO_SELECTION });
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
+  /**
+   * Stars this session has set, keyed by `messageKey`, drawn over
+   * whatever `flags` says (components/messageFlags.ts's `resolveStar`).
+   *
+   * OPTIMISTIC, AND REVERTED ON FAILURE. The PATCH writes to the user's
+   * real Gmail and takes an IMAP round trip; a star that waited for it
+   * would feel broken next to a keystroke. An entry is added the instant
+   * `s` is pressed and REMOVED — not inverted — if the write fails, so
+   * the row falls back to the truth rather than to the opposite of it.
+   */
+  const [starOverrides, setStarOverrides] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+  /** A star the server refused, held until dismissed. Never silent: a
+   *  keystroke that appeared to work and did not is the worst outcome
+   *  available for a write path. */
+  const [starError, setStarError] = useState<string | null>(null);
   // The Ask-2 honest-failure banner (OpenNotFoundNotice above): true for
   // exactly the span between a Recent-opens click that `resolveOpenTarget`
   // could not resolve and the user dismissing it, or a LATER click that
@@ -296,6 +334,33 @@ export default function App() {
   // about render count.
   const filter = useMemo(() => ({ folder, account }), [folder, account]);
 
+  /** The current list as `messageKey`s, in list order — the array the
+   *  cursor indexes into and the one `reconcileSelection` compares
+   *  against. Memoised on `visibleMessages`, which InboxList replaces by
+   *  reference only when the list actually changed. */
+  const visibleKeys = useMemo(() => visibleMessages.map(messageKey), [visibleMessages]);
+
+  // Read inside the reconciliation effect below, which must NOT re-run
+  // when the cursor moves — only when the LIST changes. A dependency on
+  // `cursor` would make every `j` re-reconcile against itself.
+  const cursorRef = useRef(cursor);
+  cursorRef.current = cursor;
+  /** The keys as they were on the previous reconciliation, which is what
+   *  makes "same list, one row gone" distinguishable from "different
+   *  list" (keyboard/selection.ts's head-key test). */
+  const previousKeysRef = useRef<readonly string[]>([]);
+  /**
+   * Whether the next cursor change was caused by a KEYSTROKE, and
+   * therefore earns a focus move and a scroll.
+   *
+   * THE WHOLE "DO NOT FIGHT THE USER" MECHANISM lives in this flag.
+   * Reconciliation moves the cursor too — a folder click sends it to row
+   * 0 — and scrolling or stealing focus for that would yank the page away
+   * from the sidebar button the user just pressed. Only `j`/`k` and the
+   * reader's own navigation set this.
+   */
+  const shouldRevealRef = useRef(false);
+
   const openMessage = useCallback(
     (next: InboxMessage) => {
       // Only the FIRST open records where the list was. Opening another
@@ -312,6 +377,82 @@ export default function App() {
   );
 
   const closeMessage = useCallback(() => setSelected(null), []);
+
+  /**
+   * Keeps the cursor pointing at the same MESSAGE while the list changes
+   * under it — an append from "Load more", a wholesale swap from a folder
+   * or search change, or a row that has gone missing from an otherwise
+   * unchanged list. keyboard/selection.ts owns the three answers and why
+   * they differ; this effect only supplies the two snapshots.
+   *
+   * The previous snapshot is built from `previousKeysRef`, i.e. the array
+   * the current index was computed against, so `previousKeys[index]` is
+   * the cursor's own key by construction rather than by coincidence.
+   */
+  useLayoutEffect(() => {
+    const previousKeys = previousKeysRef.current;
+    previousKeysRef.current = visibleKeys;
+
+    const next = reconcileSelection(
+      snapshotSelection(previousKeys, cursorRef.current.index),
+      visibleKeys,
+    );
+    setCursor((current) =>
+      current.key === next.key && current.index === next.index ? current : next,
+    );
+  }, [visibleKeys]);
+
+  /**
+   * Brings the cursor's row on screen, but ONLY after a keystroke asked
+   * for it — see `shouldRevealRef`.
+   *
+   * A layout effect, matching the Back-restore below: the row has already
+   * rendered with its new selection treatment in this commit, and
+   * scrolling before paint means the user never sees the list at the old
+   * offset first.
+   */
+  useLayoutEffect(() => {
+    if (!shouldRevealRef.current) return;
+    shouldRevealRef.current = false;
+    // The list is `hidden` behind the reader, so its rows are out of the
+    // layout and out of the accessibility tree — there is nothing to
+    // focus or scroll to, and `revealRow` would simply find nothing.
+    if (selected !== null || cursor.key === null) return;
+    revealRow(cursor.key);
+  }, [cursor, selected]);
+
+  /** Moves the cursor to a row index, and marks the move as
+   *  keyboard-driven so the row is focused and scrolled to. */
+  const moveCursor = useCallback(
+    (index: number) => {
+      const key = visibleKeys[index];
+      if (key === undefined) return;
+      shouldRevealRef.current = true;
+      setCursor({ key, index });
+    },
+    [visibleKeys],
+  );
+
+  /**
+   * Moves the cursor because a row took FOCUS — Tab, or a screen reader
+   * walking the list.
+   *
+   * Deliberately does NOT set `shouldRevealRef`: the browser has already
+   * put this row where the user can see it, and asking for a second
+   * scroll would be this app second-guessing the platform's own focus
+   * scrolling.
+   */
+  const selectMessage = useCallback(
+    (message: InboxMessage) => {
+      const key = messageKey(message);
+      const index = visibleKeys.indexOf(key);
+      if (index === NO_SELECTION) return;
+      setCursor((current) =>
+        current.key === key && current.index === index ? current : { key, index },
+      );
+    },
+    [visibleKeys],
+  );
 
   /**
    * Task V3, Ask 2: activating a Recent-opens row. Resolution is pure and
@@ -475,6 +616,88 @@ export default function App() {
   const clearSearch = useCallback(() => setSearchInput(''), []);
 
   /**
+   * `s` — star or unstar whichever message is in hand.
+   *
+   * WHICH MESSAGE: the open one if the reader is showing, otherwise the
+   * row under the cursor. keyboard/shortcuts.ts guarantees at least one
+   * of those exists before it emits the action, so the early return here
+   * is a belt on top of that rather than the only thing standing between
+   * a keystroke and a crash.
+   *
+   * OPTIMISTIC, THEN HONEST. The override goes in immediately; a failed
+   * PATCH removes it (never inverts it) so the row falls back to what
+   * `flags` actually says, and says so in a dismissible banner. A write
+   * to the user's real Gmail that silently did nothing is the one outcome
+   * this must not have — see sync/src/api/flags.ts, which is equally
+   * explicit that this route is the only one that changes real state.
+   */
+  const toggleStar = useCallback(() => {
+    const target = selected ?? visibleMessages[cursor.index];
+    if (target === undefined) return;
+
+    const key = messageKey(target);
+    const next = !resolveStar(target, starOverrides, key);
+    setStarError(null);
+    setStarOverrides((overrides) => withStar(overrides, key, next));
+
+    setMessageFlag(target.account_id, target.folder, target.uid, 'flagged', next).catch(
+      (error: unknown) => {
+        console.error('App: star write failed', error);
+        setStarOverrides((overrides) => withoutStar(overrides, key));
+        setStarError(
+          next
+            ? "That message could not be starred — Postbox couldn't reach your mailbox."
+            : "That message could not be unstarred — Postbox couldn't reach your mailbox.",
+        );
+      },
+    );
+  }, [selected, visibleMessages, cursor.index, starOverrides]);
+
+  /** `Enter`/`o`, and `j`/`k` from inside the reader: move the cursor and
+   *  open in one step. Opening the message ALREADY on screen is skipped
+   *  rather than re-run — at the ends of the list `j`/`k` clamp to the
+   *  current row, and remounting the reader on the same message would
+   *  re-fetch a body the user is already reading. */
+  const openAt = useCallback(
+    (index: number) => {
+      const target = visibleMessages[index];
+      if (target === undefined) return;
+      const key = messageKey(target);
+      if (selected !== null && messageKey(selected) === key) return;
+      setCursor({ key, index });
+      openMessage(target);
+    },
+    [visibleMessages, selected, openMessage],
+  );
+
+  /**
+   * The whole keyboard, installed once for the authorized session.
+   *
+   * Everything this passes down is either state this component already
+   * owns or a handler it already had — `changeFolder` is the same
+   * function the sidebar calls, so `g i` and a click on Inbox cannot
+   * diverge. The one genuinely new behaviour is `toggleStar` above.
+   */
+  const { chordKey } = useKeyboardShortcuts(
+    {
+      isComposerOpen: view === 'compose',
+      isHelpOpen,
+      isReaderOpen: selected !== null,
+      listLength: visibleMessages.length,
+      selectedIndex: cursor.index,
+    },
+    {
+      onSelect: moveCursor,
+      onOpen: openAt,
+      onCloseReader: closeMessage,
+      onToggleStar: toggleStar,
+      onGoFolder: changeFolder,
+      onOpenHelp: () => setIsHelpOpen(true),
+      onCloseHelp: () => setIsHelpOpen(false),
+    },
+  );
+
+  /**
    * Restores the list exactly as it was left, and is the whole of what
    * "Back" has to get right.
    *
@@ -502,12 +725,34 @@ export default function App() {
       return;
     }
 
-    const key = openedKeyRef.current;
-    if (key !== null) {
-      const row = document.querySelector<HTMLElement>(`[data-message-key="${CSS.escape(key)}"]`);
-      row?.focus({ preventScroll: true });
-    }
     column.scrollTop = listScrollRef.current;
+
+    /**
+     * WHICH ROW GETS FOCUS BACK — the cursor's, falling back to the one
+     * that was opened.
+     *
+     * The cursor wins because `j`/`k` STEP while the reader is open (see
+     * keyboard/shortcuts.ts's `moveFrom`), so "the row they opened" and
+     * "the row they were reading" come apart the moment the user
+     * navigates from inside the reader. Landing back on the first one
+     * would send the next `j` over ground they just covered.
+     * `openedKeyRef` remains the fallback for the reader opened from
+     * somewhere with no list cursor at all — a Recent-opens click, a
+     * thread row.
+     *
+     * Read through `cursorRef` rather than depending on `cursor`: this
+     * effect also restores the list's SCROLL offset, and re-running it on
+     * every cursor move would snap the list back to the saved position
+     * every time the user pressed `j`.
+     */
+    const key = cursorRef.current.key ?? openedKeyRef.current;
+    if (key !== null) {
+      // Focuses with `preventScroll` and then nudges with
+      // `block: 'nearest'` — which does nothing when the restored offset
+      // already has the row on screen, and only closes the gap when the
+      // user stepped far enough in the reader to leave it behind.
+      revealRow(key);
+    }
     // `folder`/`account` are dependencies so that changing either one runs
     // this too: `leaveReader` has already zeroed the saved offset, so this
     // pass scrolls the new list to the top instead of leaving the reader
@@ -585,6 +830,24 @@ export default function App() {
         </Settle>
       )}
 
+      {/* A star the mailbox refused. Same dismissible in-place shape as
+          the two banners above — never a toast, never silent. The
+          optimistic override has ALREADY been rolled back by the time
+          this renders, so the row beneath it is showing the truth while
+          this explains why it changed back. */}
+      {isAuthorized && starError !== null && (
+        <Settle>
+          <Alert variant="destructive" className="mb-6">
+            <AlertDescription className="flex flex-wrap items-center gap-3">
+              <span className="flex-1 min-w-[12rem]">{starError}</span>
+              <Button variant="ghost" size="sm" onClick={() => setStarError(null)}>
+                Dismiss
+              </Button>
+            </AlertDescription>
+          </Alert>
+        </Settle>
+      )}
+
       {/*
         PLAN 7 TASK 2/3 — the view swap, and why there is NO wrapper here
         any more.
@@ -653,6 +916,9 @@ export default function App() {
                   onOpenMessage={openMessage}
                   search={searchQuery}
                   onClearSearch={clearSearch}
+                  selectedKey={cursor.key}
+                  onSelectMessage={selectMessage}
+                  starOverrides={starOverrides}
                 />
               </div>
               <OpensRail feed={feed} onOpenEvent={handleOpenEvent} />
@@ -676,6 +942,8 @@ export default function App() {
                 now={now}
                 onBack={closeMessage}
                 onOpen={openMessage}
+                isStarred={resolveStar(selected, starOverrides, messageKey(selected))}
+                onToggleStar={toggleStar}
               />
             )}
           </>
@@ -684,6 +952,27 @@ export default function App() {
         )}
         </>
       )}
+
+      {/* THE CHORD HINT — what a half-finished `g` looks like.
+          Without it a chord is a hidden mode: the user presses `g`,
+          nothing happens, and the next key does something they did not
+          expect. `lg:` only, for the same reason the help overlay is —
+          there is no keyboard below it. `aria-live="polite"` so the state
+          is announced rather than only drawn. */}
+      {chordKey !== null && (
+        <div
+          className="pointer-events-none fixed bottom-6 right-6 z-40 hidden items-center gap-2 rounded-md border border-border bg-card px-3 py-2 shadow-md lg:flex"
+          role="status"
+          aria-live="polite"
+        >
+          <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[11px] font-medium text-foreground">
+            {chordKey}
+          </kbd>
+          <span className="text-xs text-muted-foreground">then i, s or t</span>
+        </div>
+      )}
+
+      {isHelpOpen && <ShortcutHelp onClose={() => setIsHelpOpen(false)} />}
     </AppShell>
   );
 }

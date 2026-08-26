@@ -20,6 +20,7 @@ import { groupByDay } from './inboxDates';
 import { LIST_DIVIDERS, LIST_SURFACE } from './listSurface';
 import { isCurrentSelection, resolveLoadMorePage } from './inboxPaging';
 import { messageKey } from './messageBody';
+import { resolveStar } from './messageFlags';
 
 // Re-exported so `InboxList.tsx` stays the one public entry point for both
 // the component and the pure logic it renders with — tests import
@@ -111,6 +112,24 @@ export interface InboxListProps {
    *  out (the field's own ✕, and Esc) live in components/SearchBar.tsx;
    *  this is the one that is visible from where the results are. */
   readonly onClearSearch: () => void;
+  /**
+   * The `messageKey` under the keyboard cursor, or `null` for no cursor.
+   *
+   * A KEY, NOT AN INDEX, and owned by App.tsx rather than here. Both
+   * halves of that matter: an index would be re-pointed at a different
+   * message by `loadMore`'s append (see src/keyboard/selection.ts), and
+   * this component cannot own the cursor because `j`/`k` keep working
+   * while the reader has REPLACED the list — the same reason App.tsx owns
+   * `selected`.
+   */
+  readonly selectedKey?: string | null;
+  /** Fired when a row takes focus, so Tab and screen-reader navigation
+   *  move the cursor rather than leaving it behind. */
+  readonly onSelectMessage?: (message: InboxMessage) => void;
+  /** Optimistic star state, keyed by `messageKey` — see
+   *  ./messageFlags.ts's `resolveStar`. Empty by default so a caller that
+   *  does not star anything needs no map. */
+  readonly starOverrides?: ReadonlyMap<string, boolean>;
 }
 
 /**
@@ -138,6 +157,8 @@ export interface InboxListProps {
  * `rounded-lg border … divide-y divide-neutral-100` row list of
  * `apps/web/src/pages/contacts/index.tsx`, wrapped in the `Card` atom.
  */
+const NO_STAR_OVERRIDES: ReadonlyMap<string, boolean> = new Map();
+
 export default function InboxList({
   filter,
   onAccountsChange,
@@ -145,6 +166,9 @@ export default function InboxList({
   onOpenMessage,
   search,
   onClearSearch,
+  selectedKey = null,
+  onSelectMessage,
+  starOverrides = NO_STAR_OVERRIDES,
 }: InboxListProps) {
   const { folder, account } = filter;
   const isSearching = search !== '';
@@ -319,6 +343,26 @@ export default function InboxList({
   const prefetchMessage = useCallback((row: InboxMessage) => {
     messagePrefetcher.prefetch(targetFor(row));
   }, []);
+
+  /**
+   * The list's ONE tab stop — the roving half of the roving tabindex (see
+   * ./MessageRow.tsx's header for why roving and not
+   * `aria-activedescendant`).
+   *
+   * FALLS BACK TO THE FIRST ROW, always. A cursor key that is not in this
+   * list is an ordinary transient — the folder changed and App.tsx has
+   * reconciled the cursor but this component has not yet refetched — and
+   * without the fallback the list would briefly have NO tab stop at all,
+   * i.e. be unreachable by keyboard, which is a worse bug than the one
+   * roving tabindex is here to fix.
+   */
+  const tabStopKey = useMemo(() => {
+    const first = messages[0];
+    if (first === undefined) return null;
+    const firstKey = messageKey(first);
+    if (selectedKey === null) return firstKey;
+    return messages.some((message) => messageKey(message) === selectedKey) ? selectedKey : firstKey;
+  }, [messages, selectedKey]);
 
   const retry = useCallback(() => setAttempt((previous) => previous + 1), []);
   // What the polite live region says. Derived, not stored: it has to
@@ -497,15 +541,22 @@ export default function InboxList({
             </h2>
             <Card className={LIST_SURFACE}>
               <ul className={LIST_DIVIDERS}>
-                {group.messages.map((message) => (
-                  <MessageRow
-                    key={messageKey(message)}
-                    message={message}
-                    now={now}
-                    onOpen={onOpenMessage}
-                    onPrefetch={prefetchMessage}
-                  />
-                ))}
+                {group.messages.map((message) => {
+                  const key = messageKey(message);
+                  return (
+                    <MessageRow
+                      key={key}
+                      message={message}
+                      now={now}
+                      onOpen={onOpenMessage}
+                      onPrefetch={prefetchMessage}
+                      onSelect={onSelectMessage}
+                      isSelected={key === selectedKey}
+                      isStarred={resolveStar(message, starOverrides, key)}
+                      tabIndex={key === tabStopKey ? 0 : -1}
+                    />
+                  );
+                })}
               </ul>
             </Card>
           </SettleGroup>
