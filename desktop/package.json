@@ -1,0 +1,15 @@
+{
+  "name": "postbox-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Tauri CLI wrapper for the Postbox macOS shell. No frontend build lives here — see tauri.conf.json.",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "icons": "tauri icon ../client/public/icon-512.png"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4"
+  }
+}
