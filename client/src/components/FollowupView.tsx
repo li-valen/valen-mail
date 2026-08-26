@@ -246,7 +246,7 @@ export default function FollowupView({ account, onOpenMessage }: FollowupViewPro
     }
 
     return (
-      <Settle className="space-y-3">
+      <Settle>
         <Card className={LIST_SURFACE}>
           <ul className={LIST_DIVIDERS}>
             {visible.map((row) => (
@@ -259,19 +259,6 @@ export default function FollowupView({ account, onOpenMessage }: FollowupViewPro
             ))}
           </ul>
         </Card>
-
-        {cursor !== null && (
-          <div className="space-y-3">
-            <Button variant="outline" className="w-full" onClick={loadMore} disabled={isLoadingMore}>
-              {isLoadingMore ? 'Loading…' : 'Load more'}
-            </Button>
-            {loadMoreError !== null && (
-              <Alert variant="destructive">
-                <AlertDescription>{loadMoreError}</AlertDescription>
-              </Alert>
-            )}
-          </div>
-        )}
       </Settle>
     );
   }
@@ -280,6 +267,27 @@ export default function FollowupView({ account, onOpenMessage }: FollowupViewPro
     <div className="space-y-4">
       {scopeNav}
       {body()}
+
+      {/* OUTSIDE `body()`, and that placement is the point: "Load more"
+          has to survive the EMPTY branch. The queue scope hides most of
+          what a page contains, so a first page of fifty sends can
+          legitimately contain nothing opened-and-unanswered while the
+          next page does — and an empty state saying "nothing is waiting
+          on you" with no way to look further would be a conclusion drawn
+          from one page. Offering the control alongside it keeps the
+          claim scoped to what has actually been loaded. */}
+      {load.status === 'ready' && cursor !== null && (
+        <div className="space-y-3">
+          <Button variant="outline" className="w-full" onClick={loadMore} disabled={isLoadingMore}>
+            {isLoadingMore ? 'Loading…' : 'Load more'}
+          </Button>
+          {loadMoreError !== null && (
+            <Alert variant="destructive">
+              <AlertDescription>{loadMoreError}</AlertDescription>
+            </Alert>
+          )}
+        </div>
+      )}
     </div>
   );
 }
