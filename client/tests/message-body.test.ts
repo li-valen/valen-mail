@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_DARK_GROUND,
   FALLBACK_BODY_HEIGHT_PX,
+  applySchemeTo,
   IFRAME_SANDBOX,
   attachmentUrl,
   bodyKind,
@@ -506,12 +507,18 @@ describe('srcDocFor dark scheme', () => {
     // Back-compat: the one-argument call MessageView used before dark mode
     // existed must produce exactly what it always did.
     expect(srcDocFor(HTML)).toBe(srcDocFor(HTML, 'light'));
-    expect(srcDocFor(HTML)).not.toContain('invert(1)');
+    expect(srcDocFor(HTML)).toContain('<html data-scheme="light"');
+    // Not a bare substring check: the dark RULES name the attribute in their
+    // selectors in every document, which is the point of them.
+    expect(srcDocFor(HTML)).not.toContain('<html data-scheme="dark"');
   });
 
   it('inverts the page in dark, so a sender-set text colour cannot go black-on-black', () => {
     const doc = srcDocFor(HTML, 'dark');
-    expect(doc).toContain('body{filter:invert(1) hue-rotate(180deg);background:transparent}');
+    expect(doc).toContain('data-scheme="dark"');
+    expect(doc).toContain(
+      'html[data-scheme="dark"] body{filter:invert(1) hue-rotate(180deg);background:transparent}',
+    );
   });
 
   it('puts the filter on BODY and the ground on HTML, never the other way round', () => {
@@ -522,19 +529,25 @@ describe('srcDocFor dark scheme', () => {
     // (#ffffff for light). That shipped once and came back as "dark mode
     // not working here": pale-grey text on a white card.
     const doc = srcDocFor(HTML, 'dark', '#030711');
-    expect(doc).toContain('html{background:#030711}');
-    expect(doc).toContain('body{filter:invert(1) hue-rotate(180deg);background:transparent}');
+    expect(doc).toContain('html[data-scheme="dark"]{background:var(--ground,#030711)}');
+    expect(doc).toContain('--ground:#030711');
+    expect(doc).toContain(
+      'html[data-scheme="dark"] body{filter:invert(1) hue-rotate(180deg);background:transparent}',
+    );
     // The filter must NOT be on html, and the ground must NOT be
     // transparent — either alone re-creates the defect.
-    expect(doc).not.toMatch(/html\{[^}]*filter:/);
-    expect(doc).not.toMatch(/html\{[^}]*background:transparent/);
+    expect(doc).not.toMatch(/html(\[data-scheme="dark"\])?\{[^}]*filter:/);
+    expect(doc).not.toMatch(/html(\[data-scheme="dark"\])?\{[^}]*background:transparent/);
   });
 
   it('paints the ground the caller was given, so the frame matches its card', () => {
     // Read live from `--color-card` by MessageView, not written here, so
     // the document ground and the card it sits in cannot drift apart.
-    expect(srcDocFor(HTML, 'dark', 'hsl(224 71% 4%)')).toContain('html{background:hsl(224 71% 4%)}');
-    expect(srcDocFor(HTML, 'dark', 'rgb(3, 7, 17)')).toContain('html{background:rgb(3, 7, 17)}');
+    // Carried as a custom property on the root element rather than compiled
+    // into the stylesheet, so the parent can repaint the ground without
+    // rebuilding the document. See `applySchemeTo`.
+    expect(srcDocFor(HTML, 'dark', 'hsl(224 71% 4%)')).toContain('--ground:hsl(224 71% 4%)');
+    expect(srcDocFor(HTML, 'dark', 'rgb(3, 7, 17)')).toContain('--ground:rgb(3, 7, 17)');
   });
 
   it('leaves color-scheme at light in dark, so UA controls invert INTO the dark page', () => {
@@ -553,7 +566,9 @@ describe('srcDocFor dark scheme', () => {
     const doc = srcDocFor(HTML, 'dark');
     // The SECOND inversion is the whole point: it must apply to media and
     // must be the same transform, or it does not cancel.
-    expect(doc).toMatch(/img,picture,video,canvas,svg,embed,object\{filter:invert\(1\) hue-rotate\(180deg\)\}/);
+    expect(doc).toMatch(
+      /html\[data-scheme="dark"\] :is\(img,picture,video,canvas,svg,embed,object\)\{filter:invert\(1\) hue-rotate\(180deg\)\}/,
+    );
   });
 
   it('overrides the light ground rather than leaving the white one in place', () => {
@@ -564,21 +579,76 @@ describe('srcDocFor dark scheme', () => {
     const doc = srcDocFor(HTML, 'dark', '#030711');
     const css = /<style>([\s\S]*?)<\/style>/.exec(doc)![1]!;
     // Later rules win, so the dark block must come after the base one.
-    expect(css.lastIndexOf('html{background:#030711}')).toBeGreaterThan(
+    expect(css.lastIndexOf('html[data-scheme="dark"]{background:var(--ground,#030711)}')).toBeGreaterThan(
       css.indexOf('html{color-scheme:light;background:#ffffff}'),
     );
     expect(css.lastIndexOf('background:transparent')).toBeGreaterThan(css.indexOf('color:#111827'));
   });
 
-  it('leaves the LIGHT document exactly as it was', () => {
-    // Every rule above is a dark-only override, and the `ground` argument
-    // is ignored in light. A light message must still paint its own white
-    // on both boxes and carry no filter at all.
+  it('scopes every dark rule to the attribute, so a light document cannot be inverted by one', () => {
+    // The dark rules now ship in EVERY document — that is exactly what lets
+    // the scheme change without reloading the frame, and reloading is what
+    // re-fired the message's tracking pixels. So the property that has to
+    // hold is no longer "a light document contains no dark rules"; it is
+    // that not one of them can match without the attribute.
     const doc = srcDocFor(HTML, 'light', '#030711');
+    expect(doc).toContain('data-scheme="light"');
     expect(doc).toContain('html{color-scheme:light;background:#ffffff}');
-    expect(doc).not.toContain('background:transparent');
-    expect(doc).not.toContain('invert(1)');
-    expect(doc).not.toContain('#030711');
+
+    const css = /<style>([\s\S]*?)<\/style>/.exec(doc)![1]!;
+    const darkRules = css
+      .split('}')
+      .filter((rule) => rule.includes('invert(1)') || rule.includes('--ground'));
+    expect(darkRules.length).toBeGreaterThan(0);
+    for (const rule of darkRules) expect(rule).toContain('[data-scheme="dark"]');
+  });
+
+  it('switches a loaded document in place, which is what avoids the reload', () => {
+    // Records what a real documentElement would receive.
+    const writes: Array<[string, string]> = [];
+    const props: Array<[string, string]> = [];
+    const doc = {
+      documentElement: {
+        setAttribute: (n: string, v: string) => writes.push([n, v]),
+        style: { setProperty: (n: string, v: string) => props.push([n, v]) },
+      },
+    };
+
+    expect(applySchemeTo(doc, 'dark', '#030711')).toBe(true);
+    expect(writes).toEqual([['data-scheme', 'dark']]);
+    expect(props).toEqual([['--ground', '#030711']]);
+
+    expect(applySchemeTo(doc, 'light', '#030711')).toBe(true);
+    expect(writes[1]).toEqual(['data-scheme', 'light']);
+  });
+
+  it('reports failure instead of silently leaving a message in the wrong scheme', () => {
+    // The caller retries on load when this is false. Swallowing it would
+    // strand a message in the previous theme with no way to notice.
+    expect(applySchemeTo(null, 'dark', '#030711')).toBe(false);
+    expect(applySchemeTo(undefined, 'dark', '#030711')).toBe(false);
+    expect(applySchemeTo({ documentElement: null }, 'dark', '#030711')).toBe(false);
+  });
+
+  it('validates the ground on the way in, exactly as srcDocFor does', () => {
+    const props: Array<[string, string]> = [];
+    const doc = {
+      documentElement: {
+        setAttribute: () => {},
+        style: { setProperty: (n: string, v: string) => props.push([n, v]) },
+      },
+    };
+    applySchemeTo(doc, 'dark', 'red;}*{display:none');
+    expect(props).toEqual([['--ground', DEFAULT_DARK_GROUND]]);
+  });
+
+  it('differs from the dark document ONLY by the root attribute', () => {
+    // This is the property the whole no-reload arrangement rests on: if the
+    // two documents differed anywhere else, switching would have to rebuild.
+    const light = srcDocFor(HTML, 'light', '#030711');
+    const dark = srcDocFor(HTML, 'dark', '#030711');
+    expect(light).not.toBe(dark);
+    expect(light.replace('data-scheme="light"', 'data-scheme="dark"')).toBe(dark);
   });
 
   it('still carries the CSP and sandbox-critical head in dark', () => {
@@ -635,7 +705,7 @@ describe('safeGroundColor', () => {
 
   it('is what srcDocFor applies, so no caller can bypass it', () => {
     expect(srcDocFor('<p>x</p>', 'dark', 'red;}*{display:none')).toContain(
-      `html{background:${DEFAULT_DARK_GROUND}}`,
+      `--ground:${DEFAULT_DARK_GROUND}`,
     );
     expect(srcDocFor('<p>x</p>', 'dark', 'red;}*{display:none')).not.toContain('display:none');
   });

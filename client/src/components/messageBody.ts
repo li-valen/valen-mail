@@ -222,6 +222,14 @@ const BODY_STYLE = [
 export type BodyScheme = 'light' | 'dark';
 
 /**
+ * The ground used when the live palette cannot be read or does not
+ * validate. MUST equal styles.css's dark `--card` / `--background`
+ * (`224 71% 4%`), and tests/theme-tokens.test.ts pins exactly that so the
+ * two cannot drift apart silently.
+ */
+export const DEFAULT_DARK_GROUND = '#030711';
+
+/**
  * DARK MODE FOR THE MESSAGE ITSELF, by inversion rather than by restyling.
  *
  * **THIS REVERSES THE DECISION ABOVE, AT THE USER'S REQUEST:** *"Fix the
@@ -322,27 +330,73 @@ export type BodyScheme = 'light' | 'dark';
  * no longer load-bearing for the canvas, because the canvas is now set
  * explicitly.
  */
-function darkBodyStyle(ground: string): readonly string[] {
-  return [
+const DARK_BODY_STYLE = [
   // OPAQUE, and deliberately NOT filtered — this is the canvas colour the
-  // whole fix turns on.
-  `html{background:${ground}}`,
-  'body{filter:invert(1) hue-rotate(180deg);background:transparent}',
+  // whole fix turns on. The value arrives as a CUSTOM PROPERTY rather than
+  // baked in, so the parent can repaint the ground by setting one property
+  // on the live document instead of rebuilding it; see `applySchemeTo`.
+  `html[data-scheme="dark"]{background:var(--ground,${DEFAULT_DARK_GROUND})}`,
+  'html[data-scheme="dark"] body{filter:invert(1) hue-rotate(180deg);background:transparent}',
   // Re-inverted so their pixels survive the page-level transform. `svg` is
   // included because inline SVG in mail is nearly always a logo or icon,
   // i.e. content; where it is used as decoration the double inversion is
   // no worse than the single one would have been.
-  'img,picture,video,canvas,svg,embed,object{filter:invert(1) hue-rotate(180deg)}',
-  ];
-}
+  'html[data-scheme="dark"] :is(img,picture,video,canvas,svg,embed,object)' +
+    '{filter:invert(1) hue-rotate(180deg)}',
+].join('');
 
 /**
- * The ground used when the live palette cannot be read or does not
- * validate. MUST equal styles.css's dark `--card` / `--background`
- * (`224 71% 4%`), and tests/theme-tokens.test.ts pins exactly that so the
- * two cannot drift apart silently.
+ * Switches an ALREADY-LOADED message document between light and dark, in
+ * place, and repaints its ground.
+ *
+ * **THIS EXISTS BECAUSE REBUILDING THE DOCUMENT COSTS THE USER SOMETHING
+ * REAL, AND IT IS NOT THE FLICKER.** The scheme used to be compiled into
+ * the `srcDoc` string, so every theme toggle handed React a new string and
+ * reloaded the frame. Measured against a message carrying one 1x1 pixel:
+ * opening it fetched that pixel once, and then EVERY toggle fetched it
+ * again — 1 hit on open, 6 after five ordinary interactions. Remote images
+ * in mail are overwhelmingly tracking pixels; this app's own Opens feature
+ * is built on exactly that mechanism. Reloading the frame therefore told
+ * the sender the message had been opened six times when it was opened once.
+ * The user accepted being tracked on OPEN ("i dont care if people can track
+ * me with the pixels"); they did not ask to be counted again every time
+ * they touch the theme switch.
+ *
+ * It also re-parsed and re-laid-out the whole message — 5875px of it, in
+ * the measured case — and left the OLD document painted inside the newly
+ * themed frame for a frame or two on the way: light mail on a dark frame at
+ * t+16ms, blank at t+25ms, correct at t+30ms. That was the visible flash.
+ *
+ * Both go away if the document is built once and switched afterwards, which
+ * is possible only because the frame is same-origin now (see
+ * `IFRAME_SANDBOX`). Nothing about the boundary moves: this writes an
+ * attribute and a custom property from the PARENT into a document that
+ * still cannot run a line of code.
+ *
+ * Returns whether it reached the document, so a caller can retry on load
+ * rather than silently leaving a message in the wrong scheme.
  */
-export const DEFAULT_DARK_GROUND = '#030711';
+export interface SchemableDocument {
+  readonly documentElement: {
+    setAttribute(name: string, value: string): void;
+    readonly style: { setProperty(name: string, value: string): void };
+  } | null;
+}
+
+export function applySchemeTo(
+  frameDocument: SchemableDocument | null | undefined,
+  scheme: BodyScheme,
+  ground: string,
+): boolean {
+  const root = frameDocument?.documentElement;
+  if (root === null || root === undefined) return false;
+  root.setAttribute('data-scheme', scheme === 'dark' ? 'dark' : 'light');
+  // Validated on the way in for the same reason it is validated when it is
+  // compiled into the stylesheet: this lands in a style declaration.
+  root.style.setProperty('--ground', safeGroundColor(ground));
+  return true;
+}
+
 
 /**
  * A colour that is safe to interpolate into the message document's
@@ -407,8 +461,18 @@ export function srcDocFor(
   ground: string = DEFAULT_DARK_GROUND,
 ): string {
   const csp = contentSecurityPolicyFor();
+  // The scheme and the ground are stamped on the ROOT ELEMENT, not selected
+  // between here, so that both rule sets ship in every document and
+  // switching between them costs an attribute write rather than a reload.
+  // They are still stamped at BUILD time, and that matters: an effect that
+  // applied the scheme after load would let the browser paint one frame of
+  // the wrong theme first, which is the flicker this whole arrangement
+  // removes.
+  const attrs =
+    ` data-scheme="${scheme === 'dark' ? 'dark' : 'light'}"` +
+    ` style="--ground:${safeGroundColor(ground)}"`;
   return (
-    '<!doctype html><html><head>' +
+    `<!doctype html><html${attrs}><head>` +
     '<meta charset="utf-8">' +
     `<meta http-equiv="Content-Security-Policy" content="${csp}">` +
     '<meta name="referrer" content="no-referrer">' +
@@ -418,7 +482,7 @@ export function srcDocFor(
     // frame away from the message. `base-uri 'none'` above still blocks a
     // message supplying its own <base href> to re-point relative URLs.
     '<base target="_blank">' +
-    `<style>${BODY_STYLE}${scheme === 'dark' ? darkBodyStyle(safeGroundColor(ground)).join('') : ''}</style>` +
+    `<style>${BODY_STYLE}${DARK_BODY_STYLE}</style>` +
     '</head><body>' +
     html +
     '</body></html>'

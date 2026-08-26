@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Ref, RefObject } from 'react';
+import type { BodyScheme } from './messageBody';
 import { Archive, ArrowLeft, FileText, Forward, Reply, ReplyAll, Star, Trash2 } from 'lucide-react';
 import { ApiError } from '../api';
 import type { InboxMessage, ParsedMessage } from '../api';
@@ -21,6 +22,7 @@ import { formatReceived } from './inboxDates';
 import {
   FALLBACK_BODY_HEIGHT_PX,
   IFRAME_SANDBOX,
+  applySchemeTo,
   bodyKind,
   measuredBodyHeightPx,
   safeGroundColor,
@@ -234,6 +236,38 @@ interface BodyFrameProps {
  * while the next one loads — a `srcDoc` swap parses in a frame or two, and
  * blanking to the fallback in between is a visible jump for no gain.
  */
+/**
+ * Keeps a loaded message document's scheme in step with the app's theme,
+ * WITHOUT rebuilding it — see the note on `doc` in `BodyFrame` for what a
+ * rebuild costs, and `applySchemeTo` for why writing into the frame is not a
+ * loosening of the boundary it sits behind.
+ *
+ * The document normally already carries the right scheme, because
+ * `srcDocFor` stamps it on the root element at build time; this exists for
+ * the case that string does NOT cover, which is the theme changing while a
+ * message is open. `doc` is in the deps so a genuinely new message re-arms
+ * the load listener rather than writing into the outgoing document.
+ */
+function useSchemeSync(
+  ref: RefObject<HTMLIFrameElement | null>,
+  doc: string,
+  scheme: BodyScheme,
+  ground: string,
+): void {
+  useEffect(() => {
+    const frame = ref.current;
+    if (frame === null) return;
+
+    const apply = () => applySchemeTo(frame.contentDocument, scheme, ground);
+    // Reached it: nothing more to arrange. Only when the document is not
+    // parsed yet does this need to wait, and then exactly once.
+    if (apply()) return;
+
+    frame.addEventListener('load', apply, { once: true });
+    return () => frame.removeEventListener('load', apply);
+  }, [ref, doc, scheme, ground]);
+}
+
 function useMeasuredBodyHeight(
   ref: RefObject<HTMLIFrameElement | null>,
   doc: string,
@@ -339,10 +373,27 @@ function BodyFrame({ html, subject }: BodyFrameProps) {
    * deps for exactly that reason: changing the theme MUST rebuild the
    * document, and nothing else may.
    */
-  const doc = useMemo(
-    () => srcDocFor(html, isDark ? 'dark' : 'light', ground),
-    [html, isDark, ground],
-  );
+  const scheme: BodyScheme = isDark ? 'dark' : 'light';
+  //
+  // `html` IS THE ONLY DEPENDENCY, AND THE OMISSIONS ARE THE POINT.
+  //
+  // Handing React a new `srcDoc` string reloads the frame, and a reload is
+  // not free: it re-fetches every remote image in the message. Mail's remote
+  // images are overwhelmingly tracking pixels — this app's own Opens feature
+  // is built on that — so a rebuild reports a fresh open to the sender.
+  // Measured with a no-store 1x1: one open plus five ordinary theme
+  // interactions produced SIX hits. It also re-parsed 5875px of document and
+  // left the previous theme's document painted inside the new frame for a
+  // frame or two.
+  //
+  // So `scheme` and `ground` are read here for the FIRST paint — which must
+  // be correct, or the flicker simply moves — and every change after that is
+  // applied to the live document by `useSchemeSync` below. They are
+  // deliberately absent from the dependency list; the memo closes over the
+  // current render's values, so a genuine message change still builds with
+  // the theme in force at that moment.
+  const doc = useMemo(() => srcDocFor(html, scheme, ground), [html]);
+  useSchemeSync(frameRef, doc, scheme, ground);
   const height = useMeasuredBodyHeight(frameRef, doc) ?? FALLBACK_BODY_HEIGHT_PX;
 
   return (
