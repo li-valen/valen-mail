@@ -4,6 +4,7 @@ import { ApiError, getConversationsPage } from '../api';
 import type { InboxCursor, InboxMessage, InboxPage } from '../api';
 import type { AccountSummary } from '../accountRoster';
 import { emptyStateFor, searchEmptyStateFor } from '../emptyState';
+import { describeSearchQuery } from '../searchDisplay';
 import { FOLDER_ICONS } from '../folderIcons';
 import { headingFor } from '../inboxFilters';
 import type { FolderId, InboxFilter } from '../inboxFilters';
@@ -17,6 +18,7 @@ import { Card } from '../ui/Card';
 import { EmptyState } from '../ui/EmptyState';
 import { Skeleton } from '../ui/Skeleton';
 import { Settle, SettleGroup } from '../motion';
+import { CHIP_LITERAL, CHIP_STATIC } from './chip';
 import MessageRow from './MessageRow';
 import { messagePrefetcher } from '../messagePrefetch';
 import { targetFor } from '../messageLoader';
@@ -25,6 +27,7 @@ import {
   conversationCountAnnouncement,
   conversationCountLabel,
   conversationHasAttachment,
+  folderMembershipFor,
   groupIntoConversations,
   isConversationSelectable,
   isConversationStarred,
@@ -384,7 +387,10 @@ export default function InboxList({
    * that no test here renders a component, so anything decided in this
    * file is decided where no test can reach it.
    */
-  const conversations = useMemo(() => groupIntoConversations(visible), [visible]);
+  const conversations = useMemo(
+    () => groupIntoConversations(visible, folderMembershipFor(folder, isSearching)),
+    [visible, folder, isSearching],
+  );
 
   /*
    * COUNTED IN CONVERSATIONS, not messages — changed with the collapse,
@@ -497,6 +503,11 @@ export default function InboxList({
   // back. `search` is user text and reaches the DOM only as a JSX text
   // child, which React escapes.
   const scopeLabel = headingFor(folder, account);
+  /* Display only — ../searchDisplay.ts decides nothing about what is
+     searched, and the raw `search` string is what goes on the wire.
+     Memoised on the DEBOUNCED query, so the chips describe the search
+     that is actually running rather than the keystroke in flight. */
+  const interpretation = useMemo(() => describeSearchQuery(search), [search]);
   const liveMessage = !isSearching
     ? ''
     : load.status === 'loading'
@@ -536,6 +547,45 @@ export default function InboxList({
       <Button variant="outline" size="sm" onClick={onClearSearch}>
         Clear search
       </Button>
+      {interpretation.isInterpreted ? (
+        /* WHAT THE QUERY WAS UNDERSTOOD TO MEAN — drawn only once the
+           user reaches for an operator. For a plain word search this is
+           absent entirely, because the line above already echoes what
+           was typed and a chip repeating it is noise (and because the
+           user's standing direction is "i dont need any liek side
+           notes").
+
+           `w-full` breaks it onto its own row of the wrapping flex box,
+           so it never competes with `Clear search` for width at 375px.
+
+           Two visual weights, no words of explanation: a pill is a
+           filter that was applied; plain quoted text is a term being
+           searched for literally — which is what `before:yesterday`
+           becomes, and the only signal that it did not become a date
+           filter. ../components/chip.ts carries both recipes and the
+           contrast reasoning. */
+        <ul
+          aria-label="How this search was read"
+          className="flex w-full flex-wrap items-center gap-1.5"
+        >
+          {interpretation.chips.map((chip, index) => (
+            <li
+              /* Index-keyed deliberately: the list is recomputed whole on
+                 every query and never reordered, and labels genuinely
+                 repeat (`invoice invoice`). */
+              key={`${index}-${chip.label}`}
+              className={chip.kind === 'operator' ? CHIP_STATIC : CHIP_LITERAL}
+            >
+              {/* User text, reaching the DOM as a JSX text child, which
+                  React escapes — the same path `{search}` above takes. */}
+              {chip.kind === 'operator' ? chip.label : `“${chip.label}”`}
+            </li>
+          ))}
+          {interpretation.overflow > 0 ? (
+            <li className={CHIP_LITERAL}>+{interpretation.overflow} more</li>
+          ) : null}
+        </ul>
+      ) : null}
     </div>
   );
 

@@ -1,6 +1,7 @@
 /**
- * The chip recipe shared by the composer's two chip lists: recipient
- * addresses (./RecipientField.tsx) and attached files (./Compose.tsx).
+ * The chip recipe shared by the composer's two chip lists — recipient
+ * addresses (./RecipientField.tsx) and attached files (./Compose.tsx) —
+ * and by the search interpretation line (./InboxList.tsx).
  *
  * A `.ts` module of class strings rather than a component, following
  * ./listSurface.ts's precedent exactly — the chips differ in what they
@@ -45,3 +46,35 @@ export const CHIP_REMOVE =
  * light literal for a dark one to drift away from.
  */
 export const CHIP_SECONDARY = 'shrink-0 text-secondary-foreground/70';
+
+/**
+ * A READ-ONLY chip — the search interpretation line's filter pills.
+ *
+ * Same shape and the same palette as CHIP_BASE + CHIP_NEUTRAL above, with
+ * symmetric horizontal padding: `CHIP_BASE`'s `pr-0.5` exists to leave
+ * room for CHIP_REMOVE, and a chip with no remove control that keeps it
+ * reads as visually broken on the right edge.
+ */
+export const CHIP_STATIC =
+  'inline-flex max-w-full items-center rounded-md border border-border bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground';
+
+/**
+ * The same line's LITERAL terms — the part of a query that is being
+ * searched for as characters rather than applied as a filter, whether
+ * because it is an ordinary word or because it is a `before:yesterday`
+ * the grammar could not read.
+ *
+ * Deliberately NOT a pill. The whole signal that `before:yesterday` did
+ * not become a date filter is that it does not look like the chips
+ * beside it — a difference the eye reads in one pass, and the only way
+ * to say it that respects the user's standing "i dont need any liek side
+ * notes".
+ *
+ * `text-neutral-700 dark:text-muted-foreground` rather than the token
+ * alone, matching the search banner this sits under: that exact pairing
+ * was chosen by measuring rendered pixels against this surface, and
+ * `text-muted-foreground` on its own falls under WCAG AA in the light
+ * scheme here.
+ */
+export const CHIP_LITERAL =
+  'inline-flex max-w-full items-center px-1 py-0.5 text-xs text-neutral-700 dark:text-muted-foreground';

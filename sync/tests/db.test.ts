@@ -893,11 +893,6 @@ maybe('db', () => {
           to: [], cc: [], date: DAY('2025-06-01'),
           flags: ['\\Seen', '\\Flagged'], hasAttach: false, size: 512 * 1024, snippet: 'paid',
         },
-        {
-          uid: 9003, subject: null, fromName: null, fromEmail: null,
-          to: null, cc: null, date: DAY('2026-03-03'),
-          flags: null, hasAttach: false, size: null, snippet: null,
-        },
       ] as const;
 
       for (const row of rows) {
@@ -905,11 +900,28 @@ maybe('db', () => {
           accountId: 'test-ops', uid: row.uid, folder: 'INBOX',
           messageId: `<o${row.uid}@x>`, threadId: `ops-${row.uid}`,
           subject: row.subject, fromName: row.fromName, fromEmail: row.fromEmail,
-          toEmails: row.to as string[] | null, ccEmails: row.cc as string[] | null,
-          date: row.date, snippet: row.snippet, flags: row.flags as string[] | null,
+          toEmails: row.to, ccEmails: row.cc,
+          date: row.date, snippet: row.snippet, flags: row.flags,
           labels: [], hasAttach: row.hasAttach, sizeBytes: row.size,
         });
       }
+
+      // uid 9003 — THE NULL-EVERYTHING ROW, and it goes in as raw SQL
+      // because upsertMessage cannot express it: `MessageInput` types
+      // `flags`/`toEmails` as non-nullable arrays, so the only rows in
+      // this database with NULL there are ones the current write path did
+      // not produce. That is exactly the population these clauses have to
+      // be right about — a mailbox synced before a column existed — so the
+      // fixture has to reach past the writer to create one.
+      await db.query(
+        `insert into messages
+           (account_id, uid, folder, message_id, thread_id, subject, from_name, from_email,
+            to_emails, cc_emails, date, snippet, flags, labels, has_attach, size_bytes)
+         values ($1, $2, 'INBOX', '<o9003@x>', 'ops-9003', null, null, null,
+            null, null, $3::timestamptz, null, null, null, false, null)
+         on conflict (account_id, folder, uid) do nothing`,
+        ['test-ops', 9003, DAY('2026-03-03').toISOString()],
+      );
     });
 
     afterAll(async () => {
