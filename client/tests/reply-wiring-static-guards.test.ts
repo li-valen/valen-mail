@@ -243,3 +243,49 @@ describe('the pure module stays pure', () => {
     expect('document.querySelector("a")').toMatch(/\bdocument\.|\bwindow\./);
   });
 });
+
+
+describe('replying to the message you are reading happens in place', () => {
+  const APP_SRC = stripComments(appSource);
+  const READER = stripComments(messageViewSource);
+
+  it('does not swap the conversation out for a blank form', () => {
+    // "Inline would be great." A reply is written while re-reading what it
+    // answers; replacing the thread with a form is what makes people open a
+    // second window. Gmail puts the composer at the foot of the thread.
+    expect(APP_SRC).toMatch(/if \(isReadingThisMessage\) return;/);
+    expect(APP_SRC).toMatch(/messageKey\(selected\) === messageKey\(message\)/);
+    expect(READER).toContain('{replyComposer}');
+  });
+
+  it('builds ONE composer element and places it twice', () => {
+    // Two <Compose> call sites with their own props is exactly how the
+    // inline one would come to disagree with the full-page one about which
+    // handlers it calls — which send path, which dirty guard.
+    expect((APP_SRC.match(/<Compose\b/g) ?? []).length).toBe(1);
+    expect(APP_SRC).toMatch(/const inlineComposer =\s*\n?\s*replySource !== null && view !== 'compose' \? composer : null;/);
+  });
+
+  it('closing an inline reply does not navigate the reader away', () => {
+    // An inline reply never changed `view`, so restoring viewBeforeCompose
+    // would jump to wherever the last FULL composer was opened from — a
+    // stale value, and a move the user never asked for.
+    expect(APP_SRC).toMatch(/setView\(\(current\) => \(current === 'compose' \? viewBeforeComposeRef\.current : current\)\);/);
+  });
+
+  it('withdraws the reply actions while the composer is open', () => {
+    // Found by looking at it, not by measuring: the sticky mobile bar is
+    // pinned to the bottom edge, so with the composer open it sat directly
+    // over the composer's own Send. "Reply" offering to start the reply
+    // that is already open and half-written is a control with nothing to
+    // do; the one covering Send is actively harmful.
+    const gated = READER.match(/onReply !== undefined && replyComposer === null &&/g) ?? [];
+    expect(gated.length).toBe(2); // the desktop placement and the sticky one
+  });
+
+  it('replying from the LIST still takes over the column', () => {
+    // There is no conversation on screen to preserve, so there is nothing
+    // the inline placement would buy.
+    expect(APP_SRC).toMatch(/if \(view !== 'compose'\) viewBeforeComposeRef\.current = view;\s*\n\s*setView\('compose'\);/);
+  });
+});

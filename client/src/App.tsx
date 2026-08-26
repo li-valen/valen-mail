@@ -751,7 +751,11 @@ export default function App() {
   const closeCompose = useCallback(() => {
     isComposeDirtyRef.current = false;
     setReplySource(null);
-    setView(viewBeforeComposeRef.current);
+    // Only the compose VIEW has a view to restore. An inline reply never
+    // changed `view`, so restoring `viewBeforeComposeRef` here would
+    // navigate the reader away to wherever the last full composer was
+    // opened from — a stale value, and a jump the user did not ask for.
+    setView((current) => (current === 'compose' ? viewBeforeComposeRef.current : current));
     composeTriggerRef.current?.focus();
   }, []);
 
@@ -1157,6 +1161,9 @@ export default function App() {
     (message: InboxMessage, mode: ReplyMode) => {
       if (!canLeaveCompose()) return;
 
+      const isReadingThisMessage =
+        selected !== null && messageKey(selected) === messageKey(message);
+
       const token = replyAttemptRef.current + 1;
       replyAttemptRef.current = token;
       setReplyError(null);
@@ -1172,6 +1179,21 @@ export default function App() {
         // updater: React may invoke an updater twice under StrictMode, and
         // writing a ref from one is a side effect in a function that must
         // not have any.
+        // REPLYING TO THE MESSAGE YOU ARE READING HAPPENS IN PLACE.
+        // Gmail puts the composer at the foot of the conversation rather
+        // than replacing it, and the reason is not cosmetic: a reply is
+        // written while re-reading what it answers, and swapping the thread
+        // out for a blank form is what makes people open a second window.
+        //
+        // Everything else about the composer is unchanged — same component,
+        // same ReplySource, same send path, same dirty tracking. Only where
+        // it renders moves, which is why `r`/`a`/`f`, the guard against
+        // leaving a dirty draft, and the sent confirmation all keep working
+        // without knowing this happened.
+        //
+        // Replying from the LIST still takes over the column: there is no
+        // conversation on screen to keep, so there is nothing to preserve.
+        if (isReadingThisMessage) return;
         if (view !== 'compose') viewBeforeComposeRef.current = view;
         setView('compose');
       };
@@ -1189,7 +1211,9 @@ export default function App() {
         );
       });
     },
-    [canLeaveCompose, view],
+    // `selected` joins the deps because whether a reply opens in place or
+    // takes over the column now depends on what the reader is showing.
+    [canLeaveCompose, view, selected],
   );
 
   /** `r`/`a`/`f`: the same "which message is in hand" rule `s` uses, and
@@ -1330,6 +1354,31 @@ export default function App() {
   if (gate.status === 'login') {
     return <LoginView onSubmit={signIn} />;
   }
+
+  /**
+   * THE COMPOSER, BUILT ONCE AND PLACED TWICE.
+   *
+   * Keyed on the message being answered so switching from a reply to a
+   * forward — or replying to a different message without closing in
+   * between — REMOUNTS rather than leaving the previous draft's recipients
+   * in place. The seeding effect in Compose.tsx runs once per mount by
+   * design.
+   *
+   * `inlineComposer` is the same element at the foot of the conversation
+   * the user is reading. One element, two placements: a second `<Compose>`
+   * with its own props is exactly how the two would come to disagree about
+   * which handlers they call.
+   */
+  const composer = (
+    <Compose
+      key={replyKey(replySource)}
+      reply={replySource ?? undefined}
+      onClose={closeCompose}
+      onSent={handleSent}
+      onDirtyChange={handleComposeDirtyChange}
+    />
+  );
+  const inlineComposer = replySource !== null && view !== 'compose' ? composer : null;
 
   return (
     <AppShell
@@ -1553,18 +1602,11 @@ export default function App() {
           // reason MessageView does: writing a message is the whole task
           // while it is open. See Compose.tsx's header for why this is a
           // view and not a dialog.
-          <Compose
-            /* Keyed on the message being answered so switching from a
-               reply to a forward — or replying to a different message
-               without closing in between — REMOUNTS rather than leaving
-               the previous draft's recipients in place. The seeding
-               effect in Compose.tsx runs once per mount by design. */
-            key={replyKey(replySource)}
-            reply={replySource ?? undefined}
-            onClose={closeCompose}
-            onSent={handleSent}
-            onDirtyChange={handleComposeDirtyChange}
-          />
+          //
+          // A reply to the message being READ does not come through here —
+          // it renders at the foot of that conversation instead. Same
+          // element, built once below, so the two placements cannot drift.
+          composer
         ) : view === 'inbox' ? (
           // The list state is two columns at desktop (the shell's own
           // `lg:` breakpoint): the message list (flex, shrinks first)
@@ -1644,6 +1686,7 @@ export default function App() {
                 isStarred={resolveStar(selected, starOverrides, messageKey(selected))}
                 onToggleStar={toggleStar}
                 onReply={replyToSelected}
+                replyComposer={inlineComposer}
                 /* ABSENT, not disabled, for a message the actions do not
                    apply to — a Starred row that lives in Sent or Spam.
                    A control that is visible and refuses is a worse answer
@@ -1679,6 +1722,7 @@ export default function App() {
                 isStarred={resolveStar(selected, starOverrides, messageKey(selected))}
                 onToggleStar={toggleStar}
                 onReply={replyToSelected}
+                replyComposer={inlineComposer}
                 /* NEVER here. The follow-up queue is built out of SENT
                    mail, and on Gmail archiving a sent message removes the
                    Sent label — it would delete a row out of the very

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Ref } from 'react';
+import type { ReactNode, Ref } from 'react';
 import { ArrowLeft, Forward, Reply, ReplyAll } from 'lucide-react';
 import { getThread } from '../api';
 import type { InboxMessage } from '../api';
@@ -231,6 +231,20 @@ export interface MessageViewProps {
    * to ship — a label that is wrong is a label the reader stops trusting.
    */
   readonly backLabel?: string;
+  /**
+   * The reply composer, at the foot of the conversation — Gmail's shape,
+   * and the user's ask: *"Inline would be great."*
+   *
+   * Passed in as an element rather than built here, because App.tsx already
+   * owns the reply source, the send handler and the dirty-draft guard, and
+   * because the SAME element is what the full-page composer renders. Two
+   * `<Compose>` call sites with their own props is exactly how the inline
+   * one would come to disagree with the other about which handlers it
+   * calls.
+   *
+   * `null` when nothing is being replied to, which is most of the time.
+   */
+  readonly replyComposer?: ReactNode;
   /** Whether this message is starred, already resolved through App.tsx's
    *  optimistic overrides (../components/messageFlags.ts's
    *  `resolveStar`) — so a star set one keystroke ago draws the same as
@@ -272,6 +286,7 @@ export default function MessageView({
   isStarred = false,
   onToggleStar,
   onReply,
+  replyComposer = null,
   onMailboxMove,
 }: MessageViewProps) {
   const accountId = message.account_id;
@@ -425,8 +440,13 @@ export default function MessageView({
       <MessageHeader message={message} headingRef={headingRef} />
 
       {/* DESKTOP: where it has always been, above the body. A 900px-tall
-          window does not need its actions welded to an edge. */}
-      {onReply !== undefined && (
+          window does not need its actions welded to an edge.
+
+          GONE WHILE THE COMPOSER IS OPEN. "Reply" offering to start the
+          reply that is already open and half-written is a control with
+          nothing to do; the sticky mobile copy below was worse than
+          useless, because it is pinned over the composer's own Send. */}
+      {onReply !== undefined && replyComposer === null && (
         <ReplyActions
           onReply={onReply}
           isReady={load.status === 'ready'}
@@ -459,11 +479,17 @@ export default function MessageView({
           );
         })}
       </div>
+      {/* THE REPLY, UNDER WHAT IT ANSWERS. Last in the conversation and
+          in the same column, so the thread stays on screen while it is
+          written — which is the whole reason for putting it here rather
+          than swapping the reader out for a blank form. */}
+      {replyComposer}
+
       {/* PHONE: the same component, stuck to the bottom of the scrollport.
           Last in the panel because a sticky box keeps its space in the
           flow — placed above the body it would still cost the room at the
           top that this change exists to give back. */}
-      {onReply !== undefined && (
+      {onReply !== undefined && replyComposer === null && (
         <ReplyActions
           onReply={onReply}
           isReady={load.status === 'ready'}
