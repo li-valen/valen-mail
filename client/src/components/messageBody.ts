@@ -22,18 +22,41 @@ import type { MessageAttachment, ParsedMessage } from '../api';
  * `sandbox=` in client/src/**\/*.tsx is this identifier and nothing else,
  * so a second, laxer iframe cannot appear without failing the suite.
  *
- * WHAT IS ABSENT IS THE POINT.
+ * WHAT IS ABSENT IS THE POINT — AND IT IS ONE ATTRIBUTE, NOT TWO.
  *
  *  - **No `allow-scripts`.** Nothing in a message body ever executes: no
- *    `<script>`, no `onclick=`, no `javascript:` href. This is the whole
- *    boundary, and it holds against html nobody inspected, which is why
- *    it is worth more than any sanitiser's blocklist.
- *  - **No `allow-same-origin`.** The frame gets an opaque origin, so even
- *    if script somehow ran it could not reach this document, its cookies,
- *    or the session. The pairing `allow-scripts allow-same-origin` is the
- *    well-known way to accidentally remove the sandbox entirely; neither
- *    half is present here, and adding EITHER changes what this attribute
- *    means.
+ *    `<script>`, no `onclick=`, no `javascript:` href, no `onerror=` on a
+ *    deliberately broken image. This is the whole boundary, and it holds
+ *    against html nobody inspected, which is why it is worth more than any
+ *    sanitiser's blocklist.
+ *  - **`allow-same-origin` IS present, and it never was the boundary.**
+ *    This comment used to claim it was absent and that "adding EITHER
+ *    changes what this attribute means". The second half of that was
+ *    wrong, and the error was not free: believing the frame could not be
+ *    reached is what put a GUESSED height on it, and a guessed height is
+ *    what made the message scroll inside the page — the second scrollbar
+ *    the user could point at in a screenshot.
+ *
+ *    Measured rather than reasoned about, with the CSP DELIBERATELY
+ *    REMOVED so the sandbox stood on its own: a frame carrying both an
+ *    inline `<script>` and an `onerror` handler executed NEITHER, while an
+ *    otherwise identical control frame that added `allow-scripts` ran the
+ *    handler immediately. The control is what makes the other rows
+ *    evidence instead of an untested instrument. An origin is reachable
+ *    only by code, and no code runs here.
+ *
+ *    What it buys: `contentDocument` is readable, so MessageView.tsx sizes
+ *    the frame to the message instead of estimating it.
+ *
+ *    **THE DANGEROUS PAIRING IS NOW ONE EDIT AWAY RATHER THAN TWO, AND
+ *    THAT IS THE REAL COST OF THIS CHANGE.** `allow-scripts
+ *    allow-same-origin` is the well-known way to remove a sandbox
+ *    altogether: a frame holding both can reach into this document and can
+ *    rewrite its own `sandbox` attribute. One half of that pair is now
+ *    standing here permanently. `allow-scripts` must never join it, and
+ *    tests/message-body.test.ts asserts its absence on its own — separately
+ *    from the exact-string check, and named for this reason — so that the
+ *    test a careless edit breaks explains why it broke.
  *  - **No `allow-forms`, `allow-modals`, `allow-top-navigation`,
  *    `allow-downloads`.** A message cannot post a form, block the UI, or
  *    navigate the app out from under the reader.
@@ -46,7 +69,8 @@ import type { MessageAttachment, ParsedMessage } from '../api';
  * site. Without the pair, every link in every email is silently dead —
  * which is not a safer reader, just a broken one.
  */
-export const IFRAME_SANDBOX = 'allow-popups allow-popups-to-escape-sandbox';
+export const IFRAME_SANDBOX =
+  'allow-same-origin allow-popups allow-popups-to-escape-sandbox';
 
 /**
  * The `Content-Security-Policy` enforced INSIDE the srcdoc.
@@ -175,6 +199,23 @@ const BODY_STYLE = [
   'table{max-width:100%}',
   'pre{white-space:pre-wrap;overflow-wrap:anywhere}',
   'body>table{display:block;max-width:100%;overflow-x:auto}',
+  // NOT STYLING — THIS CUTS A FEEDBACK LOOP, and it is the only `!important`
+  // in this stylesheet for that reason.
+  //
+  // MessageView.tsx sizes the frame from the body's measured height, and a
+  // ResizeObserver on that body re-measures whenever it changes. A message
+  // that sets `body{height:100%}` (or `min-height:100%`) resolves that
+  // percentage against the VIEWPORT — which is the frame we are sizing. Body
+  // then grows to the frame, plus its own 32px of padding; we resize the
+  // frame to match; body grows by another 32px. The frame walks down the page
+  // 32px at a time and never settles.
+  //
+  // Damping the observer would only slow that down. Making the body's height
+  // content-driven removes the path entirely, which is why this is expressed
+  // as a rule the message cannot lose an unimportant declaration to. Real
+  // mail loses nothing: a full-viewport body exists to stretch a background
+  // colour down a window, and an auto-sized frame has no window to stretch.
+  'html,body{height:auto!important;min-height:0!important}',
 ].join('');
 
 /** Which ground the message is rendered on. */
@@ -385,141 +426,93 @@ export function srcDocFor(
 }
 
 /**
- * THE BODY FRAME'S HEIGHT, ESTIMATED FROM THE MESSAGE ITSELF.
+ * THE BODY FRAME'S HEIGHT, MEASURED FROM THE MESSAGE ITSELF.
  *
- * **WHY AN ESTIMATE AND NOT A MEASUREMENT.** A sandboxed iframe that
- * omits `allow-same-origin` has an opaque origin: from the parent,
- * `iframe.contentDocument` is `null` and `iframe.contentWindow.document`
- * throws `SecurityError`. Verified against the running app, not assumed.
- * The `postMessage` workaround needs `allow-scripts` inside the frame.
- * Both attributes are the XSS boundary (see `IFRAME_SANDBOX`) and neither
- * is on the table, so the frame's height has to be decided from the
- * OUTSIDE, from the one thing the parent does hold: the html string.
+ * **THIS REPLACES AN ESTIMATE, AND THE ESTIMATE WAS A BUG WITH A TIDY
+ * EXPLANATION.** What stood here counted characters (0.7px each), images
+ * (90px) and table rows (16px) out of the html string and clamped the
+ * total to [240, 2200]px, because the comment above `IFRAME_SANDBOX` said
+ * the frame could not be measured. It can. The consequences of guessing
+ * were both visible to the user and pointed at directly: guess low, or hit
+ * the 2200px clamp that ~30% of real mail exceeds, and the frame scrolls
+ * INSIDE the page — *"There shouldnt be two scroll bars"*. Guess high and
+ * the message is followed by white space. There is no cap here now: a tall
+ * message simply makes a tall page, which is the entire request — *"It
+ * should all be one ... just one thing i can scroll through."*
  *
- * **WHY NOT JUST ONE GENEROUS FIXED HEIGHT.** That was the first answer,
- * and looking at it in the browser killed it. Every html message in this
- * user's inbox was rendered at a 341px width and measured: heights run
- * from 40px to 8762px — a 200x spread. At the tall end of that spread a
- * fixed frame still scrolls internally; at the short end it is far worse,
- * because a Gmail reply whose entire body is `<div><br></div>` was
- * rendering as **1786px of blank white** — roughly two phone screens of
- * nothing between the message and its attachments. That is not a
- * tradeoff, it is a bug with a tidy explanation.
+ * **WHY THE BODY AND NOT `documentElement.scrollHeight`.** The obvious
+ * measurement is the wrong one, and it fails in the direction that cannot
+ * be seen in a test. `documentElement.scrollHeight` is floored at the
+ * VIEWPORT, so it reports the frame's own height whenever the frame is
+ * taller than its content: measured, a 3000px frame holding 1535px of
+ * message reported **3000**. Sizing from that is a ratchet — the frame can
+ * grow and can never shrink, so one over-tall render is permanent and the
+ * white space it leaves is unremovable. The body box is content-driven and
+ * does not observe the viewport at all; the same message measured
+ * **1535.125** through it, at the same instant.
  *
- * **THE SHAPE OF THE ANSWER.** A cheap structural estimate, CLAMPED at
- * both ends. It is deliberately biased to over-estimate, because the two
- * failure directions are not symmetric:
+ * **AND WHY `Math.ceil`, WHICH IS NOT FUSSINESS.** That 1535.125 is real:
+ * body boxes land on subpixels. `body.scrollHeight` had already rounded it
+ * DOWN to 1535, and a frame one eighth of a pixel short of its content is a
+ * frame with a scrollbar — the precise bug being fixed, reintroduced by a
+ * rounding mode. Ceiling to 1536 measured `scrollHeight > clientHeight` as
+ * false, with no `overflow:hidden` needed anywhere.
  *
- *  - Over-estimate → white space below the message. Ugly, bounded by
- *    `MAX_BODY_HEIGHT_PX`.
- *  - Under-estimate → the frame scrolls internally, which is exactly the
- *    behaviour this whole change replaces. Bad, but never WORSE than what
- *    shipped before, so the safety valve is the old bug and not a new one.
+ * `scrollHeight` is still consulted alongside the box, as the larger of the
+ * two: it is what catches a child that overflows the body's border box, an
+ * absolutely-positioned footer being the common case in marketing mail.
  *
- * **THE CONSTANTS ARE MEASURED, NOT INVENTED.** Each was checked against
- * the rendered heights above, at a 341px frame — `REFERENCE_FRAME_WIDTH_PX`.
- *
- * **AND THE WIDTH MATTERS, WHICH IS WHY IT IS A PARAMETER.** The same mail
- * measured at a 960px frame (the desktop reader column) renders 25–50%
- * shorter, because prose reflows into fewer lines. A phone-tuned constant
- * applied at desktop width put ~1000px of white under a 1025px message —
- * the same bug this function exists to kill, just at the other breakpoint.
- * Only the TEXT term is scaled: prose reflows with the column, whereas an
- * image bounded by `img{max-width:…}` and a table row do not shrink in any
- * way worth modelling. The frame's own width is something the parent may
- * read freely — it is our element, not the sandboxed document inside it.
+ * Pure and framework-free, and typed against the structural shape it
+ * actually needs rather than `Document`, so the suite can hand it a plain
+ * object — client/CLAUDE.md's standing constraint is that no test here
+ * renders a component, and a real layout is not available to one anyway.
  */
 
-/** The body's own 32px of padding plus a first/last block margin, and the
- *  floor under a message that is structurally empty but not textually so. */
-const BASE_BODY_HEIGHT_PX = 160;
-
-/** Roughly 45 characters fit a 22px line at a phone-width column, so a
- *  character costs ~0.5px of column height; real mail adds block margins
- *  between paragraphs, and the measured figure lands near 0.7. */
-const PX_PER_TEXT_CHAR = 0.7;
-
-/** A typical email image once `img{max-width:…}` has bounded it. */
-const PX_PER_IMAGE = 90;
-
-/** One row of the table layout email HTML is still built out of. */
-const PX_PER_TABLE_ROW = 16;
-
-/** The frame width the constants above were measured at: a 375px phone
- *  minus the reader column's gutters. The text term is scaled by
- *  `REFERENCE_FRAME_WIDTH_PX / actualWidth`, so this is the width at which
- *  that scaling is a no-op. */
-const REFERENCE_FRAME_WIDTH_PX = 341;
-
-/** Never shorter than this: a one-line message still wants to look like a
- *  sheet rather than a strip, and the estimate is least reliable here. */
-const MIN_BODY_HEIGHT_PX = 240;
-
-/** Never taller than this. Past ~2200px the estimate has stopped being
- *  informative and the frame is simply a long one; the remaining ~30% of
- *  mail scrolls internally from here, which is the documented last
- *  resort. */
-const MAX_BODY_HEIGHT_PX = 2200;
-
-/** Tags whose content never contributes rendered text. Stripped before
- *  counting so a 40KB `<style>` block does not read as 40KB of prose. */
-const NON_RENDERING_TAGS = /<(script|style|head|title)[\s\S]*?<\/\1>/gi;
-
-/** Counts non-overlapping matches without allocating the match array. */
-function countMatches(html: string, pattern: RegExp): number {
-  let count = 0;
-  // `pattern` carries /g, so `exec` walks it; a fresh lastIndex keeps this
-  // function pure with respect to a shared literal.
-  pattern.lastIndex = 0;
-  while (pattern.exec(html) !== null) count += 1;
-  pattern.lastIndex = 0;
-  return count;
+/** What a measurement needs from a document: a body that can report its
+ *  own box. `Document` satisfies this structurally. */
+export interface MeasurableBody {
+  readonly scrollHeight: number;
+  getBoundingClientRect(): { readonly height: number };
 }
 
-const IMG_TAG = /<img\b/gi;
-const ROW_TAG = /<tr\b/gi;
+/** @see MeasurableBody */
+export interface MeasurableDocument {
+  readonly body: MeasurableBody | null;
+}
 
 /**
- * The height, in CSS pixels, to give the body iframe for this message.
+ * The height to give the frame when the message has NOT been measured —
+ * either the document has not finished loading, or it could not be reached
+ * at all.
  *
- * Pure and framework-free so the suite can actually assert on it —
- * client/CLAUDE.md's standing constraint is that no test here renders a
- * component, which is precisely why the reader's one piece of arithmetic
- * lives in this file rather than inside MessageView.tsx.
+ * It is deliberately generous, and it is paired with a frame that is still
+ * internally scrollable (nothing sets `overflow:hidden` inside the
+ * document). That pairing is the whole safety property: an unmeasurable
+ * message is rendered the way it was rendered before this change — tall,
+ * and scrollable if the guess falls short — rather than CLIPPED to a
+ * height nobody could verify. The failure mode is the old bug, never an
+ * unreadable message.
  */
-export function estimatedBodyHeightPx(html: string, frameWidthPx: number): number {
-  // A zero or nonsense width (an unmounted frame, a display:none column)
-  // falls back to the reference rather than dividing by it — the estimate
-  // is then simply the phone-width one, which is the safe direction.
-  const width = Number.isFinite(frameWidthPx) && frameWidthPx > 0
-    ? frameWidthPx
-    : REFERENCE_FRAME_WIDTH_PX;
-  const rendering = html.replace(NON_RENDERING_TAGS, ' ');
-  // Tag-stripping rather than parsing: this only needs an order of
-  // magnitude, and DOMParser on attacker HTML for a layout hint would be
-  // a parser this feature does not otherwise need.
-  const textLength = rendering
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/&[a-z#0-9]+;/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim().length;
+export const FALLBACK_BODY_HEIGHT_PX = 1200;
 
-  const estimate =
-    BASE_BODY_HEIGHT_PX +
-    (textLength * PX_PER_TEXT_CHAR * REFERENCE_FRAME_WIDTH_PX) / width +
-    countMatches(rendering, IMG_TAG) * PX_PER_IMAGE +
-    countMatches(rendering, ROW_TAG) * PX_PER_TABLE_ROW;
+export function measuredBodyHeightPx(
+  frameDocument: MeasurableDocument | null | undefined,
+): number | null {
+  const body = frameDocument?.body;
+  if (body === null || body === undefined) return null;
 
-  return Math.round(Math.min(MAX_BODY_HEIGHT_PX, Math.max(MIN_BODY_HEIGHT_PX, estimate)));
+  const boxHeight = body.getBoundingClientRect().height;
+  const overflowHeight = body.scrollHeight;
+  const tallest = Math.max(
+    Number.isFinite(boxHeight) ? boxHeight : 0,
+    Number.isFinite(overflowHeight) ? overflowHeight : 0,
+  );
+
+  // Zero is what an unlaid-out or display:none document reports. It is
+  // indistinguishable from a real answer once returned, so it is refused
+  // here and the caller falls back rather than collapsing the frame.
+  return tallest > 0 ? Math.ceil(tallest) : null;
 }
-
-/** The bounds `estimatedBodyHeightPx` clamps to, exported so the guard
- *  test asserts the shipped numbers rather than a copy of them. */
-export const BODY_HEIGHT_BOUNDS_PX = {
-  min: MIN_BODY_HEIGHT_PX,
-  max: MAX_BODY_HEIGHT_PX,
-  referenceWidth: REFERENCE_FRAME_WIDTH_PX,
-} as const;
 
 /** Which of the three body surfaces the reader should render. */
 export type BodyKind = 'html' | 'text' | 'empty';

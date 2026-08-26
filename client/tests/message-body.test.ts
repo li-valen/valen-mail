@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
-  BODY_HEIGHT_BOUNDS_PX,
   DEFAULT_DARK_GROUND,
+  FALLBACK_BODY_HEIGHT_PX,
   IFRAME_SANDBOX,
   attachmentUrl,
   bodyKind,
   contentSecurityPolicyFor,
-  estimatedBodyHeightPx,
   formatSize,
   isDownloadable,
+  measuredBodyHeightPx,
   messageKey,
   safeGroundColor,
   srcDocFor,
@@ -193,13 +193,22 @@ describe('srcDocFor — the stylesheet that keeps a message inside its frame', (
     expect(style()).toMatch(/body>table\{[^}]*display:block/);
   });
 
+  it('pins html and body to an automatic height, so a message cannot walk the frame down the page', () => {
+    // Not styling. The frame is sized from the body's measured height, so a
+    // message setting `body{height:100%}` would resolve that against the
+    // frame we are sizing, grow by its own padding, and repeat — forever.
+    // `!important` is what stops the message's own stylesheet winning.
+    expect(style()).toMatch(/html,body\{height:auto!important;min-height:0!important\}/);
+  });
+
   it('leaves the sandbox and the policy untouched — this was a layout fix', () => {
     // The pan was fixed inside the srcdoc's own stylesheet. Nothing about
     // it needed, or got, a loosened frame.
     const doc = srcDocFor('<p>x</p>');
     expect(doc).not.toContain('allow-scripts');
-    expect(doc).not.toContain('allow-same-origin');
-    expect(IFRAME_SANDBOX).toBe('allow-popups allow-popups-to-escape-sandbox');
+    expect(IFRAME_SANDBOX).toBe(
+      'allow-same-origin allow-popups allow-popups-to-escape-sandbox',
+    );
   });
 });
 
@@ -226,9 +235,14 @@ describe('contentSecurityPolicyFor', () => {
  * appears somewhere with its own, laxer attribute — which is exactly how
  * a boundary like this erodes in practice. So this scans the real source
  * tree: every `sandbox=` in client/src must be the shared constant, and
- * the constant must not contain `allow-scripts` (nor `allow-same-origin`,
- * whose pairing with it is the documented way to remove a sandbox
- * entirely).
+ * the constant must never contain `allow-scripts`.
+ *
+ * That second check got MORE important, not less, when `allow-same-origin`
+ * was added to the constant so the frame could be measured. The two
+ * together are the documented way to remove a sandbox entirely — a frame
+ * holding both can reach into this document and rewrite its own `sandbox`
+ * attribute — and one half is now permanently present. What used to need
+ * two mistakes now needs one.
  */
 const sources = import.meta.glob('../src/**/*.{ts,tsx}', {
   eager: true,
@@ -253,16 +267,27 @@ function sandboxAttributes(source: string): readonly string[] {
 }
 
 describe('the iframe sandbox, as actually emitted by client/src', () => {
-  it('omits allow-scripts — nothing in a message body ever executes', () => {
+  it('omits allow-scripts — the half whose absence is the entire XSS boundary', () => {
+    // Verified in a real browser across all four combinations before
+    // `allow-same-origin` was added: with the CSP deliberately removed so
+    // the sandbox stood alone, a frame carrying both an inline <script> and
+    // an onerror handler ran NEITHER, while the same frame plus
+    // `allow-scripts` ran the handler immediately. Execution is the only
+    // thing that can use an origin, so this is the assertion that matters.
     expect(IFRAME_SANDBOX).not.toContain('allow-scripts');
   });
 
-  it('omits allow-same-origin — the frame cannot reach this document or its session', () => {
-    expect(IFRAME_SANDBOX).not.toContain('allow-same-origin');
+  it('carries allow-same-origin, which is what lets the frame be measured', () => {
+    // Not a relaxation of the line above — an independent attribute. Its
+    // presence is why MessageView.tsx can size the frame to the message
+    // instead of estimating it, which is what removed the second scrollbar.
+    expect(IFRAME_SANDBOX).toContain('allow-same-origin');
   });
 
-  it('is exactly the pair that keeps ordinary links working, and nothing more', () => {
-    expect(IFRAME_SANDBOX).toBe('allow-popups allow-popups-to-escape-sandbox');
+  it('is exactly the three tokens it needs, and nothing more', () => {
+    expect(IFRAME_SANDBOX).toBe(
+      'allow-same-origin allow-popups allow-popups-to-escape-sandbox',
+    );
   });
 
   it('finds at least one real sandbox attribute to check (the guard is not vacuous)', () => {
@@ -300,104 +325,52 @@ describe('the iframe sandbox, as actually emitted by client/src', () => {
  * bias, and the one case that made this function necessary — a body that
  * is structurally present and visually empty.
  */
-describe('estimatedBodyHeightPx — how tall the sandboxed body frame gets', () => {
-  const { min, max, referenceWidth } = BODY_HEIGHT_BOUNDS_PX;
-
-  /** At the reference width the text term scales by 1, so these read as
-   *  the phone-width estimate the constants were measured against. */
-  const heightOf = (html: string, width: number = referenceWidth): number =>
-    estimatedBodyHeightPx(html, width);
-
-  it('gives an empty Gmail body a short frame, not two screens of white', () => {
-    // THE CASE THIS FUNCTION EXISTS FOR. One generous fixed height was
-    // tried first, and this real message — the entire body of a "Pitch
-    // Deck" mail whose content is its attachment — rendered as ~1786px of
-    // blank white above its own attachment list.
-    const empty = '<div dir="ltr"><div class="gmail_default"><br></div></div>';
-    expect(heightOf(empty)).toBe(min);
-    expect(heightOf('')).toBe(min);
+describe('measuredBodyHeightPx — how tall the sandboxed body frame gets', () => {
+  /** The structural shape a real `Document` presents to the measurement.
+   *  A literal, because jsdom performs no layout and would report every
+   *  box as zero — the arithmetic is what is under test here, and the
+   *  browser verification of the real numbers is in the task report. */
+  const documentWhoseBody = (rectHeight: number, scrollHeight: number) => ({
+    body: { scrollHeight, getBoundingClientRect: () => ({ height: rectHeight }) },
   });
 
-  it('keeps a two-line reply near the floor rather than near the ceiling', () => {
-    const reply = '<p>Sounds good — merged and deployed. Thanks for the review!</p>';
-    expect(heightOf(reply)).toBeLessThan(600);
+  it('returns null when the document cannot be reached at all', () => {
+    expect(measuredBodyHeightPx(null)).toBeNull();
+    expect(measuredBodyHeightPx(undefined)).toBeNull();
   });
 
-  it('takes a long marketing mail to the ceiling', () => {
-    const long = '<tr><td>' + 'Summer savings, ends tonight. '.repeat(400) + '</td></tr>';
-    expect(heightOf(long)).toBe(max);
+  it('returns null when the document has loaded no body yet', () => {
+    expect(measuredBodyHeightPx({ body: null })).toBeNull();
   });
 
-  it('never escapes its bounds, whatever it is handed', () => {
-    for (const html of ['', '<br>', '<img>'.repeat(500), 'x'.repeat(200_000)]) {
-      const height = heightOf(html);
-      expect(height).toBeGreaterThanOrEqual(min);
-      expect(height).toBeLessThanOrEqual(max);
-    }
+  it('rounds a subpixel body UP, so the frame is never a fraction short of its content', () => {
+    // 1535.125 is a real measurement from a real frame. `body.scrollHeight`
+    // had already floored it to 1535, and a frame one eighth of a pixel
+    // short of its content is a frame with a scrollbar — the exact defect
+    // this whole change exists to remove.
+    expect(measuredBodyHeightPx(documentWhoseBody(1535.125, 1535))).toBe(1536);
   });
 
-  it('grows with text, with images and with table rows', () => {
-    // Monotonic in each input, which is the property that makes an
-    // over-estimate a WHITE-SPACE bug rather than a scrolling one.
-    const base = '<p>' + 'word '.repeat(120) + '</p>';
-    expect(heightOf(base + 'word '.repeat(120))).toBeGreaterThan(
-      heightOf(base),
-    );
-    expect(heightOf(base + '<img src="a.png">')).toBeGreaterThan(
-      heightOf(base),
-    );
-    expect(heightOf(base + '<tr><td>a</td></tr>')).toBeGreaterThan(
-      heightOf(base),
-    );
+  it('takes the larger of the body box and its scroll height, so overflowing children still fit', () => {
+    // An absolutely-positioned footer escapes the body's border box but
+    // still counts toward its scroll height.
+    expect(measuredBodyHeightPx(documentWhoseBody(200, 900))).toBe(900);
+    expect(measuredBodyHeightPx(documentWhoseBody(900, 200))).toBe(900);
   });
 
-  it('does not count a stylesheet or a script as prose', () => {
-    // Marketing mail routinely carries tens of KB of <style>. Counting it
-    // as text would push every such message to the ceiling and put the
-    // white space back.
-    const styled =
-      '<style>' + '.a{color:#fff;background:#000;padding:4px}'.repeat(400) + '</style><p>Hi</p>';
-    expect(heightOf(styled)).toBe(min);
+  it('refuses a zero measurement rather than collapsing the frame onto it', () => {
+    // What an unlaid-out or display:none document reports. Indistinguishable
+    // from a real answer once returned, so it is refused at the source.
+    expect(measuredBodyHeightPx(documentWhoseBody(0, 0))).toBeNull();
   });
 
-  it('is pure — the same html gives the same height every time', () => {
-    // The regexes it counts with are module-level and carry /g, so a
-    // leaked `lastIndex` would make the SECOND call on a message shorter
-    // than the first. That would show up as a frame that changes height
-    // when the reader re-renders.
-    const html = '<p>hello</p><img src="a.png"><tr><td>x</td></tr>';
-    expect(heightOf(html)).toBe(heightOf(html));
-    expect(heightOf(html)).toBe(heightOf(html));
+  it('ignores a non-finite measurement rather than writing NaN into a style attribute', () => {
+    expect(measuredBodyHeightPx(documentWhoseBody(Number.NaN, 400))).toBe(400);
+    expect(measuredBodyHeightPx(documentWhoseBody(Number.POSITIVE_INFINITY, 400))).toBe(400);
   });
 
-  it('shortens the same message in a wider column, because prose reflows', () => {
-    // The desktop half of the same bug. A phone-tuned constant applied at
-    // the 960px reader column put ~1000px of white under a 1025px message.
-    const prose = '<p>' + 'The quick brown fox jumps over the lazy dog. '.repeat(60) + '</p>';
-    expect(heightOf(prose, 960)).toBeLessThan(heightOf(prose, referenceWidth));
-  });
-
-  it('leaves images and table rows unscaled — those do not reflow with the column', () => {
-    // No text nodes at all: the text term is the only one that scales, so
-    // a stray character in a cell would make this assertion about prose.
-    const media = '<img src="a.png">'.repeat(6) + '<tr><td></td></tr>'.repeat(6);
-    expect(heightOf(media, 960)).toBe(heightOf(media, referenceWidth));
-  });
-
-  it('falls back to the reference width rather than dividing by a bad one', () => {
-    // An unmounted frame or a display:none column reports 0. Dividing by
-    // it would produce Infinity and, after the clamp, silently pin every
-    // message to the ceiling.
-    const prose = '<p>' + 'word '.repeat(80) + '</p>';
-    const expected = heightOf(prose, referenceWidth);
-    expect(heightOf(prose, 0)).toBe(expected);
-    expect(heightOf(prose, -50)).toBe(expected);
-    expect(heightOf(prose, Number.NaN)).toBe(expected);
-  });
-
-  it('returns whole pixels, and bounds that are sane relative to each other', () => {
-    expect(Number.isInteger(heightOf('<p>x</p>'))).toBe(true);
-    expect(min).toBeLessThan(max);
+  it('offers a fallback tall enough that an unmeasured message is scrollable, not clipped', () => {
+    expect(FALLBACK_BODY_HEIGHT_PX).toBeGreaterThan(600);
   });
 });
 

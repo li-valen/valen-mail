@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Ref, RefObject } from 'react';
 import { Archive, ArrowLeft, FileText, Forward, Reply, ReplyAll, Star, Trash2 } from 'lucide-react';
 import { ApiError } from '../api';
@@ -19,10 +19,10 @@ import AttachmentList from './MessageAttachments';
 import ThreadContext from './ThreadContext';
 import { formatReceived } from './inboxDates';
 import {
-  BODY_HEIGHT_BOUNDS_PX,
+  FALLBACK_BODY_HEIGHT_PX,
   IFRAME_SANDBOX,
   bodyKind,
-  estimatedBodyHeightPx,
+  measuredBodyHeightPx,
   safeGroundColor,
   srcDocFor,
 } from './messageBody';
@@ -156,9 +156,10 @@ interface BodyFrameProps {
 /**
  * The message body, and the security boundary of this whole feature.
  *
- * `sandbox={IFRAME_SANDBOX}` carries no `allow-scripts` and no
- * `allow-same-origin` — see components/messageBody.ts for the full
- * reasoning and for the guard test that keeps it that way. `srcDocFor`
+ * `sandbox={IFRAME_SANDBOX}` carries no `allow-scripts` — see
+ * components/messageBody.ts for the full reasoning, for why
+ * `allow-same-origin` beside it is not the same concession, and for the
+ * guard tests that keep both facts true. `srcDocFor`
  * puts a restrictive CSP `<meta>` inside the document, which is what
  * denies everything the message might otherwise pull in — objects,
  * frames, forms, a `<base>` of its own. The two are not belt and braces
@@ -167,31 +168,27 @@ interface BodyFrameProps {
  * directive that now permits remote hosts, by the user's decision — see
  * components/messageBody.ts.
  *
- * **THE HEIGHT IS ESTIMATED, BECAUSE THE PARENT REALLY CANNOT MEASURE IT.**
- * The obvious fix for "the frame scrolls inside the page" is to size the
- * frame to `contentDocument.documentElement.scrollHeight` on load. That
- * was tried against the running app and it is not available here: with a
- * sandbox that omits `allow-same-origin` the frame gets an opaque origin,
- * so `iframe.contentDocument` is `null` and `iframe.contentWindow.document`
- * throws `SecurityError: Blocked a frame with origin "…" from accessing a
- * cross-origin frame`. The usual `postMessage` workaround needs
- * `allow-scripts` inside the frame. Both attributes are refused — they
- * are the XSS boundary, not a styling knob, and components/messageBody.ts
- * plus its guard test exist to keep them refused. There is no third
- * channel: `window.length`, `focus` and `postMessage` are all a
- * cross-origin frame exposes, and none of them is a height.
+ * **THE HEIGHT IS MEASURED, AND THE COMMENT THAT STOOD HERE SAID IT
+ * COULD NOT BE.** What this paragraph used to argue — that an opaque
+ * origin leaves `contentDocument` null, that `postMessage` needs
+ * `allow-scripts`, that "there is no third channel" — was true about the
+ * sandbox as it was then configured and false about the conclusion drawn
+ * from it. `allow-same-origin` is not `allow-scripts`; granting the first
+ * makes the document readable without making it executable, which was
+ * verified directly against all four combinations before this changed.
+ * See `IFRAME_SANDBOX` for that evidence and for the cost it carries.
  *
- * So the height is a BOUNDED ESTIMATE, computed from the message's own
- * html by `estimatedBodyHeightPx` — see that function for the measured
- * constants, the clamp, and why it is biased to over-estimate. The short
- * version: one generous fixed height was tried first and rejected on
- * sight, because a Gmail reply whose whole body is `<div><br></div>`
- * became ~1786px of blank white. **The cost, stated plainly: the estimate
- * is an estimate. When it runs high the message is followed by white
- * space; when it runs low the frame scrolls internally, which is exactly
- * what shipped before, so the worst case is the old behaviour and not a
- * new one.** Both are worse than a frame that measured itself; neither is
- * worth `allow-scripts`.
+ * So the frame is sized to `measuredBodyHeightPx(contentDocument)` on
+ * load, and a `ResizeObserver` on the message's own `body` re-measures it
+ * whenever the content reflows — which is not a nicety: images in mail
+ * arrive after the load event, and a load-only measurement is short by
+ * exactly the height of every image on the page.
+ *
+ * The estimate this replaces, and its seven measured constants, are gone
+ * rather than kept as a fallback. A second height path is how a future
+ * edit quietly reintroduces the bug, and the honest fallback for "could
+ * not measure" is a tall, still-scrollable frame — see
+ * `FALLBACK_BODY_HEIGHT_PX`.
  *
  * **THE PHISHING BOUNDARY, AND WHERE IT WENT.** The user asked for the
  * outline borders to go, and the header's card and its hairline went with
@@ -205,47 +202,89 @@ interface BodyFrameProps {
  * buy it without a hairline; a borderless sheet flush against the header
  * would not, which is why the gap is not negotiable decoration.
  *
- * The white ground is deliberate in BOTH themes — see BODY_STYLE in
- * components/messageBody.ts for why forcing dark inside here breaks real
- * mail rather than theming it.
+ * The ground follows the theme: light mail on white, and in dark mode the
+ * message is inverted onto the app's own `--color-card` so the frame and
+ * the page cannot disagree at their seam. See BODY_STYLE and
+ * DARK_BODY_STYLE in components/messageBody.ts for why that is done by
+ * inverting the message rather than by recolouring it.
  */
 /**
- * The frame's OWN width, which the parent is free to read — it is our
- * element; the opaque origin only hides what is INSIDE it.
+ * THE FRAME'S HEIGHT, READ OUT OF THE DOCUMENT INSIDE IT.
  *
- * `useLayoutEffect` for the first read so the height is right on the
- * first paint rather than after a visible reflow, and a `ResizeObserver`
- * after it so rotating a phone or dragging a window re-estimates. Only
- * the WIDTH is read, and state is only set when it actually changes —
- * which is what keeps setting the frame's HEIGHT from feeding this
- * observer back into itself.
+ * Two triggers, because one is not enough. `load` gives the first
+ * measurement, and a `ResizeObserver` on the message's own `body` gives
+ * every one after it. The observer is the load-bearing half: mail is full
+ * of images, images finish arriving well after `load`, and each one that
+ * lands makes the message taller. A frame sized once at load is short by
+ * the height of all of them.
+ *
+ * **THE OBSERVER WATCHES THE BODY, NOT THE FRAME.** Watching our own
+ * element would be a loop — we set that element's height, so observing it
+ * would re-trigger on our own write. The body's height is content-driven
+ * and is not something this component writes; the one way a message could
+ * make it track the frame is a percentage height, which BODY_STYLE's single
+ * `!important` rule exists to prevent. Resizing the window needs no
+ * separate observer either: a narrower frame reflows the text, which
+ * changes the body, which is what is already being watched.
+ *
+ * `doc` is in the deps rather than `html` because it is `doc` that is
+ * handed to `srcDoc`: a theme change rebuilds the document and reloads the
+ * frame, and a subscription still pointing at the old document would never
+ * fire again. The previous message's height is deliberately NOT cleared
+ * while the next one loads — a `srcDoc` swap parses in a frame or two, and
+ * blanking to the fallback in between is a visible jump for no gain.
  */
-function useFrameWidth(ref: RefObject<HTMLIFrameElement | null>): number {
-  const [width, setWidth] = useState<number>(BODY_HEIGHT_BOUNDS_PX.referenceWidth);
+function useMeasuredBodyHeight(
+  ref: RefObject<HTMLIFrameElement | null>,
+  doc: string,
+): number | null {
+  const [height, setHeight] = useState<number | null>(null);
 
-  useLayoutEffect(() => {
-    const element = ref.current;
-    if (element === null) return;
+  useEffect(() => {
+    const frame = ref.current;
+    if (frame === null) return;
 
-    const read = (next: number) => {
-      if (next > 0) setWidth((current) => (Math.abs(current - next) < 1 ? current : next));
+    let observer: ResizeObserver | null = null;
+
+    const measure = () => {
+      const next = measuredBodyHeightPx(frame.contentDocument);
+      // `null` is "could not read it", never "it is zero tall". Holding the
+      // last good value is right in both the transient case (mid-reload) and
+      // the permanent one (unreadable document).
+      if (next === null) return;
+      setHeight((current) =>
+        current !== null && Math.abs(current - next) < 1 ? current : next,
+      );
     };
 
-    read(element.clientWidth);
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (entry !== undefined) read(entry.contentRect.width);
-    });
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [ref]);
+    const onLoad = () => {
+      measure();
+      const body = frame.contentDocument?.body;
+      if (body === null || body === undefined) return;
+      observer?.disconnect();
+      observer = new ResizeObserver(measure);
+      observer.observe(body);
+    };
 
-  return width;
+    frame.addEventListener('load', onLoad);
+    // A `srcDoc` document can finish parsing before this effect runs, in
+    // which case the `load` above has already fired and will not fire
+    // again. StrictMode's double-invoke makes that the common case rather
+    // than a rare one, so it is handled rather than raced.
+    if (frame.contentDocument?.readyState === 'complete') onLoad();
+
+    return () => {
+      frame.removeEventListener('load', onLoad);
+      observer?.disconnect();
+      observer = null;
+    };
+  }, [ref, doc]);
+
+  return height;
 }
 
 function BodyFrame({ html, subject }: BodyFrameProps) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
-  const width = useFrameWidth(frameRef);
   const { resolved } = useTheme();
 
   /**
@@ -266,14 +305,7 @@ function BodyFrame({ html, subject }: BodyFrameProps) {
   const [showOriginal, setShowOriginal] = useState(false);
   const isDark = resolved === 'dark' && !showOriginal;
 
-  // Memoised: the estimate walks a string that is routinely 60–90KB, and
-  // it must not be redone on every unrelated re-render of the reader.
-  // `srcDocFor` is memoised beside it for a different and sharper reason —
-  // handing React a fresh `srcDoc` string reloads the frame, so a new
-  // string on a width change would restart the message. `isDark` joins the
-  // deps for exactly that reason: toggling it MUST rebuild the document,
-  // and must not rebuild it for anything else.
-  const height = useMemo(() => estimatedBodyHeightPx(html, width), [html, width]);
+
   /**
    * THE APP'S OWN GROUND, READ FROM THE LIVE PALETTE rather than written
    * into the stylesheet as a literal.
@@ -300,10 +332,18 @@ function BodyFrame({ html, subject }: BodyFrameProps) {
       ),
     [isDark],
   );
+  /**
+   * Memoised because handing React a fresh `srcDoc` string RELOADS the
+   * frame — an unrelated re-render of the reader would otherwise restart
+   * the message from its first paint. `isDark` and `ground` belong in the
+   * deps for exactly that reason: changing the theme MUST rebuild the
+   * document, and nothing else may.
+   */
   const doc = useMemo(
     () => srcDocFor(html, isDark ? 'dark' : 'light', ground),
     [html, isDark, ground],
   );
+  const height = useMeasuredBodyHeight(frameRef, doc) ?? FALLBACK_BODY_HEIGHT_PX;
 
   return (
     <div className="flex flex-col gap-2">
@@ -315,9 +355,9 @@ function BodyFrame({ html, subject }: BodyFrameProps) {
         sandbox={IFRAME_SANDBOX}
         srcDoc={doc}
         referrerPolicy="no-referrer"
-        // The height is a computed pixel value, so it is an inline style
-        // rather than a class — Tailwind cannot emit a utility for a number
-        // that only exists at runtime. Everything else stays in classes.
+        // A measured pixel value, so it is an inline style rather than a
+        // class — Tailwind cannot emit a utility for a number that only
+        // exists at runtime. Everything else stays in classes.
         style={{ height: `${height}px` }}
         // The frame's own ground must match what the document inverts to,
         // or the message flashes white for the frame's first paint before
