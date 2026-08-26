@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import messageBodyHookSource from '../src/components/useMessageBody.ts?raw';
 import messageViewSource from '../src/components/MessageView.tsx?raw';
 import messageRowSource from '../src/components/MessageRow.tsx?raw';
 import inboxListSource from '../src/components/InboxList.tsx?raw';
@@ -41,9 +42,20 @@ const APP = stripComments(appSource);
  *  first paint and therefore after a visible skeleton. */
 const SYNCHRONOUS_CACHE_READ = /useState<LoadState>\(\(\)\s*=>\s*\{[\s\S]*?readCachedMessage\(/;
 
+/**
+ * The reader's OPEN PATH, which is now two files.
+ *
+ * The fetch, its cache read, its slow-fetch threshold and its teardown were
+ * a single inline effect in MessageView.tsx while the reader showed exactly
+ * one message. Showing a whole conversation means every message owns its own
+ * load, so all of it moved to ./useMessageBody.ts unchanged. These guards
+ * describe the BEHAVIOUR, not the address, so they read both.
+ */
+const OPEN_PATH = messageViewSource + '\n' + messageBodyHookSource;
+
 describe('MessageView renders a cached message on the first frame', () => {
   it('reads the cache from the useState initializer, not from an effect', () => {
-    expect(VIEW).toMatch(SYNCHRONOUS_CACHE_READ);
+    expect(OPEN_PATH).toMatch(SYNCHRONOUS_CACHE_READ);
   });
 
   it('the pattern is not vacuous — an effect-only read would fail it', () => {
@@ -57,19 +69,21 @@ describe('MessageView renders a cached message on the first frame', () => {
   it('goes through loadMessage rather than calling getMessage directly', () => {
     // A direct `getMessage` call would bypass the cache entirely and put
     // the open back exactly where it started.
-    expect(VIEW).toContain('loadMessage(');
-    expect(VIEW).not.toMatch(/\bgetMessage\s*\(/);
+    expect(OPEN_PATH).toContain('loadMessage(');
+    expect(OPEN_PATH).not.toMatch(/\bgetMessage\s*\(/);
   });
 
   it('gates the skeleton on the slow-fetch threshold, so a fast open never flashes one', () => {
+    // The gate stays in the VIEW (it decides what to render); the
+    // threshold moved with the fetch.
     expect(VIEW).toMatch(/load\.status === 'loading' && isSlow/);
-    expect(VIEW).toContain('SKELETON_DELAY_MS');
+    expect(OPEN_PATH).toContain('SKELETON_DELAY_MS');
   });
 
   it('clears the slow-fetch timer when the effect tears down', () => {
     // Without this, closing the reader inside the threshold sets state on
     // a component that has gone.
-    expect(VIEW).toContain('clearTimeout(slowTimer)');
+    expect(OPEN_PATH).toContain('clearTimeout(slowTimer)');
   });
 });
 

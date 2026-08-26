@@ -1,13 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Ref, RefObject } from 'react';
 import type { BodyScheme } from './messageBody';
 import { ArrowLeft, FileText, Forward, Reply, ReplyAll } from 'lucide-react';
-import { ApiError } from '../api';
 import type { InboxMessage, ParsedMessage } from '../api';
-import { messageCache } from '../messageCache';
 import type { MoveDestination } from '../mailboxActions';
 import type { ReplyMode } from '../replyDraft';
-import { loadMessage, readCachedMessage, refetchMessage, targetFor } from '../messageLoader';
+import { targetFor } from '../messageLoader';
 import { messagePrefetcher } from '../messagePrefetch';
 import { Alert, AlertDescription } from '../ui/Alert';
 import { Button } from '../ui/Button';
@@ -15,11 +13,12 @@ import { cn } from '../ui/cn';
 import { EmptyState } from '../ui/EmptyState';
 import { Skeleton } from '../ui/Skeleton';
 import { useTheme } from '../useTheme';
-import { Panel, SKELETON_DELAY_MS } from '../motion';
+import { Panel } from '../motion';
 import AttachmentList from './MessageAttachments';
 import ThreadContext from './ThreadContext';
 import MessageActionsMenu from './MessageActionsMenu';
 import { formatReceived } from './inboxDates';
+import { useMessageBody } from './useMessageBody';
 import { TOUCH_HEIGHT, TOUCH_MIN_HEIGHT } from '../ui/touchTarget';
 import {
   FALLBACK_BODY_HEIGHT_PX,
@@ -69,20 +68,8 @@ import {
 
 const SKELETON_LINE_COUNT = 5;
 
-/** Matches the shape of every other in-place failure in this app
- *  (App.tsx's SessionError, InboxList's messageFor): name what happened,
- *  never a stack trace, never a credential. */
-function messageFor(error: unknown): string {
-  if (error instanceof ApiError) {
-    return `The sync service answered ${error.status}. This message could not be opened.`;
-  }
-  return "Postbox can't reach the sync service. This message could not be opened.";
-}
-
-type LoadState =
-  | { readonly status: 'loading' }
-  | { readonly status: 'ready'; readonly parsed: ParsedMessage }
-  | { readonly status: 'error'; readonly message: string };
+/* `messageFor` and `LoadState` moved to ./useMessageBody.ts along with the
+   fetch itself — every message in a thread now owns its own load. */
 
 interface MessageHeaderProps {
   readonly message: InboxMessage;
@@ -687,94 +674,13 @@ export default function MessageView({
   const folder = message.folder;
   const uid = message.uid;
 
-  /**
-   * THE WHOLE POINT OF THE CACHE, and the reason this is a `useState`
-   * INITIALIZER rather than an effect.
-   *
-   * App.tsx keys this component on the message, so opening one mounts it
-   * fresh and this runs during that first render — before any paint. A
-   * message already in the cache is therefore on screen in the first
-   * frame after the click, with no loading state in between, which is
-   * what "instant" actually means. Reading the cache in an effect instead
-   * would paint the skeleton first and replace it a frame later: the same
-   * data, and still a visible flash.
-   *
-   * `readCachedMessage` is a pure read and starts nothing, which is what
-   * makes it safe here — React invokes an initializer during render, and
-   * twice under StrictMode.
-   */
-  const [load, setLoad] = useState<LoadState>(() => {
-    const cached = readCachedMessage(messageCache, { account_id: accountId, folder, uid });
-    return cached === undefined ? { status: 'loading' } : { status: 'ready', parsed: cached };
-  });
-  const [attempt, setAttempt] = useState(0);
-  /**
-   * Whether the wait has gone on long enough to be worth telling the user
-   * about — see SKELETON_DELAY_MS in src/motion/tokens.ts.
-   *
-   * Without this, a fetch the server answers from ITS cache in a few
-   * milliseconds still flashes a skeleton, which is the app announcing
-   * work it did not really do. With it, a genuinely slow fetch still gets
-   * its skeleton (and its `role="status"` announcement) after the
-   * threshold; only the fast path stays quiet.
-   */
-  const [isSlow, setIsSlow] = useState(false);
+
   // The subject heading, for the focus effect below. A direct ref now
   // that the card that used to wrap it (and that the old code reached
   // through with a `querySelector`) is gone.
   const headingRef = useRef<HTMLHeadingElement | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    const target = { account_id: accountId, folder, uid };
-
-    // A retry must fetch, whatever is cached — the cached copy is what
-    // the user is retrying PAST when a previous attempt errored, and on
-    // the error path there is nothing cached anyway.
-    const outcome =
-      attempt === 0
-        ? loadMessage(messageCache, target)
-        : { kind: 'pending' as const, parsed: refetchMessage(messageCache, target) };
-
-    if (outcome.kind === 'cached') {
-      // Already rendered by the initializer above on the mount that
-      // matters. This branch is for the case App.tsx's `key` does not
-      // remount on — the same account and uid in a different folder,
-      // reachable from a thread row — where the identity changed but the
-      // component did not. Compared by reference so an unchanged hit
-      // costs no render at all.
-      setLoad((current) =>
-        current.status === 'ready' && current.parsed === outcome.parsed
-          ? current
-          : { status: 'ready', parsed: outcome.parsed },
-      );
-      setIsSlow(false);
-      return;
-    }
-
-    setLoad({ status: 'loading' });
-    setIsSlow(false);
-    const slowTimer = window.setTimeout(() => {
-      if (!cancelled) setIsSlow(true);
-    }, SKELETON_DELAY_MS);
-
-    outcome.parsed.then(
-      (parsed) => {
-        if (cancelled) return;
-        setLoad({ status: 'ready', parsed });
-      },
-      (error: unknown) => {
-        if (cancelled) return;
-        console.error('MessageView: message fetch failed', error);
-        setLoad({ status: 'error', message: messageFor(error) });
-      },
-    );
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(slowTimer);
-    };
-  }, [accountId, folder, uid, attempt]);
+  const { load, isSlow, retry } = useMessageBody(accountId, folder, uid);
 
   /**
    * Warms the rows either side of this one. People read down a list, so
@@ -800,8 +706,6 @@ export default function MessageView({
   useEffect(() => {
     headingRef.current?.focus({ preventScroll: true });
   }, [accountId, folder, uid]);
-
-  const retry = useCallback(() => setAttempt((previous) => previous + 1), []);
 
   return (
     // PLAN 7 TASK 2 — the reader arrives. App.tsx keys this component on
