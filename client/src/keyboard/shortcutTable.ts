@@ -41,7 +41,15 @@ export const SHORTCUT_HELP: readonly ShortcutHelpGroup[] = [
   },
   {
     title: 'Acting on mail',
-    entries: [{ keys: ['s'], description: 'Star or unstar' }],
+    entries: [
+      { keys: ['r'], description: 'Reply' },
+      // "Reply all" would collide with nothing, but "Reply to everyone"
+      // says which of the two `r` and `a` is which without the reader
+      // having to hold both lines in their head at once.
+      { keys: ['a'], description: 'Reply to everyone' },
+      { keys: ['f'], description: 'Forward' },
+      { keys: ['s'], description: 'Star or unstar' },
+    ],
   },
   {
     title: 'Going places',

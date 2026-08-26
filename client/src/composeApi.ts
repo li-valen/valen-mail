@@ -1,4 +1,5 @@
 import { ApiError } from './api';
+import type { QuoteSource } from './replyDraft';
 
 /**
  * The two calls the composer makes: GET /api/identities (which accounts
@@ -66,6 +67,29 @@ export interface SendRequest {
   readonly cc: readonly string[];
   readonly subject: string;
   readonly textBody: string;
+  /**
+   * The three fields a REPLY adds, all absent for a plain compose —
+   * ../replyDraft.ts's `ReplyWireFields`, spread straight in.
+   *
+   * `inReplyTo` and every `references` entry keep their angle brackets:
+   * the route emits them verbatim as headers (sync/src/send/send.ts), and
+   * a value stripped on the way through produces a reply that sends
+   * cleanly and lands as a brand-new thread.
+   */
+  readonly inReplyTo?: string;
+  /** Oldest → newest. Omitted from the wire when empty. */
+  readonly references?: readonly string[];
+  /**
+   * The quote SOURCE — the original body — never a pre-built quote.
+   *
+   * The server assembles the `.gmail_quote` element itself
+   * (sync/src/send/quote.ts) because spec §5.6's strip of our OWN
+   * tracking pixel needs `TRACKING_BASE_URL`, and this module's header
+   * rule is that the client never learns a second origin. A quote built
+   * here could not perform that strip, and every reply in a thread would
+   * re-fire the original recipient's token forever.
+   */
+  readonly quote?: QuoteSource;
 }
 
 /**
@@ -159,6 +183,26 @@ export function primaryIdentityId(identities: readonly Identity[]): string {
   return (primary ?? identities[0])?.id ?? '';
 }
 
+/**
+ * The identity a REPLY opens on: the account whose mailbox the message
+ * arrived in (spec §7B — a reply sends from the account that received
+ * it), falling back to the primary when that account is not a sending
+ * identity.
+ *
+ * `InboxMessage.account_id` and `Identity.id` are the same id under two
+ * names, both from accounts.json. The fallback is not decoration: an
+ * account can be synced for reading and absent from the identity list,
+ * and a reply that opened on an empty send-from would be unsendable with
+ * no visible reason why.
+ */
+export function identityIdForAccount(
+  accountId: string,
+  identities: readonly Identity[],
+): string {
+  const match = identities.find((identity) => identity.id === accountId);
+  return match?.id ?? primaryIdentityId(identities);
+}
+
 /** `ok` is read strictly: anything that is not literally `true` is a
  *  failure. That is the direction the uncertainty has to fall — counting
  *  an unreadable result as delivered is exactly the confident wrong
@@ -193,12 +237,35 @@ export async function sendMail(
     headers: { 'content-type': 'application/json' },
     // Named field by field rather than spread, so a field added to
     // SendRequest later cannot ride onto the wire unnoticed.
+    //
+    // THE REPLY FIELDS ARE OMITTED WHEN ABSENT, NOT SENT AS null OR [].
+    // A plain compose must put the same bytes on the wire it always has —
+    // the route's own tests assert that a message with no reply fields is
+    // byte-identical to what shipped before Plan 9, and an explicit
+    // `inReplyTo: null` would be a present-and-unusable field, which that
+    // route answers with a 400.
     body: JSON.stringify({
       identityId: request.identityId,
       to: [...request.to],
       cc: [...request.cc],
       subject: request.subject,
       textBody: request.textBody,
+      ...(request.inReplyTo === undefined ? {} : { inReplyTo: request.inReplyTo }),
+      ...(request.references === undefined || request.references.length === 0
+        ? {}
+        : { references: [...request.references] }),
+      ...(request.quote === undefined
+        ? {}
+        : {
+            quote: {
+              originalHtml: request.quote.originalHtml,
+              originalText: request.quote.originalText,
+              fromLabel: request.quote.fromLabel,
+              // Epoch MILLISECONDS. The route refuses an ISO string
+              // rather than coercing it.
+              sentAtMs: request.quote.sentAtMs,
+            },
+          }),
     }),
   });
 

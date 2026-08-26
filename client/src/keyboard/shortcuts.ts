@@ -1,4 +1,5 @@
 import type { FolderId } from '../inboxFilters';
+import type { ReplyMode } from '../replyDraft';
 
 /**
  * Every keyboard decision this app makes, as ONE pure function.
@@ -129,6 +130,16 @@ export type ShortcutAction =
    *  resolver guarantees at least one of those exists before emitting
    *  this. */
   | { readonly kind: 'toggle-star' }
+  /**
+   * Open the composer on whichever message is in hand — the open one if
+   * the reader is showing, otherwise the row under the cursor. Same
+   * "something to act on" guarantee `toggle-star` carries.
+   *
+   * The MODE is carried rather than three separate action kinds because
+   * the three keys differ in exactly one value, and App.tsx's handler is
+   * one function either way. ../replyDraft.ts owns what each mode means.
+   */
+  | { readonly kind: 'reply'; readonly mode: ReplyMode }
   | { readonly kind: 'go-folder'; readonly folder: FolderId }
   | { readonly kind: 'open-help' }
   | { readonly kind: 'close-help' };
@@ -230,6 +241,22 @@ function moveFrom(state: ShortcutState, delta: number): ShortcutAction {
   return { kind: 'open', index: moved.index };
 }
 
+/**
+ * True when there is a message for `s`, `r`, `a` or `f` to act on.
+ *
+ * The reader always has one. The list needs a cursor, and a session that
+ * has not pressed `j` yet has none — `-1` is a real state (see `moveTo`),
+ * not an impossible one.
+ *
+ * ONE PREDICATE FOR ALL FOUR KEYS, deliberately. They ask the same
+ * question, and four copies of it is how one of them eventually answers
+ * differently and fires on an empty list.
+ */
+function hasMessageInHand(state: ShortcutState): boolean {
+  if (state.isReaderOpen) return true;
+  return state.selectedIndex >= 0 && state.selectedIndex < state.listLength;
+}
+
 /** Resolves one keystroke, ignoring any chord — the second half of
  *  `resolveShortcut`, split out so an unrecognised chord continuation can
  *  fall through to it rather than being swallowed. */
@@ -297,15 +324,27 @@ function resolveBareKey(event: ShortcutEvent, state: ShortcutState): ShortcutRes
     case 'u':
       return state.isReaderOpen ? act({ kind: 'close-reader' }) : IGNORED;
 
-    case 's': {
-      // Needs something to star. The reader always has one; the list
-      // needs a cursor, and a session that has not pressed `j` yet has
-      // none.
-      if (!state.isReaderOpen && (state.selectedIndex < 0 || state.selectedIndex >= state.listLength)) {
-        return IGNORED;
-      }
-      return act({ kind: 'toggle-star' });
-    }
+    case 's':
+      // Needs something to star. See `hasMessageInHand`.
+      return hasMessageInHand(state) ? act({ kind: 'toggle-star' }) : IGNORED;
+
+    // Gmail's reply trio, and the reason Plan 9 exists: until these
+    // worked the user still had to open Gmail to answer anything.
+    //
+    // THEY ARE LIVE FROM THE LIST AS WELL AS FROM THE READER, which is
+    // both what Gmail does and what this codebase's own rule about dead
+    // interactions requires — a bare key that visibly does nothing is
+    // worse than no key. App.tsx resolves the parsed message (it needs
+    // the body to quote and the Message-ID to thread), from cache when it
+    // is there and from the network when it is not.
+    case 'r':
+      return hasMessageInHand(state) ? act({ kind: 'reply', mode: 'reply' }) : IGNORED;
+
+    case 'a':
+      return hasMessageInHand(state) ? act({ kind: 'reply', mode: 'replyAll' }) : IGNORED;
+
+    case 'f':
+      return hasMessageInHand(state) ? act({ kind: 'reply', mode: 'forward' }) : IGNORED;
 
     // Opens a chord. The ONE resolution in this file that pairs a `none`
     // action with `preventDefault: true`, and the pairing is deliberate:

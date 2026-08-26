@@ -43,7 +43,22 @@ const chordAt = (startedAtMs: number): PendingChord => ({ key: 'g', startedAtMs 
 
 describe('never steals a key the user is typing', () => {
   // THE headline requirement. Every single-letter shortcut, refused.
-  it.each(['j', 'k', 'o', 'u', 's', 'g', '?', 'Enter', 'Escape', 'ArrowDown', 'ArrowUp'])(
+  it.each([
+    'j',
+    'k',
+    'o',
+    'u',
+    's',
+    'r',
+    'a',
+    'f',
+    'g',
+    '?',
+    'Enter',
+    'Escape',
+    'ArrowDown',
+    'ArrowUp',
+  ])(
     'ignores %s when focus is in a typing context',
     (key) => {
       const result = resolveShortcut(press(key, { isTyping: true }), state());
@@ -272,6 +287,92 @@ describe('s toggles the star', () => {
     expect(
       resolveShortcut(press('s'), state({ selectedIndex: 10, listLength: 10 })).action,
     ).toEqual({ kind: 'none' });
+  });
+});
+
+describe('r, a and f open the composer', () => {
+  it.each([
+    ['r', 'reply'],
+    ['a', 'replyAll'],
+    ['f', 'forward'],
+  ])('%s opens a %s', (key, mode) => {
+    expect(resolveShortcut(press(key), state({ isReaderOpen: true })).action).toEqual({
+      kind: 'reply',
+      mode,
+    });
+  });
+
+  it('works from the LIST as well as from the reader', () => {
+    // A bare key that visibly does nothing is the dead interaction this
+    // codebase refuses everywhere else, and Gmail's own `r` is live in
+    // the list. App.tsx resolves the parsed body behind it.
+    expect(resolveShortcut(press('r'), state({ isReaderOpen: false, selectedIndex: 3 })).action).toEqual(
+      { kind: 'reply', mode: 'reply' },
+    );
+  });
+
+  it('does nothing when there is no message in hand', () => {
+    for (const key of ['r', 'a', 'f']) {
+      const result = resolveShortcut(press(key), state({ isReaderOpen: false, selectedIndex: -1 }));
+      expect(result.action).toEqual({ kind: 'none' });
+      expect(result.preventDefault).toBe(false);
+    }
+  });
+
+  it('does nothing when the cursor points past the end of the list', () => {
+    expect(
+      resolveShortcut(press('r'), state({ selectedIndex: 10, listLength: 10 })).action,
+    ).toEqual({ kind: 'none' });
+  });
+
+  it('is suppressed WHOLESALE while the composer is open', () => {
+    // Not a second typing guard — ./typingTarget.ts already covers the
+    // fields. This is the blanket one: `f` while focus rests on the
+    // identity select or the Add Cc button must not throw away the draft
+    // being written and open a forward on top of it.
+    for (const key of ['r', 'a', 'f']) {
+      const result = resolveShortcut(press(key), state({ isComposerOpen: true, isReaderOpen: true }));
+      expect(result.action).toEqual({ kind: 'none' });
+      expect(result.preventDefault).toBe(false);
+    }
+  });
+
+  it('is suppressed while the help overlay covers the list', () => {
+    for (const key of ['r', 'a', 'f']) {
+      expect(resolveShortcut(press(key), state({ isHelpOpen: true, isReaderOpen: true })).action).toEqual(
+        { kind: 'none' },
+      );
+    }
+  });
+
+  it('never answers to a modified form — Cmd-R is reload and Cmd-F is find', () => {
+    for (const modifier of ['metaKey', 'ctrlKey', 'altKey'] as const) {
+      for (const key of ['r', 'a', 'f']) {
+        const result = resolveShortcut(press(key, { [modifier]: true }), state({ isReaderOpen: true }));
+        expect(result.action).toEqual({ kind: 'none' });
+        expect(result.preventDefault).toBe(false);
+      }
+    }
+  });
+
+  it('never answers to Shift either', () => {
+    for (const key of ['r', 'a', 'f']) {
+      expect(resolveShortcut(press(key, { shiftKey: true }), state({ isReaderOpen: true })).action).toEqual(
+        { kind: 'none' },
+      );
+    }
+  });
+
+  it('claims the key it acts on, so the browser does not also see it', () => {
+    expect(resolveShortcut(press('r'), state({ isReaderOpen: true })).preventDefault).toBe(true);
+  });
+
+  it('after a stray g, a and f still mean what they mean', () => {
+    // The documented fall-through: `g` then a key that is not a folder
+    // resolves as if the prefix had never been pressed.
+    const result = resolveShortcut(press('a'), state({ isReaderOpen: true, chord: chordAt(NOW) }));
+    expect(result.action).toEqual({ kind: 'reply', mode: 'replyAll' });
+    expect(result.chord).toBeNull();
   });
 });
 

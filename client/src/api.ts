@@ -511,6 +511,26 @@ export interface ParsedMessage {
   readonly to: readonly ParsedAddress[];
   readonly cc: readonly ParsedAddress[];
   readonly date: number | null;
+  /**
+   * This message's `Message-ID`, **with its angle brackets** — or null
+   * when it carries none, which means "this cannot be replied to
+   * in-thread".
+   *
+   * THE BRACKETS ARE LOAD-BEARING AND MUST NOT BE STRIPPED HERE. The
+   * value is round-tripped straight back to POST /api/send as
+   * `inReplyTo`, which emits it VERBATIM as a header
+   * (sync/src/send/send.ts). Anything that trims the brackets on the way
+   * through produces a reply that sends, looks perfectly normal, and
+   * lands as a brand-new thread in the recipient's Gmail.
+   */
+  readonly messageId: string | null;
+  /**
+   * The `References` chain, oldest → newest, each entry with its angle
+   * brackets. `[]` when the header is absent — never null, because
+   * ../replyDraft.ts concatenates this and `[]` concatenates while null
+   * throws.
+   */
+  readonly references: readonly string[];
   readonly attachments: readonly MessageAttachment[];
 }
 
@@ -532,6 +552,8 @@ const UNREADABLE_MESSAGE: ParsedMessage = {
   to: [],
   cc: [],
   date: null,
+  messageId: null,
+  references: [],
   attachments: [],
 };
 
@@ -579,6 +601,30 @@ function parseAttachments(value: unknown): readonly MessageAttachment[] {
 }
 
 /**
+ * The `References` chain, degraded field-wise like everything else on
+ * this boundary: a non-array is absence, and an entry that is not a
+ * usable string is dropped rather than carried forward.
+ *
+ * `[]` rather than null for the absent case, matching
+ * sync/src/api/message.ts's `normalizeReferences` exactly — the value
+ * round-trips back to POST /api/send unchanged in shape, and every
+ * caller concatenates it.
+ *
+ * A DROPPED ENTRY IS NOT SILENT-SAFE AND IS DROPPED ANYWAY. An entry that
+ * is not a string cannot become a header, so the alternatives are "drop
+ * it" or "refuse to render the message". Dropping loses one link in a
+ * thread chain; refusing loses the message. Only the first is
+ * recoverable by the user.
+ */
+function parseReferences(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((entry): entry is string => typeof entry === 'string')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== '');
+}
+
+/**
  * Turns the response body into a `ParsedMessage`, field by field, and
  * never throws.
  *
@@ -602,6 +648,8 @@ function parseMessage(value: unknown): ParsedMessage {
     to: parseAddressList(value.to),
     cc: parseAddressList(value.cc),
     date: typeof date === 'number' && Number.isFinite(date) ? date : null,
+    messageId: stringOrNull(value.messageId),
+    references: parseReferences(value.references),
     attachments: parseAttachments(value.attachments),
   };
 }

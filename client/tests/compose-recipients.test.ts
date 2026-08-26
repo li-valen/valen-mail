@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   MAX_RECIPIENT_CHARS,
+  excludeRecipients,
   isValidRecipient,
   mergeRecipients,
   parseRecipients,
@@ -172,5 +173,47 @@ describe('mergeRecipients', () => {
     const merged = mergeRecipients(existing, ['b@y.com']);
     expect(existing).toEqual(['a@x.com']);
     expect(merged).not.toBe(existing);
+  });
+});
+
+describe('excludeRecipients', () => {
+  it('removes an address, whatever case either side is written in', () => {
+    // The whole reason ../src/replyDraft.ts can promise that reply-all
+    // never mails the user themselves.
+    expect(excludeRecipients(['ME@Example.com', 'bob@x.com'], ['me@example.com'])).toEqual([
+      'bob@x.com',
+    ]);
+    expect(excludeRecipients(['me@example.com'], ['Me@Example.COM'])).toEqual([]);
+  });
+
+  it('removes every listed address, not just the first', () => {
+    expect(excludeRecipients(['a@x.com', 'b@x.com', 'c@x.com'], ['a@x.com', 'c@x.com'])).toEqual([
+      'b@x.com',
+    ]);
+  });
+
+  it('keeps the surviving addresses in their original order', () => {
+    expect(excludeRecipients(['a@x.com', 'b@x.com', 'c@x.com'], ['b@x.com'])).toEqual([
+      'a@x.com',
+      'c@x.com',
+    ]);
+  });
+
+  it('changes nothing when the exclusion list is empty', () => {
+    expect(excludeRecipients(['a@x.com'], [])).toEqual(['a@x.com']);
+  });
+
+  it('does not mutate either input', () => {
+    const addresses = ['a@x.com', 'b@x.com'];
+    const excluded = ['a@x.com'];
+    excludeRecipients(addresses, excluded);
+    expect(addresses).toEqual(['a@x.com', 'b@x.com']);
+    expect(excluded).toEqual(['a@x.com']);
+  });
+
+  it('agrees with includesRecipient — one definition of "same mailbox"', () => {
+    // Two different answers to that question is how the composer's chips
+    // and the reply derivation eventually disagree about one person.
+    expect(excludeRecipients(['A@X.com'], ['a@x.com'])).toEqual([]);
   });
 });

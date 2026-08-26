@@ -97,6 +97,12 @@ export function measureBytes(message: ParsedMessage): number {
     message.subject,
     message.from?.name,
     message.from?.address,
+    // Small, and counted anyway: this estimate is meant to be a true
+    // UPPER bound (see above), and a 50-entry References chain is a
+    // couple of kilobytes per entry that would otherwise be invisible to
+    // the budget.
+    message.messageId,
+    ...message.references,
     ...message.to.flatMap((address) => [address.name, address.address]),
     ...message.cc.flatMap((address) => [address.name, address.address]),
     ...message.attachments.flatMap((attachment) => [

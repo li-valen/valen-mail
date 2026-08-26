@@ -27,6 +27,9 @@ const DISPLAY_TO_EVENT_KEY: Readonly<Record<string, string>> = {
   o: 'o',
   u: 'u',
   Esc: 'Escape',
+  r: 'r',
+  a: 'a',
+  f: 'f',
   s: 's',
   g: 'g',
   i: 'i',
@@ -151,7 +154,24 @@ describe('the help table advertises every shortcut that exists', () => {
     // are unbound today, and if one ever becomes bound without a table
     // entry the test above fails rather than silently passing.
     expect(ALPHABET.filter((key) => isBound(key)).sort()).toEqual(
-      ['?', 'ArrowDown', 'ArrowUp', 'Enter', 'Escape', 'g', 'i', 'j', 'k', 'o', 's', 't', 'u'].sort(),
+      [
+        '?',
+        'ArrowDown',
+        'ArrowUp',
+        'Enter',
+        'Escape',
+        'a',
+        'f',
+        'g',
+        'i',
+        'j',
+        'k',
+        'o',
+        'r',
+        's',
+        't',
+        'u',
+      ].sort(),
     );
   });
 });

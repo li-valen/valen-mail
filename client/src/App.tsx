@@ -6,10 +6,14 @@ import type { AccountSummary } from './accountRoster';
 import { foldAccountRoster } from './accountRoster';
 import { DEFAULT_FILTER } from './inboxFilters';
 import type { FolderId } from './inboxFilters';
-import type { InboxMessage, OpenEvent } from './api';
+import type { InboxMessage, OpenEvent, ParsedMessage } from './api';
 import { setMessageFlag } from './api';
 import { foldMessageIndex } from './messageIndex';
+import { messageCache } from './messageCache';
+import { loadMessage, targetFor } from './messageLoader';
 import { messagePrefetcher } from './messagePrefetch';
+import { replyKey } from './replyDraft';
+import type { ReplyMode, ReplySource } from './replyDraft';
 import Compose, { DISCARD_DRAFT_PROMPT } from './components/Compose';
 import type { ResultSummary } from './components/composeResults';
 import InboxList from './components/InboxList';
@@ -285,6 +289,19 @@ export default function App() {
    *  keystroke that appeared to work and did not is the worst outcome
    *  available for a write path. */
   const [starError, setStarError] = useState<string | null>(null);
+  /**
+   * What the composer is replying TO, or null for a plain new message.
+   *
+   * Held here rather than in Compose.tsx because it is decided BEFORE the
+   * composer exists — by a button in the reader or by `r`/`a`/`f` from
+   * anywhere — and because it must survive the composer being closed and
+   * reopened on a different message.
+   */
+  const [replySource, setReplySource] = useState<ReplySource | null>(null);
+  /** A reply whose message body could not be fetched. Same dismissible,
+   *  in-place shape as `starError`: the composer never opened, and
+   *  saying nothing would leave a keystroke looking dead. */
+  const [replyError, setReplyError] = useState<string | null>(null);
   // The Ask-2 honest-failure banner (OpenNotFoundNotice above): true for
   // exactly the span between a Recent-opens click that `resolveOpenTarget`
   // could not resolve and the user dismissing it, or a LATER click that
@@ -303,6 +320,9 @@ export default function App() {
   // state: it must never cause a render, and it is read exactly once, in
   // the click handler of a sidebar control.
   const isComposeDirtyRef = useRef(false);
+  /** Which reply attempt is current — see `startReply` on why a token
+   *  rather than an abort. */
+  const replyAttemptRef = useRef(0);
 
   // Stable identity: InboxList lists this in an effect's dependency array.
   //
@@ -524,6 +544,11 @@ export default function App() {
         // composer its own return destination.
         if (view !== 'compose') viewBeforeComposeRef.current = view;
         isComposeDirtyRef.current = false;
+        // The sidebar's Compose button means a NEW message. Without this,
+        // clicking it after a reply would open a composer still carrying
+        // the previous message's threading headers, and the "new" message
+        // would land inside an old conversation.
+        setReplySource(null);
         // A new message supersedes the last one's confirmation; leaving
         // it up would have the shell reporting an older send above a
         // composer the user is filling in now.
@@ -544,6 +569,7 @@ export default function App() {
    *  or there was nothing to ask about (a completed send). */
   const closeCompose = useCallback(() => {
     isComposeDirtyRef.current = false;
+    setReplySource(null);
     setView(viewBeforeComposeRef.current);
     composeTriggerRef.current?.focus();
   }, []);
@@ -653,6 +679,92 @@ export default function App() {
     );
   }, [selected, visibleMessages, cursor.index, starOverrides]);
 
+  /**
+   * `r`, `a`, `f` and the reader's three buttons: open the composer on a
+   * message.
+   *
+   * THE PARSED MESSAGE IS REQUIRED, WHICH IS WHY THIS IS ASYNC. A reply
+   * needs the body to quote and — the whole point of Plan 9 — the
+   * `Message-ID` and `References` to thread with, and an `InboxMessage`
+   * row carries none of the three. `loadMessage` answers from the cache
+   * when it can, which is the overwhelmingly common case: the reader
+   * populated it on open, and messagePrefetch warmed the neighbours. A
+   * cache hit takes the synchronous branch and the composer is open in
+   * the same frame as the keystroke.
+   *
+   * STALENESS IS GUARDED BY A TOKEN, not by a cancelled promise. If the
+   * user presses `r`, changes their mind, moves to another message and
+   * presses `r` again before the first fetch lands, the first response
+   * must not open a composer on a message they have left. Each attempt
+   * takes the next token and only the current one is allowed to act.
+   *
+   * THE READER IS NOT CLOSED. `changeView` closes it, deliberately, for
+   * every OTHER navigation; a reply is the one case where the message
+   * behind the composer is the thing being answered, so `selected`
+   * survives and Cancel returns the user to what they were reading.
+   */
+  const startReply = useCallback(
+    (message: InboxMessage, mode: ReplyMode) => {
+      if (!canLeaveCompose()) return;
+
+      const token = replyAttemptRef.current + 1;
+      replyAttemptRef.current = token;
+      setReplyError(null);
+
+      const open = (parsed: ParsedMessage) => {
+        if (replyAttemptRef.current !== token) return;
+        setReplySource({ mode, accountId: message.account_id, parsed });
+        isComposeDirtyRef.current = false;
+        // A new reply supersedes the last send's confirmation, matching
+        // what `changeView` does for the sidebar's Compose button.
+        setSentNotice(null);
+        // Read from the render's own `view`, never from inside a state
+        // updater: React may invoke an updater twice under StrictMode, and
+        // writing a ref from one is a side effect in a function that must
+        // not have any.
+        if (view !== 'compose') viewBeforeComposeRef.current = view;
+        setView('compose');
+      };
+
+      const outcome = loadMessage(messageCache, targetFor(message));
+      if (outcome.kind === 'cached') {
+        open(outcome.parsed);
+        return;
+      }
+      outcome.parsed.then(open, (error: unknown) => {
+        if (replyAttemptRef.current !== token) return;
+        console.error('App: could not load the message to reply to', error);
+        setReplyError(
+          "That message could not be opened for a reply — Postbox couldn't reach your mailbox.",
+        );
+      });
+    },
+    [canLeaveCompose, view],
+  );
+
+  /** `r`/`a`/`f`: the same "which message is in hand" rule `s` uses, and
+   *  the same belt-and-braces early return — keyboard/shortcuts.ts has
+   *  already guaranteed one exists. */
+  const replyToMessageInHand = useCallback(
+    (mode: ReplyMode) => {
+      const target = selected ?? visibleMessages[cursor.index];
+      if (target === undefined) return;
+      startReply(target, mode);
+    },
+    [selected, visibleMessages, cursor.index, startReply],
+  );
+
+  /** The reader's own buttons, bound to the message the reader is
+   *  showing. Same function the keyboard reaches, so the two cannot
+   *  diverge. */
+  const replyToSelected = useCallback(
+    (mode: ReplyMode) => {
+      if (selected === null) return;
+      startReply(selected, mode);
+    },
+    [selected, startReply],
+  );
+
   /** `Enter`/`o`, and `j`/`k` from inside the reader: move the cursor and
    *  open in one step. Opening the message ALREADY on screen is skipped
    *  rather than re-run — at the ends of the list `j`/`k` clamp to the
@@ -691,6 +803,7 @@ export default function App() {
       onOpen: openAt,
       onCloseReader: closeMessage,
       onToggleStar: toggleStar,
+      onReply: replyToMessageInHand,
       onGoFolder: changeFolder,
       onOpenHelp: () => setIsHelpOpen(true),
       onCloseHelp: () => setIsHelpOpen(false),
@@ -848,6 +961,23 @@ export default function App() {
         </Settle>
       )}
 
+      {/* A reply whose message could not be fetched, so the composer never
+          opened. Dismissible and in place, exactly like the star failure
+          above: a keystroke that appeared to do nothing is the failure
+          this app refuses to ship silently. */}
+      {isAuthorized && replyError !== null && (
+        <Settle>
+          <Alert variant="destructive" className="mb-6">
+            <AlertDescription className="flex flex-wrap items-center gap-3">
+              <span className="flex-1 min-w-[12rem]">{replyError}</span>
+              <Button variant="ghost" size="sm" onClick={() => setReplyError(null)}>
+                Dismiss
+              </Button>
+            </AlertDescription>
+          </Alert>
+        </Settle>
+      )}
+
       {/*
         PLAN 7 TASK 2/3 — the view swap, and why there is NO wrapper here
         any more.
@@ -883,6 +1013,13 @@ export default function App() {
           // while it is open. See Compose.tsx's header for why this is a
           // view and not a dialog.
           <Compose
+            /* Keyed on the message being answered so switching from a
+               reply to a forward — or replying to a different message
+               without closing in between — REMOUNTS rather than leaving
+               the previous draft's recipients in place. The seeding
+               effect in Compose.tsx runs once per mount by design. */
+            key={replyKey(replySource)}
+            reply={replySource ?? undefined}
             onClose={closeCompose}
             onSent={handleSent}
             onDirtyChange={handleComposeDirtyChange}
@@ -944,6 +1081,7 @@ export default function App() {
                 onOpen={openMessage}
                 isStarred={resolveStar(selected, starOverrides, messageKey(selected))}
                 onToggleStar={toggleStar}
+                onReply={replyToSelected}
               />
             )}
           </>

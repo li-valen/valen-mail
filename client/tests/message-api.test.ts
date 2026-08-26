@@ -159,3 +159,76 @@ describe('getThread', () => {
     await expect(getThread('t1', fetchImpl)).rejects.toBeInstanceOf(ApiError);
   });
 });
+
+describe('getMessage threading fields', () => {
+  it('keeps the angle brackets on the Message-ID', async () => {
+    // src/replyDraft.ts round-trips this straight back as `inReplyTo`,
+    // which sync/src/send/send.ts emits VERBATIM as a header. Stripping
+    // the brackets here produces a reply that sends cleanly and lands as
+    // a brand-new thread.
+    const f = vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse({ html: null, text: null, attachments: [], messageId: '<c@example.com>' }),
+      );
+    const parsed = await getMessage('a', 'INBOX', '1', f);
+    expect(parsed.messageId).toBe('<c@example.com>');
+  });
+
+  it('reads the References chain oldest to newest', async () => {
+    const f = vi.fn().mockResolvedValue(
+      jsonResponse({
+        html: null,
+        text: null,
+        attachments: [],
+        references: ['<a@example.com>', '<b@example.com>'],
+      }),
+    );
+    const parsed = await getMessage('a', 'INBOX', '1', f);
+    expect(parsed.references).toEqual(['<a@example.com>', '<b@example.com>']);
+  });
+
+  it('yields [] rather than null when there is no References header', async () => {
+    // Every caller CONCATENATES this. [] concatenates; null throws.
+    const f = vi.fn().mockResolvedValue(jsonResponse({ html: null, text: null, attachments: [] }));
+    const parsed = await getMessage('a', 'INBOX', '1', f);
+    expect(parsed.references).toEqual([]);
+    expect(parsed.messageId).toBeNull();
+  });
+
+  it('degrades a References of the wrong type to [] instead of blanking the message', async () => {
+    const f = vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse({ html: '<p>body</p>', text: null, attachments: [], references: 'not-an-array' }),
+      );
+    const parsed = await getMessage('a', 'INBOX', '1', f);
+    expect(parsed.references).toEqual([]);
+    // The message still opens — losing a thread link is recoverable,
+    // losing the message is not.
+    expect(parsed.html).toBe('<p>body</p>');
+  });
+
+  it('drops unusable entries and keeps their siblings', async () => {
+    const f = vi.fn().mockResolvedValue(
+      jsonResponse({
+        html: null,
+        text: null,
+        attachments: [],
+        references: ['<a@example.com>', 42, '', '  ', '<b@example.com>'],
+      }),
+    );
+    const parsed = await getMessage('a', 'INBOX', '1', f);
+    expect(parsed.references).toEqual(['<a@example.com>', '<b@example.com>']);
+  });
+
+  it('trims a folded continuation line rather than emitting a leading space', async () => {
+    const f = vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse({ html: null, text: null, attachments: [], references: [' <a@example.com>'] }),
+      );
+    const parsed = await getMessage('a', 'INBOX', '1', f);
+    expect(parsed.references).toEqual(['<a@example.com>']);
+  });
+});

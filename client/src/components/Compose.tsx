@@ -3,13 +3,22 @@ import type { FormEvent, KeyboardEvent } from 'react';
 import { Loader2, Send } from 'lucide-react';
 
 import { ApiError } from '../api';
-import { getIdentities, primaryIdentityId, sendMail } from '../composeApi';
+import { getIdentities, identityIdForAccount, primaryIdentityId, sendMail } from '../composeApi';
 import type { Identity } from '../composeApi';
+import {
+  composerTitleFor,
+  initialFocusFor,
+  isDraftDirty,
+  quoteNoticeFor,
+  replyWireFields,
+  seedReplyDraft,
+} from '../replyDraft';
+import type { ReplySource, SeededDraft } from '../replyDraft';
 import { Panel } from '../motion';
 import ComposeOutcome from './ComposeOutcome';
 import RecipientField from './RecipientField';
 import { includesRecipient, mergeRecipients, parseRecipients } from './composeRecipients';
-import { hasDraftContent, validateCompose } from './composeValidation';
+import { validateCompose } from './composeValidation';
 import type { ComposeDraft, ComposeErrors } from './composeValidation';
 import { describeSendFailure, summarizeResults } from './composeResults';
 import type { ResultSummary, SendFailure } from './composeResults';
@@ -75,6 +84,16 @@ const RECIPIENT_HINT = 'Separate addresses with a comma or a space.';
 const NO_ERRORS: ComposeErrors = {};
 
 interface ComposeProps {
+  /**
+   * Absent for a plain "New message"; present when the composer was
+   * opened by Reply, Reply all or Forward.
+   *
+   * STABLE FOR THE LIFETIME OF THE COMPOSER. App.tsx holds it in state
+   * and mounts this component fresh each time the composer opens, which
+   * is what lets the seeding effect below depend on it without ever
+   * re-running over a draft the user has started writing.
+   */
+  readonly reply?: ReplySource;
   readonly onClose: () => void;
   /** Called ONLY when every copy went out; the shell renders the
    *  confirmation, because this component is gone by then. */
@@ -97,7 +116,7 @@ function identityErrorFor(error: unknown): string {
   return 'Postbox could not reach the sync service to load your sending accounts.';
 }
 
-export default function Compose({ onClose, onSent, onDirtyChange }: ComposeProps) {
+export default function Compose({ reply, onClose, onSent, onDirtyChange }: ComposeProps) {
   const [identities, setIdentities] = useState<readonly Identity[]>([]);
   const [identityLoad, setIdentityLoad] = useState<IdentityLoad>({ status: 'loading' });
   const [identityId, setIdentityId] = useState('');
@@ -109,6 +128,10 @@ export default function Compose({ onClose, onSent, onDirtyChange }: ComposeProps
   const [isCcShown, setCcShown] = useState(false);
 
   const [subject, setSubject] = useState('');
+  /** What the reply was seeded WITH, so `isDraftDirty` can tell the
+   *  user's edits from this module's own pre-fill. Null until the
+   *  identities land, and for a plain compose forever. */
+  const [seed, setSeed] = useState<SeededDraft | null>(null);
   const [textBody, setTextBody] = useState('');
 
   const [isSending, setSending] = useState(false);
@@ -132,6 +155,9 @@ export default function Compose({ onClose, onSent, onDirtyChange }: ComposeProps
    * inside the handler, before anything can await.
    */
   const inFlightRef = useRef(false);
+  /** True once the user has clicked "Add Cc" — see the focus effect
+   *  below for why a seeded Cc must not be treated the same way. */
+  const isCcRevealedByUserRef = useRef(false);
 
   const titleId = useId();
   const identityFieldId = useId();
@@ -141,14 +167,50 @@ export default function Compose({ onClose, onSent, onDirtyChange }: ComposeProps
   const ccFieldId = useId();
   const trackingNoteId = useId();
 
+  /**
+   * Loads the sending identities AND, for a reply, seeds the draft from
+   * them — one effect, because the two are the same act.
+   *
+   * THE SEED CANNOT HAPPEN BEFORE THE IDENTITIES LAND. Reply-all has to
+   * remove every address of the user's OWN from the recipient list, and
+   * the identity list is the only place this client learns what those
+   * are (`AccountSummary` carries an id and a count, not an email). A
+   * seed that ran on mount would therefore run with an empty
+   * own-address list and copy the user on their own reply — the exact
+   * misfire ../replyDraft.ts exists to prevent.
+   *
+   * It runs at most ONCE per composer, and the composer is mounted fresh
+   * every time it opens (App.tsx renders it behind `view === 'compose'`),
+   * so there is no path on which this overwrites something the user has
+   * typed. The identity fetch is one request against an in-memory config
+   * and resolves before anyone has finished reading the subject line.
+   */
   useEffect(() => {
     let cancelled = false;
     getIdentities().then(
       (loaded) => {
         if (cancelled) return;
         setIdentities(loaded);
-        setIdentityId(primaryIdentityId(loaded));
         setIdentityLoad({ status: 'ready' });
+
+        if (reply === undefined) {
+          setIdentityId(primaryIdentityId(loaded));
+          return;
+        }
+
+        // Spec 7B: a reply sends FROM the account that received it.
+        setIdentityId(identityIdForAccount(reply.accountId, loaded));
+        const seeded = seedReplyDraft(
+          reply,
+          loaded.map((identity) => identity.email),
+        );
+        setSeed(seeded);
+        setTo(seeded.to);
+        setCc(seeded.cc);
+        setSubject(seeded.subject);
+        // Only ever revealed, never hidden: a Cc the user opened by hand
+        // before this landed must not close under them.
+        if (seeded.isCcShown) setCcShown(true);
       },
       (error: unknown) => {
         if (cancelled) return;
@@ -159,22 +221,36 @@ export default function Compose({ onClose, onSent, onDirtyChange }: ComposeProps
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reply]);
 
   // The composer REPLACES the list in place, so the browser moves focus
   // nowhere on its own — without this a keyboard user is left focused on
-  // a button that is no longer rendered. To, not the heading: it is the
-  // first thing anyone opening a composer intends to type into, and the
-  // tracking note is wired to Send as its description, so nobody reaches
-  // the send control without hearing it.
+  // a button that is no longer rendered.
+  //
+  // WHICH FIELD depends on what is already filled in, and the decision is
+  // ../replyDraft.ts's rather than this file's: a reply arrives with its
+  // recipients and subject already written, so landing in To would make
+  // the user tab past two filled fields to reach the empty one. A plain
+  // compose and a forward both open in To. The tracking note is wired to
+  // Send as its description either way, so nobody reaches the send
+  // control without hearing what sending does.
+  //
+  // Runs on mount, BEFORE the identities land — the choice depends only
+  // on the mode, so it needs nothing the network has to supply.
   useEffect(() => {
-    toInputRef.current?.focus();
-  }, []);
+    if (initialFocusFor(reply?.mode ?? null) === 'body') bodyRef.current?.focus();
+    else toInputRef.current?.focus();
+  }, [reply]);
 
   // Revealing Cc and then leaving focus where it was would make the click
   // look like it did nothing.
+  //
+  // ONLY FOR A CLICK, THOUGH. A reply-all seeds Cc from the original
+  // message, and focus for a reply belongs in the body (above); letting
+  // the seed fire this would drag the cursor into Cc a beat after the
+  // composer opened, which reads as the app grabbing the keyboard.
   useEffect(() => {
-    if (isCcShown) ccInputRef.current?.focus();
+    if (isCcShown && isCcRevealedByUserRef.current) ccInputRef.current?.focus();
   }, [isCcShown]);
 
   /**
@@ -201,7 +277,14 @@ export default function Compose({ onClose, onSent, onDirtyChange }: ComposeProps
   const validation = useMemo(() => validateCompose(draft), [draft]);
   const errors = hasAttemptedSend ? validation.errors : NO_ERRORS;
 
-  const isDirty = hasDraftContent(draft);
+  /**
+   * A reply opens with its recipients and subject already filled in, so
+   * "is there anything in these fields?" reports an untouched reply as
+   * dirty and puts a native confirm in front of a user who typed nothing.
+   * Found by opening a forward in the running app and pressing Escape.
+   * ../replyDraft.ts's `isDraftDirty` compares against what was SEEDED.
+   */
+  const isDirty = isDraftDirty(draft, seed);
   useEffect(() => {
     onDirtyChange(isDirty);
   }, [isDirty, onDirtyChange]);
@@ -241,7 +324,12 @@ export default function Compose({ onClose, onSent, onDirtyChange }: ComposeProps
     setSending(true);
     setPartial(null);
 
-    sendMail(draft).then(
+    // The reply fields ride ALONGSIDE the validated draft rather than
+    // inside it: ./composeValidation.ts checks what the user can edit,
+    // and none of these three is editable. `replyWireFields` bundles all
+    // of them so this call cannot carry the threading and forget the
+    // quote, or the other way round.
+    sendMail(reply === undefined ? draft : { ...draft, ...replyWireFields(reply) }).then(
       (results) => {
         inFlightRef.current = false;
         setSending(false);
@@ -273,6 +361,10 @@ export default function Compose({ onClose, onSent, onDirtyChange }: ComposeProps
     setCc(keep(cc));
   }
 
+  // Walks the message body once (UTF-8 byte length) to decide whether the
+  // quote fits, so it is memoised against a body that can be 90 KB.
+  const quoteNotice = useMemo(() => quoteNoticeFor(reply), [reply]);
+
   const isLoadingIdentities = identityLoad.status === 'loading';
   const canSend = !isSending && identityLoad.status === 'ready' && identities.length > 0;
 
@@ -289,7 +381,7 @@ export default function Compose({ onClose, onSent, onDirtyChange }: ComposeProps
       <Card>
         <header className="flex items-center justify-between gap-3 border-b border-neutral-200 px-4 py-3 dark:border-border sm:px-6 sm:py-4">
           <h2 id={titleId} className="text-base font-semibold">
-            New message
+            {composerTitleFor(reply?.mode ?? null)}
           </h2>
           <Button type="button" variant="ghost" size="sm" onClick={requestClose} disabled={isSending}>
             Cancel
@@ -373,7 +465,10 @@ export default function Compose({ onClose, onSent, onDirtyChange }: ComposeProps
               variant="ghost"
               size="sm"
               disabled={isSending}
-              onClick={() => setCcShown(true)}
+              onClick={() => {
+                isCcRevealedByUserRef.current = true;
+                setCcShown(true);
+              }}
             >
               Add Cc
             </Button>
@@ -428,6 +523,15 @@ export default function Compose({ onClose, onSent, onDirtyChange }: ComposeProps
               </p>
             )}
           </div>
+
+          {quoteNotice !== null && (
+            /* Quiet, and stated where the user is looking when they
+               finish writing. The quote itself is assembled server-side
+               (../replyDraft.ts's header), so there is nothing here to
+               preview — only the promise that it will be there, or the
+               admission that it will not. */
+            <p className="text-xs text-muted-foreground">{quoteNotice}</p>
+          )}
 
           <ComposeOutcome
             partial={partial}

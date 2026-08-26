@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../src/api';
-import { SendRejection, getIdentities, primaryIdentityId, sendMail } from '../src/composeApi';
+import {
+  SendRejection,
+  getIdentities,
+  identityIdForAccount,
+  primaryIdentityId,
+  sendMail,
+} from '../src/composeApi';
 
 /**
  * The two calls the composer makes. Same rules as every other request
@@ -115,6 +121,79 @@ describe('sendMail', () => {
     });
   });
 
+  it('sends NO reply fields at all for a plain compose', async () => {
+    // A message with no threading and no quote must put the same bytes on
+    // the wire it always has: sync/src/api/send.ts refuses a PRESENT but
+    // unusable field with a 400, so an explicit `inReplyTo: null` or an
+    // empty `references: []` would be a regression, not a no-op.
+    const f = vi.fn().mockResolvedValue(jsonResponse({ results: [] }));
+    await sendMail(REQUEST, f);
+    const body = JSON.parse(String(f.mock.calls[0]?.[1]?.body));
+    expect(Object.keys(body).sort()).toEqual(
+      ['cc', 'identityId', 'subject', 'textBody', 'to'].sort(),
+    );
+  });
+
+  it('carries the threading headers when replying', async () => {
+    const f = vi.fn().mockResolvedValue(jsonResponse({ results: [] }));
+    await sendMail(
+      { ...REQUEST, inReplyTo: '<c@example.com>', references: ['<a@example.com>', '<c@example.com>'] },
+      f,
+    );
+    const body = JSON.parse(String(f.mock.calls[0]?.[1]?.body));
+    // Angle brackets INTACT: the route emits these verbatim as headers,
+    // and a value stripped here sends fine and lands unthreaded.
+    expect(body.inReplyTo).toBe('<c@example.com>');
+    expect(body.references).toEqual(['<a@example.com>', '<c@example.com>']);
+  });
+
+  it('omits an EMPTY references array rather than sending a blank header', async () => {
+    const f = vi.fn().mockResolvedValue(jsonResponse({ results: [] }));
+    await sendMail({ ...REQUEST, references: [] }, f);
+    const body = JSON.parse(String(f.mock.calls[0]?.[1]?.body));
+    expect('references' in body).toBe(false);
+  });
+
+  it('sends the quote SOURCE, never a built quote', async () => {
+    // The client cannot build the quote: spec 5.6's strip of our own
+    // tracking pixel needs TRACKING_BASE_URL, which this module
+    // deliberately never learns. sync/src/send/quote.ts assembles it.
+    const f = vi.fn().mockResolvedValue(jsonResponse({ results: [] }));
+    await sendMail(
+      {
+        ...REQUEST,
+        quote: {
+          originalHtml: '<p>hi</p>',
+          originalText: null,
+          fromLabel: 'Ada <ada@x.com>',
+          sentAtMs: 1_700_000_000_000,
+        },
+      },
+      f,
+    );
+    const body = JSON.parse(String(f.mock.calls[0]?.[1]?.body));
+    expect(body.quote).toEqual({
+      originalHtml: '<p>hi</p>',
+      originalText: null,
+      fromLabel: 'Ada <ada@x.com>',
+      sentAtMs: 1_700_000_000_000,
+    });
+    expect(String(f.mock.calls[0]?.[1]?.body)).not.toContain('gmail_quote');
+  });
+
+  it('sends sentAtMs as a NUMBER — the route refuses an ISO string', async () => {
+    const f = vi.fn().mockResolvedValue(jsonResponse({ results: [] }));
+    await sendMail(
+      {
+        ...REQUEST,
+        quote: { originalHtml: null, originalText: 'x', fromLabel: 'a@x.com', sentAtMs: 1 },
+      },
+      f,
+    );
+    const body = JSON.parse(String(f.mock.calls[0]?.[1]?.body));
+    expect(typeof body.quote.sentAtMs).toBe('number');
+  });
+
   it('returns the per-recipient results from a 200', async () => {
     const f = vi.fn().mockResolvedValue(
       jsonResponse({
@@ -212,5 +291,27 @@ describe('primaryIdentityId — the account the composer opens on', () => {
 
   it('returns an empty id when there are no identities at all', () => {
     expect(primaryIdentityId([])).toBe('');
+  });
+});
+
+describe('identityIdForAccount', () => {
+  const IDENTITIES = [
+    { id: 'personal', email: 'me@example.com', isPrimary: true },
+    { id: 'harvard', email: 'valen@harvard.edu', isPrimary: false },
+  ];
+
+  it('sends a reply FROM the account that received it (spec 7B)', () => {
+    expect(identityIdForAccount('harvard', IDENTITIES)).toBe('harvard');
+  });
+
+  it('falls back to the primary when that account cannot send', () => {
+    // An account can be synced for reading and absent from the identity
+    // list; a reply that opened on an empty send-from would be unsendable
+    // with no visible reason why.
+    expect(identityIdForAccount('readonly', IDENTITIES)).toBe('personal');
+  });
+
+  it('is the empty string when there are no identities at all', () => {
+    expect(identityIdForAccount('personal', [])).toBe('');
   });
 });

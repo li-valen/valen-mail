@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { FolderId } from '../inboxFilters';
+import type { ReplyMode } from '../replyDraft';
 import { CHORD_TIMEOUT_MS, resolveShortcut } from './shortcuts';
 import type { ChordKey, PendingChord, ShortcutState } from './shortcuts';
 import { describeEventTarget, isActivationElement, isTypingContext } from './typingTarget';
@@ -39,6 +40,10 @@ export interface ShortcutHandlers {
   readonly onOpen: (index: number) => void;
   readonly onCloseReader: () => void;
   readonly onToggleStar: () => void;
+  /** Opens the composer on whichever message is in hand. Async on the
+   *  App side (the parsed body has to be resolved before a quote can be
+   *  built), which is why nothing here awaits it. */
+  readonly onReply: (mode: ReplyMode) => void;
   readonly onGoFolder: (folder: FolderId) => void;
   readonly onOpenHelp: () => void;
   readonly onCloseHelp: () => void;
@@ -147,6 +152,9 @@ export function useKeyboardShortcuts(
           return;
         case 'toggle-star':
           current.onToggleStar();
+          return;
+        case 'reply':
+          current.onReply(action.mode);
           return;
         case 'go-folder':
           current.onGoFolder(action.folder);

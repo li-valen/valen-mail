@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Ref, RefObject } from 'react';
-import { ArrowLeft, FileText, Star } from 'lucide-react';
+import { ArrowLeft, FileText, Forward, Reply, ReplyAll, Star } from 'lucide-react';
 import { ApiError } from '../api';
 import type { InboxMessage, ParsedMessage } from '../api';
 import { messageCache } from '../messageCache';
+import type { ReplyMode } from '../replyDraft';
 import { loadMessage, readCachedMessage, refetchMessage, targetFor } from '../messageLoader';
 import { messagePrefetcher } from '../messagePrefetch';
 import { Alert, AlertDescription } from '../ui/Alert';
@@ -385,6 +386,68 @@ function MessageBody({ parsed, subject }: MessageBodyProps) {
   );
 }
 
+interface ReplyActionsProps {
+  readonly onReply: (mode: ReplyMode) => void;
+  /** False until the body has loaded. The reply needs the PARSED message
+   *  — its html to quote and its Message-ID to thread — so a click before
+   *  then would open a composer that could neither quote nor thread. */
+  readonly isReady: boolean;
+}
+
+/**
+ * Reply, Reply all, Forward — the three actions Plan 9 exists to make
+ * reachable, and the last thing that was still sending the user back to
+ * Gmail.
+ *
+ * **PLACED ABOVE THE BODY, NOT BELOW IT.** Gmail puts them at the bottom
+ * of the message, which is fine for a three-line note and useless for the
+ * 3000px newsletters this reader routinely shows: the primary action
+ * would be a scroll away from the moment the user decides to take it.
+ * Above the body they are visible the instant a message opens, at every
+ * message length, with no second copy anywhere to drift out of sync.
+ *
+ * **`flex-wrap`, AND THAT IS THE WHOLE MOBILE STORY.** Three labelled
+ * buttons wrap onto two lines at 400px and sit on one line everywhere
+ * else. Nothing here is gated to `lg:`, because nothing here is
+ * desktop-only — the phone needs these more than the desktop does, since
+ * it has no keyboard to press `r` on.
+ *
+ * DISABLED RATHER THAN ABSENT while the body loads. Rendering them late
+ * would move the message down under the user's eyes exactly as it became
+ * readable; disabling them costs a moment on a slow fetch and never
+ * reflows.
+ */
+function ReplyActions({ onReply, isReady }: ReplyActionsProps) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 px-1">
+      <Button variant="outline" size="sm" disabled={!isReady} onClick={() => onReply('reply')} aria-keyshortcuts="r">
+        <Reply aria-hidden="true" />
+        Reply
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        disabled={!isReady}
+        onClick={() => onReply('replyAll')}
+        aria-keyshortcuts="a"
+      >
+        <ReplyAll aria-hidden="true" />
+        Reply all
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        disabled={!isReady}
+        onClick={() => onReply('forward')}
+        aria-keyshortcuts="f"
+      >
+        <Forward aria-hidden="true" />
+        Forward
+      </Button>
+    </div>
+  );
+}
+
 export interface MessageViewProps {
   /** The inbox row that was opened. Supplies the header and every path
    *  segment the body and attachment requests are built from. */
@@ -414,6 +477,16 @@ export interface MessageViewProps {
    *  button and the shortcut cannot diverge — and the button is what
    *  makes the feature reachable without a keyboard. */
   readonly onToggleStar?: () => void;
+  /**
+   * Opens the composer on this message. Same handler `r`/`a`/`f` run, for
+   * the same reason `onToggleStar` is shared: one behaviour with two ways
+   * in, rather than two implementations that agree today.
+   *
+   * Optional because the reader is also reachable from the opens rail,
+   * where App.tsx has nothing to reply WITH until the row resolves to a
+   * message.
+   */
+  readonly onReply?: (mode: ReplyMode) => void;
 }
 
 export default function MessageView({
@@ -424,6 +497,7 @@ export default function MessageView({
   onOpen,
   isStarred = false,
   onToggleStar,
+  onReply,
 }: MessageViewProps) {
   const accountId = message.account_id;
   const folder = message.folder;
@@ -590,6 +664,10 @@ export default function MessageView({
           for what replaced the border in each case, including why the
           gap under the header is load-bearing rather than decorative. */}
       <MessageHeader message={message} headingRef={headingRef} />
+
+      {onReply !== undefined && (
+        <ReplyActions onReply={onReply} isReady={load.status === 'ready'} />
+      )}
 
       {load.status === 'loading' && isSlow && (
         <div className="space-y-3 px-1" aria-busy="true">

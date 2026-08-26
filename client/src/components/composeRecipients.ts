@@ -155,3 +155,25 @@ export function includesRecipient(addresses: readonly string[], address: string)
   const key = dedupeKey(address);
   return addresses.some((candidate) => dedupeKey(candidate) === key);
 }
+
+/**
+ * `addresses` with everything in `excluded` removed, compared under the
+ * same case-insensitive key as everything else here.
+ *
+ * The reply derivation's one destructive operation (../replyDraft.ts):
+ * reply-all must drop every address of the user's OWN, or every reply
+ * they send copies themselves. It lives HERE rather than there because
+ * "are these two strings the same mailbox?" already has one answer in
+ * this client, and a second copy of `dedupeKey` is how the composer's
+ * chips and the reply's derivation eventually disagree about whether
+ * `Me@Example.com` and `me@example.com` are one person.
+ *
+ * Returns a NEW array; both inputs are only read.
+ */
+export function excludeRecipients(
+  addresses: readonly string[],
+  excluded: readonly string[],
+): string[] {
+  const keys = new Set(excluded.map(dedupeKey));
+  return addresses.filter((address) => !keys.has(dedupeKey(address)));
+}

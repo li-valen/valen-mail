@@ -26,6 +26,8 @@ function messageOf(html: string): ParsedMessage {
     to: [],
     cc: [],
     date: null,
+    messageId: null,
+    references: [],
     attachments: [],
   };
 }
