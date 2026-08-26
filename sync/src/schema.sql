@@ -54,8 +54,26 @@ create table if not exists messages (
   labels       text[],
   has_attach   boolean not null default false,
   size_bytes   bigint,
+  -- WHEN POSTBOX LEARNED OF THIS MESSAGE, as distinct from `date`, which is
+  -- the message's own Date header and therefore says when the SENDER (or
+  -- Gmail) stamped it. Without this column the database cannot answer the
+  -- one question a sync-latency investigation has to ask — "how long after
+  -- delivery did this row appear?" — and the only way to measure it was to
+  -- poll the table from outside while a probe mail was in flight.
+  --
+  -- Written once, at INSERT, and deliberately NOT refreshed by
+  -- upsertMessage's ON CONFLICT: the sync loop re-polls the newest 50 UIDs
+  -- every cycle, so an `excluded.synced_at` would rewrite this to "a few
+  -- seconds ago" forever and measure nothing.
+  synced_at    timestamptz not null default now(),
   primary key (account_id, folder, uid)
 );
+-- For a database that predates the column above. `now()` is STABLE, not
+-- volatile, so Postgres evaluates it once and stores it as the table's
+-- missing-value rather than rewriting every row — rows that were already
+-- synced get the migration's own timestamp, which is the honest answer
+-- ("not measured") rather than a fabricated one.
+alter table messages add column if not exists synced_at timestamptz not null default now();
 create index if not exists messages_unified on messages (date desc);
 create index if not exists messages_thread on messages (thread_id, date asc);
 create index if not exists messages_from on messages (from_email);

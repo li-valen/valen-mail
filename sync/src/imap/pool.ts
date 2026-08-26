@@ -73,6 +73,43 @@ export const LIVENESS_PROBE_TIMEOUT_MS = 15_000;
 export type IdleWakeReason = 'mail' | 'timeout' | 'idle-ended';
 
 /**
+ * One line of IDLE state for the operator log, and nothing else — this is
+ * diagnostics, so it must never be able to throw into the loop it is
+ * describing.
+ *
+ * Every field answers a hypothesis that has already been raised about why
+ * the 'mail' wake does not fire in production:
+ *  - `mailbox`  — is IDLE armed on INBOX, or did a folder-loop or backfill
+ *                 leave another mailbox selected?
+ *  - `exists`   — imapflow only emits `'exists'` when the untagged count
+ *                 DIFFERS from `mailbox.exists` (untaggedExists() in
+ *                 imap-flow.js), so a count that moves between two wakes
+ *                 with no event in between is the signature of a
+ *                 suppressed notification rather than a missing one.
+ *  - `idling`   — `ImapFlow#idle()` returns immediately when the library's
+ *                 own auto-IDLE already owns the connection, so an
+ *                 'idle-ended' wake with `idling=true` at arm time is the
+ *                 library short-circuit, not a dead socket.
+ *
+ * ACCOUNT/MAILBOX METADATA ONLY — never a subject, address or body, for
+ * the reason backfill.ts's logPage documents.
+ */
+export function describeIdleState(client: ImapFlow): string {
+  try {
+    const mailbox = client.mailbox;
+    const open = typeof mailbox === 'object' && mailbox !== null;
+    return [
+      `mailbox=${open ? mailbox.path : 'none'}`,
+      `exists=${open ? mailbox.exists : 'n/a'}`,
+      `idling=${client.idling}`,
+      `usable=${client.usable}`,
+    ].join(' ');
+  } catch {
+    return 'mailbox=? exists=? idling=? usable=?';
+  }
+}
+
+/**
  * Waits for one of three things, whichever happens first:
  *  - the server pushes a mailbox change ('mail') — imapflow's `idle()`
  *    promise does NOT resolve on new mail by itself; new mail only ever
@@ -418,6 +455,7 @@ export class ConnectionPool {
         await connection.connect();
         if (!this.running) break; // stop() raced this connect(); it already owns cleanup for this instance.
         this.statuses.set(account.id, 'connected');
+        this.watchExists(account.id, connection.rawClient());
 
         // NOTE: `attempt` is deliberately NOT reset here. A successful TCP
         // + auth handshake proves only that Gmail accepted the credential;
@@ -471,10 +509,52 @@ export class ConnectionPool {
     this.statuses.set(account.id, 'stopped');
   }
 
+  /**
+   * INSTRUMENTATION (push-latency investigation). A second, permanent
+   * `'exists'` listener that only logs.
+   *
+   * `waitForIdleWake` attaches and detaches its own listener around each
+   * wait, so an `'exists'` the library emits while a sync cycle is running
+   * — or while nothing is waiting at all — is invisible. That ambiguity is
+   * exactly what has to be resolved: it separates "imapflow never emitted
+   * the event" (IDLE is not actually armed, or the event is being
+   * suppressed below us) from "it emitted and the wait did not return
+   * 'mail'" (the bug is in our own wait).
+   *
+   * Attached once per connection, right after connect(), so it lives and
+   * dies with the client — a reconnect builds a new ImapFlow and this is
+   * re-attached to that one. Two listeners at most, well under Node's
+   * default max, and the handler does nothing but write a line.
+   */
+  private watchExists(accountId: string, client: ImapFlow): void {
+    client.on('exists', (event) => {
+      console.error(
+        `account "${accountId}": imapflow emitted 'exists' ` +
+          `path=${event.path} count=${event.count} prevCount=${event.prevCount}`,
+      );
+    });
+  }
+
   private async idleLoop(accountId: string, connection: ImapConnection): Promise<void> {
     const client = connection.rawClient();
     while (this.running) {
+      // INSTRUMENTATION (push-latency investigation). The wake reason has
+      // always been read and branched on here and never logged, which left
+      // "does the 'mail' wake fire in production?" unanswerable from the
+      // outside — the only visible proxy was backfill's own page cadence.
+      // One line per wake, carrying the reason, the measured wait and the
+      // connection's IDLE state before and after, is the whole diagnostic:
+      // an 'idle-ended' at ~0.0s is the imapflow short-circuit, an
+      // 'idle-ended' at 180.0s is a real timeout, and 'mail' at all is the
+      // thing that is supposedly never happening.
+      const armedAt = Date.now();
+      const armedState = describeIdleState(client);
       const reason = await waitForIdleWake(client, IDLE_LIVENESS_CHECK_INTERVAL_MS);
+      console.error(
+        `account "${accountId}": idle wake reason=${reason} ` +
+          `waited=${((Date.now() - armedAt) / 1_000).toFixed(1)}s ` +
+          `armed[${armedState}] woke[${describeIdleState(client)}]`,
+      );
       if (!this.running) break;
 
       if (reason !== 'mail') {

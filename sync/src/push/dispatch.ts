@@ -341,7 +341,33 @@ export async function notifyNewMail(
 
   for (const message of notifyWorthy) {
     await dispatchToAll(db, vapid, subscriptions, buildMailNotification(message), sendImpl);
+    logMailDispatched(message);
   }
+}
+
+/**
+ * INSTRUMENTATION (push-latency investigation). One line per new-mail push
+ * that actually reached the send path, with how far behind the message's
+ * own Date header it went out.
+ *
+ * This is what separates "push is slow" from "sync is slow": a lag of
+ * minutes here, on a line written the instant after the send, means the
+ * message was learned about minutes late, not that the push service was.
+ *
+ * ACCOUNT, FOLDER, UID AND A DURATION ONLY. No subject, no address, and —
+ * per this module's own endpoint-is-a-credential rule — no endpoint.
+ * `isRecentEnough` has already guaranteed a non-null `date` for every
+ * message that reaches here; the null branch exists so this can never
+ * become the thing that throws inside a dispatch loop.
+ */
+function logMailDispatched(message: MessageInput): void {
+  const lag = message.date === null
+    ? 'unknown (no Date header)'
+    : `${((Date.now() - message.date.getTime()) / 1_000).toFixed(1)}s`;
+  console.error(
+    `push: dispatched new-mail for account "${message.accountId}" ` +
+      `folder "${message.folder}" uid ${message.uid} — ${lag} after its Date header`,
+  );
 }
 
 /**

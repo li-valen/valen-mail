@@ -511,6 +511,11 @@ export function openDb(databaseUrl: string): Db {
            -- also makes a FAILED preview fetch harmless: it writes NULL,
            -- which now means "no new preview", not "erase the old one".
            snippet=coalesce(excluded.snippet, messages.snippet),
+           -- synced_at is deliberately absent from this SET list. It
+           -- records when this row was FIRST written — the moment Postbox
+           -- learned the message existed — and the newest 50 UIDs arrive
+           -- here again every cycle, so touching it would overwrite the
+           -- one measurement it exists to preserve.
            has_attach=excluded.has_attach`,
         [m.accountId, m.uid, m.folder, m.messageId, m.threadId, m.subject, m.fromName,
          m.fromEmail, m.toEmails, m.ccEmails, m.date, m.snippet, m.flags, m.labels,
