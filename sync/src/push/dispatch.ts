@@ -106,6 +106,28 @@ function isOwnAddress(address: string, ownAddresses: readonly string[]): boolean
  * "{recipientEmail} opened your mail". Nothing recorded about such a hit
  * separates it from the real thing.
  *
+ * THAT RESIDUAL WAS INVESTIGATED AND IS NOT CLOSEABLE HERE. Two shapes
+ * were scored and both lose (task-self-open-report.md has the evidence):
+ *
+ *  - Suppressing the pixel in the retained copy AT SEND TIME is
+ *    structurally impossible. One SMTP transaction is MAIL FROM + RCPT TO
+ *    + DATA; Gmail delivers DATA and files DATA, and RCPT TO cannot be
+ *    empty — so every copy Gmail retains is byte-identical to one a real
+ *    recipient received, carrying that recipient's live token. Spec 5.3.1
+ *    already states the auto-save cannot be suppressed.
+ *  - Marking the retained copy's tokens `'self'` would suppress the very
+ *    opens this feature exists to report. By the line above, EVERY minted
+ *    token rides in a copy the sender retains, so that set is not a subset
+ *    — it is all of them. At one recipient (the common case) it silences
+ *    100% of that send's tracking.
+ *
+ * The fix is post-hoc: replace the sender's retained copy with one whose
+ * pixel carries an unminted — therefore inert — token, and gate the push
+ * on that replacement being CONFIRMED, so an unhardened send stays silent
+ * rather than claiming. It needs nothing from tracking/ (an unminted token
+ * records nothing; see lookupToken's early return), and it needs a live
+ * measurement of Gmail's Sent-copy behaviour before it can be built.
+ *
  * PUSH ONLY. Rule 2 suppresses the notification, never the event: the
  * opens feed (GET /api/opens, ../api/routes.ts's `handleOpens`) returns
  * every event the tracking service reports, unfiltered. Seeing "you
