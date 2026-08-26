@@ -347,6 +347,13 @@ export default function AppShell({
 }: AppShellProps) {
   const [isMobileMenuOpen, setMobileMenuOpen] = useState(false);
 
+  /** The floating Compose button shows on every view EXCEPT the composer
+   *  itself. Derived once here rather than twice inline, because `<main>`
+   *  reserves the space it occupies and the two must not disagree — space
+   *  reserved with no button is a gap, and a button with no space reserved
+   *  covers the last row. */
+  const showComposeFab = view !== 'compose';
+
   // Every sidebar control closes the drawer after acting: below `lg:` the
   // sidebar covers the content it just changed, so leaving it open would
   // hide the result of the click that opened it.
@@ -620,7 +627,17 @@ export default function AppShell({
             their own. */}
         <main
           ref={contentRef}
-          className="flex-1 overflow-y-auto overflow-x-hidden pb-[var(--safe-bottom)] pl-[var(--safe-left)] pr-[var(--safe-right)]"
+          className={cn(
+            'flex-1 overflow-y-auto overflow-x-hidden pl-[var(--safe-left)] pr-[var(--safe-right)]',
+            // Room for the floating Compose button to sit over, so the last
+            // row of a list — or the last line of a message — can still be
+            // scrolled clear of it. Only while that button is actually
+            // showing: 80px of dead space under the composer would be a
+            // second bug fixing the first.
+            showComposeFab
+              ? 'pb-[calc(var(--safe-bottom)+5rem)] lg:pb-[var(--safe-bottom)]'
+              : 'pb-[var(--safe-bottom)]',
+          )}
           aria-busy={isBusy}
         >
           {/* `lg:py-6`, down from `lg:py-8`: there is a 64px bar above
@@ -649,6 +666,41 @@ export default function AppShell({
             {children}
           </div>
         </main>
+
+        {/* COMPOSE, WITHIN REACH OF A THUMB.
+            Below `lg:` the sidebar is a closed drawer, so the only Compose
+            button in the layout was two taps and an animation away — open
+            the drawer, find the button, and the drawer closes again. Every
+            mail client this one is meant to replace puts writing a message
+            one tap from the list, because it is the only action in a
+            mailbox that is not a response to something already on screen.
+
+            It is a SECOND control for the same action rather than a moved
+            one: the drawer's copy stays, because that is where a keyboard
+            or screen-reader user walking the sidebar expects to meet it,
+            and it is the copy `composeButtonRef` returns focus to.
+
+            Hidden while composing — an action that is already the whole
+            screen does not need a shortcut to itself — and `lg:hidden`,
+            because above `lg:` the rail's button is permanently visible.
+
+            `z-30` puts it UNDER the drawer's scrim (`z-40`) and panel
+            (`z-50`), so opening the drawer covers it rather than leaving a
+            button floating over a dimmed page. */}
+        {showComposeFab && (
+          <Button
+            type="button"
+            size="icon"
+            onClick={() => selectView('compose')}
+            className="fixed z-30 h-14 w-14 rounded-full shadow-lg [&_svg]:size-6 lg:hidden bottom-[calc(1rem+var(--safe-bottom))] right-[calc(1rem+var(--safe-right))]"
+          >
+            <SquarePen aria-hidden="true" />
+            {/* The button is an icon, so its name has to come from
+                somewhere; `sr-only` text is the idiom already used by this
+                file's own menu buttons. */}
+            <span className="sr-only">Compose</span>
+          </Button>
+        )}
       </div>
     </div>
   );

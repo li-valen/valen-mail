@@ -29,6 +29,52 @@ function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 }
 
+describe('reaching Compose below lg:, where the sidebar is a closed drawer', () => {
+  const shell = stripComments(appShellSource);
+
+  it('offers a fixed Compose control that mobile can see without opening the drawer', () => {
+    // The drawer's copy is two taps and an animation away, and it closes
+    // again behind you. This is the one action in a mailbox that is not a
+    // response to something already on screen, so it gets a permanent
+    // affordance. Verified in a browser at 393x852: 56x56 at the bottom
+    // right, inside the viewport, clear of the last row at scroll-bottom.
+    expect(shell).toMatch(/className="fixed z-30[^"]*lg:hidden[^"]*"/);
+  });
+
+  it('keeps it out of the way of the drawer rather than floating over the scrim', () => {
+    // The scrim is z-40 and the panel z-50. A fixed button at z-40+ would
+    // sit on top of a dimmed page looking live while doing nothing.
+    const fab = /className="fixed z-(\d+)[^"]*lg:hidden/.exec(shell);
+    expect(fab).not.toBeNull();
+    expect(Number(fab![1])).toBeLessThan(40);
+  });
+
+  it('gives the icon-only button a name, since it has no visible text', () => {
+    expect(shell).toMatch(/<span className="sr-only">Compose<\/span>/);
+  });
+
+  it('reserves the space it covers, and only while it is showing', () => {
+    // Space with no button is a gap at the foot of every list; a button
+    // with no space covers the last row. The two come from ONE flag so
+    // they cannot drift apart.
+    expect(shell).toMatch(/const showComposeFab = view !== 'compose'/);
+    expect(shell).toMatch(/showComposeFab\s*\n?\s*\?\s*'pb-\[calc\(var\(--safe-bottom\)\+5rem\)\] lg:pb-\[var\(--safe-bottom\)\]'/);
+    expect(shell).toMatch(/:\s*'pb-\[var\(--safe-bottom\)\]'/);
+  });
+
+  it('sits inside the safe area on a notched phone, like every other fixed edge here', () => {
+    expect(shell).toMatch(/bottom-\[calc\(1rem\+var\(--safe-bottom\)\)\]/);
+    expect(shell).toMatch(/right-\[calc\(1rem\+var\(--safe-right\)\)\]/);
+  });
+
+  it('does NOT remove the drawer copy, which is where keyboard focus returns', () => {
+    // AppShell hands `composeButtonRef` to the rail/drawer button so the
+    // composer can return focus to it. Deleting that copy in favour of the
+    // floating one would strand focus.
+    expect(shell).toMatch(/ref=\{composeButtonRef\}/);
+  });
+});
+
 describe('safe-area insets under viewport-fit=cover', () => {
   it('index.html still opts the app into drawing under the notch', () => {
     // If this ever goes away, the padding below becomes dead weight
