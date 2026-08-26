@@ -99,6 +99,29 @@ export interface ParsedMessage {
   /** Epoch milliseconds — this codebase's wire convention for a timestamp
    *  (see ./opens.ts's OpenEvent), not an ISO string. */
   readonly date: number | null;
+  /**
+   * This message's `Message-ID`, **with its angle brackets**, or null when
+   * the message carries none (which is legal, if unusual, and means "this
+   * cannot be replied to in-thread").
+   *
+   * WITH BRACKETS IS DELIBERATE AND LOAD-BEARING. This value is emitted
+   * VERBATIM as the `In-Reply-To` header of a reply (../send/send.ts), so
+   * what leaves here has to be header-shaped rather than id-shaped.
+   *
+   * Note the asymmetry this creates with the rest of the project, because
+   * it will otherwise be discovered the expensive way: tracking's own
+   * `messageId` is stored WITHOUT brackets, while the synced `message_id`
+   * column DOES carry them. A future matcher that compares this field to a
+   * tracking row without normalising will silently never match — not throw,
+   * not warn, just report every tracked send as unmatched.
+   */
+  readonly messageId: string | null;
+  /**
+   * The `References` chain, oldest → newest, each entry with its angle
+   * brackets. `[]` when the header is absent — never null, because every
+   * caller concatenates this and `[]` concatenates while null throws.
+   */
+  readonly references: readonly string[];
   readonly attachments: readonly ParsedAttachment[];
 }
 
@@ -133,6 +156,34 @@ export function flattenAddresses(
   };
 
   return objects.flatMap((object) => (object?.value ?? []).flatMap(flattenEntry));
+}
+
+/**
+ * Flattens the `References` header into an ordered list of message ids.
+ *
+ * mailparser hands back a STRING when the header carries exactly one
+ * reference and an ARRAY when it carries several — the same shape hazard
+ * `flattenAddresses` above already handles for address headers, and
+ * verified against mailparser rather than inferred from its types. A
+ * caller that assumed an array would spread a single-reference string into
+ * one "reference" per character and emit a header of garbage.
+ *
+ * Absent becomes `[]`, never null: see ParsedMessage.references.
+ *
+ * Entries are trimmed and empty ones dropped. Neither is reachable from
+ * today's mailparser (an unfolded continuation comes back already split
+ * and already trimmed), and both are kept anyway because the failure they
+ * prevent is silent: a reference that keeps a leading space, or an empty
+ * entry that becomes a hole in the emitted header, produces a reply that
+ * looks sent and lands unthreaded. tests/message-route.test.ts pins both
+ * directly, so neither is untested defensive code.
+ */
+export function normalizeReferences(
+  value: string | readonly string[] | undefined,
+): readonly string[] {
+  if (value === undefined) return [];
+  const list = typeof value === 'string' ? [value] : value;
+  return list.map((entry) => entry.trim()).filter((entry) => entry.length > 0);
 }
 
 /**
@@ -247,6 +298,8 @@ export function toParsedMessage(parsed: ParsedMail): ParsedMessage {
     to: flattenAddresses(parsed.to),
     cc: flattenAddresses(parsed.cc),
     date: Number.isFinite(date) ? date : null,
+    messageId: textOrNull(parsed.messageId),
+    references: normalizeReferences(parsed.references),
     attachments: (parsed.attachments ?? []).map(toParsedAttachment),
   };
 }

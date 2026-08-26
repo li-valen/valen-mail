@@ -117,6 +117,8 @@ function messageOfBytes(filler: string): ParsedMessage {
     to: [],
     cc: [],
     date: null,
+    messageId: null,
+    references: [],
     attachments: [],
   };
 }

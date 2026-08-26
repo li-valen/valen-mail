@@ -1,0 +1,12 @@
+From: Ada <ada@example.com>
+To: you@example.com
+Subject: Re: numbers
+Date: Tue, 25 Aug 2026 12:00:00 +0000
+Message-ID: <c@example.com>
+References: <a@example.com>
+ <b@example.com>
+In-Reply-To: <b@example.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+body

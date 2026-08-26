@@ -8,12 +8,12 @@
  * a declared dependency before anything imported it, so the parsed-message
  * route (Plan 6 Task 1) adds no package; a types-only devDependency would
  * have been the one new package name in that plan, for a surface this
- * service uses four fields of.
+ * service uses a handful of fields of.
  *
  * Narrow on purpose. This declares what src/api/message.ts actually reads,
  * not mailparser's full API (MailParser the stream class, headers/
- * headerLines, textAsHtml, references, replyTo, priority, checksums,
- * per-attachment header maps, ...). Everything below was verified by
+ * headerLines, textAsHtml, replyTo, priority, checksums, per-attachment
+ * header maps, ...). Everything below was verified by
  * running the real parser over the fixtures in tests/fixtures/messages/,
  * not written from memory — in particular:
  *
@@ -79,6 +79,21 @@ declare module 'mailparser' {
     readonly from?: AddressObject;
     readonly to?: AddressObject | readonly AddressObject[];
     readonly cc?: AddressObject | readonly AddressObject[];
+    /** The `Message-ID` header, angle brackets INCLUDED, or undefined when
+     *  the message carries none. */
+    readonly messageId?: string;
+    /**
+     * The `References` chain, oldest → newest, each entry with its angle
+     * brackets.
+     *
+     * The union is not defensive typing — it is what the parser genuinely
+     * returns, verified against mailparser 3.9 over real header bytes: a
+     * BARE STRING for exactly one reference, an ARRAY for several,
+     * `undefined` for an absent header and `[]` for a present-but-empty
+     * one. Same shape hazard `to`/`cc` carry above. Normalised by
+     * `normalizeReferences` in src/api/message.ts.
+     */
+    readonly references?: string | readonly string[];
     readonly attachments: readonly Attachment[];
   }
 

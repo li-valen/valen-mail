@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createRouter } from '../src/api/routes';
-import { handleMessage, type ParsedMessage } from '../src/api/message.ts';
+import { handleMessage, normalizeReferences, type ParsedMessage } from '../src/api/message.ts';
 import { MessageCache } from '../src/api/message-cache.ts';
 import {
   AUTH as auth,
@@ -468,5 +468,82 @@ describe('parsed message route / own-pixel stripping (spec 5.6)', () => {
     );
 
     expect(body.html).toContain(OUR_PIXEL);
+  });
+});
+
+describe('parsed message route / threading headers (Plan 9 Task 1)', () => {
+  it('exposes Message-ID and References so a reply can thread', async () => {
+    // The fixture folds `References` across two lines, which is the
+    // real-world shape: RFC 5322 wraps long header values, and Gmail wraps
+    // every thread past two or three messages.
+    const body = await readJson<ParsedMessage>(await get(routerServing('threaded-reply')));
+
+    // Brackets retained — these values are emitted VERBATIM as In-Reply-To
+    // and References by the send route, so what leaves here is
+    // header-shaped, not id-shaped.
+    expect(body.messageId).toBe('<c@example.com>');
+    expect(body.references).toEqual(['<a@example.com>', '<b@example.com>']);
+  });
+
+  it('a message with no References yields [] rather than null', async () => {
+    // Every caller concatenates this. [] concatenates; null throws.
+    const body = await readJson<ParsedMessage>(await get(routerServing('html-text-attachment')));
+
+    expect(body.messageId).toBe('<report-1@example.com>');
+    expect(body.references).toEqual([]);
+  });
+
+  it('a message with no Message-ID yields null rather than an empty string', async () => {
+    // text-only.eml carries no Message-ID at all. Null is "cannot thread",
+    // which the send route must be able to tell apart from a real id.
+    const body = await readJson<ParsedMessage>(await get(routerServing('text-only')));
+
+    expect(body.messageId).toBeNull();
+    expect(body.references).toEqual([]);
+  });
+});
+
+describe('normalizeReferences', () => {
+  /**
+   * The shape hazard, pinned directly rather than through a fixture:
+   * mailparser types `references` as `string | string[] | undefined` and
+   * genuinely hands back a BARE STRING when the header carries exactly one
+   * reference (verified against mailparser 3.x, not inferred). A caller
+   * that assumed an array would spread that string into 15 one-character
+   * "references" and emit a header of garbage.
+   */
+  it('wraps a single bare-string reference into a one-element array', () => {
+    expect(normalizeReferences('<a@example.com>')).toEqual(['<a@example.com>']);
+  });
+
+  it('keeps an array in order, oldest first', () => {
+    expect(normalizeReferences(['<a@example.com>', '<b@example.com>'])).toEqual([
+      '<a@example.com>',
+      '<b@example.com>',
+    ]);
+  });
+
+  it('returns [] for an absent header', () => {
+    expect(normalizeReferences(undefined)).toEqual([]);
+  });
+
+  it('trims surrounding whitespace off each entry', () => {
+    // An entry that keeps a leading space becomes ` <a@example.com>` in the
+    // emitted header — legal-looking and, in a client that compares ids
+    // literally, unthreaded.
+    expect(normalizeReferences([' <a@example.com>', '<b@example.com> '])).toEqual([
+      '<a@example.com>',
+      '<b@example.com>',
+    ]);
+  });
+
+  it('drops entries that are empty or whitespace-only rather than emitting them', () => {
+    // A `References:` value that unfolds to a blank continuation must not
+    // become an empty reference: emitted verbatim it produces `References:
+    // <a@example.com>  <b@example.com>` with a hole in it.
+    expect(normalizeReferences(['<a@example.com>', '', '   ', '<b@example.com>'])).toEqual([
+      '<a@example.com>',
+      '<b@example.com>',
+    ]);
   });
 });
