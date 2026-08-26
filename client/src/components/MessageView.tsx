@@ -23,6 +23,7 @@ import {
   IFRAME_SANDBOX,
   bodyKind,
   estimatedBodyHeightPx,
+  safeGroundColor,
   srcDocFor,
 } from './messageBody';
 
@@ -273,7 +274,36 @@ function BodyFrame({ html, subject }: BodyFrameProps) {
   // deps for exactly that reason: toggling it MUST rebuild the document,
   // and must not rebuild it for anything else.
   const height = useMemo(() => estimatedBodyHeightPx(html, width), [html, width]);
-  const doc = useMemo(() => srcDocFor(html, isDark ? 'dark' : 'light'), [html, isDark]);
+  /**
+   * THE APP'S OWN GROUND, READ FROM THE LIVE PALETTE rather than written
+   * into the stylesheet as a literal.
+   *
+   * A dark message is painted on an opaque colour that must equal the
+   * card it sits in, or the seam this whole treatment exists to remove
+   * simply moves to the frame's edge. `--color-card` is what `bg-card`
+   * below resolves to, so reading it here makes the two the same value by
+   * construction instead of by a comment asking someone to keep them in
+   * step. `safeGroundColor` (../components/messageBody.ts) decides what
+   * may reach the stylesheet, and supplies the fallback when this cannot
+   * be read at all.
+   *
+   * Keyed on `isDark` so a theme change re-reads it — the token's value
+   * differs per theme, and this is the moment the document is rebuilt
+   * anyway.
+   */
+  const ground = useMemo(
+    () =>
+      safeGroundColor(
+        typeof window === 'undefined'
+          ? null
+          : getComputedStyle(document.documentElement).getPropertyValue('--color-card'),
+      ),
+    [isDark],
+  );
+  const doc = useMemo(
+    () => srcDocFor(html, isDark ? 'dark' : 'light', ground),
+    [html, isDark, ground],
+  );
 
   return (
     <div className="flex flex-col gap-2">

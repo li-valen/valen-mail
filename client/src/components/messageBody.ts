@@ -225,19 +225,110 @@ export type BodyScheme = 'light' | 'dark';
  * to the original rendering, which is the same mitigation Outlook ships;
  * neither is a reason to hand the user a white rectangle at night.
  *
- * `color-scheme:dark` replaces the `light` set above so the UA's own
- * scrollbars and form controls inside the frame match the inverted page.
- * The `background` stays WHITE deliberately: it is the input to the
- * filter, and inverting white is what produces the near-black ground.
+ * **THE FILTER IS ON `body`, AND THE GROUND IS PAINTED ON `html`.** That
+ * split is the whole of the seam fix, and it is worth spelling out
+ * because two more obvious arrangements are both wrong.
+ *
+ * The ground used to be the `#ffffff` BODY_STYLE sets, on the reasoning
+ * that white is the input the filter turns into a near-black ground.
+ * Right about the mechanism, wrong about the result: white inverts to
+ * `#000000` EXACTLY, while the app around the frame is `--background`
+ * (`hsl(224 71% 4%)`, `#030711`). Two different blacks a few units apart
+ * read as a visible edge, and the user could point at the seam on a
+ * phone screenshot — *"you can tell where the cutoffs are from the app
+ * and the actual email; it should be unnoticeable and seamless."*
+ *
+ * **SOLVING FOR A BETTER PRE-FILTER CONSTANT DOES NOT WORK.**
+ * `invert(hue-rotate(180deg, C))` has no exact answer for `C = #030711`
+ * in 8-bit colour — the closest candidate MEASURES `#050a12`, three units
+ * off in green, because CSS `hue-rotate` is a lossy matrix approximation
+ * rather than a true involution. A near-miss constant would also rot
+ * silently the moment the palette moved.
+ *
+ * **AND MAKING THE GROUND TRANSPARENT DOES NOT WORK EITHER — this was
+ * tried, shipped to the user, and came back as *"dark mode not working
+ * here"*: a white card with near-invisible pale-grey text.** The root
+ * element's background PROPAGATES TO THE CANVAS, and the canvas is
+ * painted outside the root's own filter. Transparent on both boxes
+ * therefore does not mean "nothing is painted" — nothing is never
+ * painted — it means the UA falls back to the canvas colour implied by
+ * `color-scheme`, which for `light` is an OPAQUE `#ffffff`. The sender's
+ * near-black text duly inverted to near-white and then sat on a ground
+ * the filter could not reach. (The same trap in the other direction is
+ * why `color-scheme:dark` yields an opaque `#121212`.)
+ *
+ * So the ground is painted OUTSIDE the filter instead of inside it:
+ * `html` carries an opaque colour and no filter, `body` carries the
+ * filter and no background. The ground stops being an input to the
+ * transform at all — there is no `invert(hue-rotate(…))` to undo and no
+ * rounding loss to eat, and the app's own colour reaches the pixel
+ * literally. `body` MUST stay transparent: anything painted there lands
+ * inside the filter and inverts.
+ *
+ * The colour itself is READ FROM THE LIVE PALETTE by MessageView.tsx and
+ * passed in, rather than written here, so the frame cannot drift from the
+ * card it sits on. `--card` and `--background` are the same value in dark
+ * (styles.css), which is what makes frame, card and app ground agree by
+ * construction. `safeGroundColor` is what stands between a token and a
+ * stylesheet — see its own doc.
+ *
+ * **`color-scheme` STAYS `light`.** It was `dark`, to make the UA's own
+ * scrollbars and form controls "match the inverted page". Measurement
+ * says that was backwards: everything here is inverted once on the way
+ * out, so the dark controls `dark` draws come back out LIGHT — grey
+ * buttons on a dark message. `light` draws light controls that the filter
+ * then inverts to dark, which is what a dark-rendered page wants. It is
+ * no longer load-bearing for the canvas, because the canvas is now set
+ * explicitly.
  */
-const DARK_BODY_STYLE = [
-  'html{color-scheme:dark;filter:invert(1) hue-rotate(180deg)}',
+function darkBodyStyle(ground: string): readonly string[] {
+  return [
+  // OPAQUE, and deliberately NOT filtered — this is the canvas colour the
+  // whole fix turns on.
+  `html{background:${ground}}`,
+  'body{filter:invert(1) hue-rotate(180deg);background:transparent}',
   // Re-inverted so their pixels survive the page-level transform. `svg` is
   // included because inline SVG in mail is nearly always a logo or icon,
   // i.e. content; where it is used as decoration the double inversion is
   // no worse than the single one would have been.
   'img,picture,video,canvas,svg,embed,object{filter:invert(1) hue-rotate(180deg)}',
-].join('');
+  ];
+}
+
+/**
+ * The ground used when the live palette cannot be read or does not
+ * validate. MUST equal styles.css's dark `--card` / `--background`
+ * (`224 71% 4%`), and tests/theme-tokens.test.ts pins exactly that so the
+ * two cannot drift apart silently.
+ */
+export const DEFAULT_DARK_GROUND = '#030711';
+
+/**
+ * A colour that is safe to interpolate into the message document's
+ * stylesheet.
+ *
+ * The value comes from this app's OWN palette, not from a sender, so this
+ * is not defending against an attacker — it is defending against the
+ * stylesheet becoming a place where arbitrary CSS can arrive. Everything
+ * this file does rests on that `<style>` block containing exactly what it
+ * is believed to contain: a value carrying `}` could close the rule and
+ * open another, and `url(` could reach the network from inside a document
+ * whose whole security story is a `default-src 'none'` CSP. Pinning the
+ * shape is cheap; discovering later that it was never pinned is not.
+ *
+ * Accepts only the three notations a resolved custom property can hold —
+ * `#rgb`-family hex, `rgb()`/`rgba()`, `hsl()`/`hsla()` — with a charset
+ * that admits digits, separators and units and nothing else. Anything
+ * unrecognised falls back to `DEFAULT_DARK_GROUND` rather than throwing:
+ * a mis-read token should cost a slightly stale colour, never a reader
+ * that will not render.
+ */
+const SAFE_GROUND = /^(?:#[0-9a-fA-F]{3,8}|rgba?\([0-9.,%/\s]+\)|hsla?\([0-9.,%/\sdegra]+\))$/;
+
+export function safeGroundColor(raw: string | null | undefined): string {
+  const value = (raw ?? '').trim();
+  return SAFE_GROUND.test(value) ? value : DEFAULT_DARK_GROUND;
+}
 
 /**
  * Builds the complete document handed to the body iframe's `srcdoc`.
@@ -265,7 +356,15 @@ const DARK_BODY_STYLE = [
  * and it has one possible value now, so a parameter nothing sets would be
  * a config knob pretending to still be a decision.
  */
-export function srcDocFor(html: string, scheme: BodyScheme = 'light'): string {
+export function srcDocFor(
+  html: string,
+  scheme: BodyScheme = 'light',
+  /** The opaque ground a DARK document is painted on — the app's own
+   *  `--card`, read live by MessageView.tsx so the frame cannot drift
+   *  from the card it sits in. Ignored in light. Validated, never
+   *  trusted verbatim: see `safeGroundColor`. */
+  ground: string = DEFAULT_DARK_GROUND,
+): string {
   const csp = contentSecurityPolicyFor();
   return (
     '<!doctype html><html><head>' +
@@ -278,7 +377,7 @@ export function srcDocFor(html: string, scheme: BodyScheme = 'light'): string {
     // frame away from the message. `base-uri 'none'` above still blocks a
     // message supplying its own <base href> to re-point relative URLs.
     '<base target="_blank">' +
-    `<style>${BODY_STYLE}${scheme === 'dark' ? DARK_BODY_STYLE : ''}</style>` +
+    `<style>${BODY_STYLE}${scheme === 'dark' ? darkBodyStyle(safeGroundColor(ground)).join('') : ''}</style>` +
     '</head><body>' +
     html +
     '</body></html>'

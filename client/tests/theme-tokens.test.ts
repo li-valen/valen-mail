@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 // dependency list (no @types/node).
 import stylesCss from '../src/styles.css?raw';
 import mainSource from '../src/main.tsx?raw';
+import { DEFAULT_DARK_GROUND } from '../src/components/messageBody';
 
 /**
  * Static guard on the theme architecture.
@@ -386,5 +387,66 @@ describe('parsePaletteBlocks (the checker itself, against synthetic fixtures)', 
       }
     `;
     expect([...parsePaletteBlocks(nested).light]).toEqual(['--nested-token']);
+  });
+});
+
+/**
+ * The message reader's fallback ground must agree with the palette it is
+ * standing in for.
+ *
+ * `DEFAULT_DARK_GROUND` (../src/components/messageBody.ts) is used only
+ * when `--color-card` cannot be read or does not validate. That is a rare
+ * path, which is exactly why it needs pinning: a palette change would
+ * otherwise leave a stale colour in a branch nobody exercises, and the
+ * seam would come back only for the users who hit it.
+ */
+describe('the message ground and the palette agree', () => {
+  /** One token's VALUE out of the bare `.dark { … }` rule.
+   *  `parsePaletteBlocks` above collects NAMES, which is what its own
+   *  tests need; these two need the values. */
+  function darkTokenValue(token: string): string | null {
+    const block = /(?:^|[^-\w])\.dark\s*\{([\s\S]*?)\}/.exec(stylesCss);
+    if (block === null) return null;
+    const decl = new RegExp(`${token}\\s*:\\s*([^;]+);`).exec(block[1]!);
+    return decl === null ? null : decl[1]!.trim();
+  }
+
+  /** `224 71% 4%` -> `#030711`, the same conversion the browser does. */
+  function hslTripletToHex(triplet: string): string | null {
+    const m = /^([\d.]+)\s+([\d.]+)%\s+([\d.]+)%$/.exec(triplet.trim());
+    if (m === null) return null;
+    const [h, s, l] = [Number(m[1]), Number(m[2]) / 100, Number(m[3]) / 100];
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    const seg = Math.floor(h / 60) % 6;
+    const channels = [
+      [c, x, 0], [x, c, 0], [0, c, x], [0, x, c], [x, 0, c], [c, 0, x],
+    ][seg]!;
+    const to = (v: number) => Math.round((v + l - c / 2) * 255).toString(16).padStart(2, '0');
+    return `#${channels.map((v) => to(v!)).join('')}`;
+  }
+
+  it('the fallback equals the dark --card the reader paints against', () => {
+    // `--card` and not `--background`: the frame sits INSIDE the card, so
+    // the card is the colour a seam would be measured against. The two are
+    // the same value in dark, which the next test states outright.
+    const card = darkTokenValue('--card');
+    expect(card).not.toBeNull();
+    expect(hslTripletToHex(card!)).toBe(DEFAULT_DARK_GROUND);
+  });
+
+  it('--card and --background are the same in dark, so frame, card and app ground agree', () => {
+    // This is what makes the seam impossible rather than merely fixed. If
+    // these ever diverge, the message frame will match its card and the
+    // card will not match the page, and the edge moves rather than goes.
+    expect(darkTokenValue('--card')).toBe(darkTokenValue('--background'));
+    expect(darkTokenValue('--card')).not.toBeNull();
+  });
+
+  it('the conversion itself is right, so the two tests above are not vacuous', () => {
+    expect(hslTripletToHex('0 0% 100%')).toBe('#ffffff');
+    expect(hslTripletToHex('0 0% 0%')).toBe('#000000');
+    expect(hslTripletToHex('224 71% 4%')).toBe('#030711');
+    expect(hslTripletToHex('not a triplet')).toBeNull();
   });
 });

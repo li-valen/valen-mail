@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   BODY_HEIGHT_BOUNDS_PX,
+  DEFAULT_DARK_GROUND,
   IFRAME_SANDBOX,
   attachmentUrl,
   bodyKind,
@@ -9,6 +10,7 @@ import {
   formatSize,
   isDownloadable,
   messageKey,
+  safeGroundColor,
   srcDocFor,
 } from '../src/components/messageBody';
 import { formatReceived } from '../src/components/inboxDates';
@@ -536,7 +538,42 @@ describe('srcDocFor dark scheme', () => {
 
   it('inverts the page in dark, so a sender-set text colour cannot go black-on-black', () => {
     const doc = srcDocFor(HTML, 'dark');
-    expect(doc).toContain('html{color-scheme:dark;filter:invert(1) hue-rotate(180deg)}');
+    expect(doc).toContain('body{filter:invert(1) hue-rotate(180deg);background:transparent}');
+  });
+
+  it('puts the filter on BODY and the ground on HTML, never the other way round', () => {
+    // THE WHOLE SEAM FIX. A root background PROPAGATES TO THE CANVAS, and
+    // the canvas is painted OUTSIDE the root's own filter — so a filter on
+    // `html` can never reach the ground it sits on, and a transparent
+    // ground falls back to the opaque colour `color-scheme` implies
+    // (#ffffff for light). That shipped once and came back as "dark mode
+    // not working here": pale-grey text on a white card.
+    const doc = srcDocFor(HTML, 'dark', '#030711');
+    expect(doc).toContain('html{background:#030711}');
+    expect(doc).toContain('body{filter:invert(1) hue-rotate(180deg);background:transparent}');
+    // The filter must NOT be on html, and the ground must NOT be
+    // transparent — either alone re-creates the defect.
+    expect(doc).not.toMatch(/html\{[^}]*filter:/);
+    expect(doc).not.toMatch(/html\{[^}]*background:transparent/);
+  });
+
+  it('paints the ground the caller was given, so the frame matches its card', () => {
+    // Read live from `--color-card` by MessageView, not written here, so
+    // the document ground and the card it sits in cannot drift apart.
+    expect(srcDocFor(HTML, 'dark', 'hsl(224 71% 4%)')).toContain('html{background:hsl(224 71% 4%)}');
+    expect(srcDocFor(HTML, 'dark', 'rgb(3, 7, 17)')).toContain('html{background:rgb(3, 7, 17)}');
+  });
+
+  it('leaves color-scheme at light in dark, so UA controls invert INTO the dark page', () => {
+    // `color-scheme:dark` was measured to do the opposite of what it was
+    // added for: it gives the frame an opaque #121212 canvas (which no
+    // amount of `background:transparent` can see through, so the seam
+    // survives), and the dark controls it draws are inverted once more on
+    // the way out and arrive LIGHT. Keeping BODY_STYLE's `light` is what
+    // makes the UA draw light controls that invert to dark.
+    const doc = srcDocFor(HTML, 'dark');
+    expect(doc).toContain('color-scheme:light');
+    expect(doc).not.toContain('color-scheme:dark');
   });
 
   it('re-inverts media so a photo is not served as a negative', () => {
@@ -546,13 +583,29 @@ describe('srcDocFor dark scheme', () => {
     expect(doc).toMatch(/img,picture,video,canvas,svg,embed,object\{filter:invert\(1\) hue-rotate\(180deg\)\}/);
   });
 
-  it('keeps the pre-filter background WHITE, since white is what inverts to near-black', () => {
-    // A dark literal here would invert to WHITE and hand the user the exact
-    // bright rectangle this change exists to remove — the inverted-twice
-    // trap. Pin it so nobody "fixes" the background to a dark value.
-    const doc = srcDocFor(HTML, 'dark');
-    expect(doc).toContain('background:#ffffff');
-    expect(doc).not.toContain('background:#000');
+  it('overrides the light ground rather than leaving the white one in place', () => {
+    // BODY_STYLE paints html AND body #ffffff. Both must be answered: a
+    // white html ground is the #000000-vs-#030711 seam the user
+    // photographed, and a white BODY box would invert to a black
+    // rectangle over the content area regardless of what the root did.
+    const doc = srcDocFor(HTML, 'dark', '#030711');
+    const css = /<style>([\s\S]*?)<\/style>/.exec(doc)![1]!;
+    // Later rules win, so the dark block must come after the base one.
+    expect(css.lastIndexOf('html{background:#030711}')).toBeGreaterThan(
+      css.indexOf('html{color-scheme:light;background:#ffffff}'),
+    );
+    expect(css.lastIndexOf('background:transparent')).toBeGreaterThan(css.indexOf('color:#111827'));
+  });
+
+  it('leaves the LIGHT document exactly as it was', () => {
+    // Every rule above is a dark-only override, and the `ground` argument
+    // is ignored in light. A light message must still paint its own white
+    // on both boxes and carry no filter at all.
+    const doc = srcDocFor(HTML, 'light', '#030711');
+    expect(doc).toContain('html{color-scheme:light;background:#ffffff}');
+    expect(doc).not.toContain('background:transparent');
+    expect(doc).not.toContain('invert(1)');
+    expect(doc).not.toContain('#030711');
   });
 
   it('still carries the CSP and sandbox-critical head in dark', () => {
@@ -561,5 +614,56 @@ describe('srcDocFor dark scheme', () => {
     const doc = srcDocFor(HTML, 'dark');
     expect(doc).toContain('Content-Security-Policy');
     expect(doc).toContain('<base target="_blank">');
+  });
+});
+
+/**
+ * `safeGroundColor` — what may reach the message document's stylesheet.
+ *
+ * The value is this app's own palette token, not a sender's, so this is
+ * not defending against an attacker. It is defending the one invariant
+ * every other guard in this file rests on: that the `<style>` block
+ * contains exactly what it is believed to contain. A value carrying `}`
+ * could close the rule and open another inside a document whose entire
+ * security story is a `default-src 'none'` CSP.
+ */
+describe('safeGroundColor', () => {
+  it('accepts the notations a resolved custom property can actually hold', () => {
+    for (const value of ['#030711', '#fff', '#030711ff', 'rgb(3, 7, 17)', 'rgba(3,7,17,0.5)', 'hsl(224 71% 4%)', 'hsla(224,71%,4%,1)']) {
+      expect(safeGroundColor(value)).toBe(value);
+    }
+  });
+
+  it('trims, because getPropertyValue returns a leading space', () => {
+    expect(safeGroundColor('  hsl(224 71% 4%)  ')).toBe('hsl(224 71% 4%)');
+  });
+
+  it('refuses anything that could escape the declaration or reach the network', () => {
+    for (const hostile of [
+      '#030711}html{background:#fff',
+      'red;}*{display:none',
+      'url(https://tracker.example/x.png)',
+      'var(--anything)',
+      'expression(alert(1))',
+      '/*',
+      'blue',
+      '',
+    ]) {
+      expect(safeGroundColor(hostile)).toBe(DEFAULT_DARK_GROUND);
+    }
+  });
+
+  it('falls back rather than throwing when the palette cannot be read at all', () => {
+    // A mis-read token should cost a slightly stale colour, never a
+    // reader that will not render.
+    expect(safeGroundColor(null)).toBe(DEFAULT_DARK_GROUND);
+    expect(safeGroundColor(undefined)).toBe(DEFAULT_DARK_GROUND);
+  });
+
+  it('is what srcDocFor applies, so no caller can bypass it', () => {
+    expect(srcDocFor('<p>x</p>', 'dark', 'red;}*{display:none')).toContain(
+      `html{background:${DEFAULT_DARK_GROUND}}`,
+    );
+    expect(srcDocFor('<p>x</p>', 'dark', 'red;}*{display:none')).not.toContain('display:none');
   });
 });
