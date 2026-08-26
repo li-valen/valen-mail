@@ -83,6 +83,16 @@ declare module 'nodemailer' {
     readonly text: string;
     readonly html: string;
     readonly messageId: string;
+    /**
+     * `In-Reply-To` and `References`, mapped straight onto those headers by
+     * lib/mail-composer/index.js's header loop — verified against the
+     * INSTALLED nodemailer 9.0.5 by compiling a message and reading the
+     * bytes back, not from memory. An ARRAY of references is joined with
+     * single spaces into ONE header, which is what RFC 5322 wants; a
+     * falsy value (undefined, or an empty array) sets no header at all.
+     */
+    readonly inReplyTo?: string;
+    readonly references?: readonly string[];
     readonly envelope: SendMailEnvelope;
   }
 

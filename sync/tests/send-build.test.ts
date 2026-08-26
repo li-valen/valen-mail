@@ -225,3 +225,55 @@ describe('buildTrackedMessage — purity', () => {
     expect(buildTrackedMessage(message)).toEqual(buildTrackedMessage(message));
   });
 });
+
+describe('buildTrackedMessage — spec §5.2, the pixel goes BEFORE the quote', () => {
+  /**
+   * Plan 9 Task 3. Plan 4 only ever exercised the no-quote branch, so this
+   * is the first time the binding half of §5.2 is executed at all.
+   *
+   * Gmail collapses quoted text behind a "..." toggle. An image inside that
+   * region is never fetched until the reader expands it, so a pixel placed
+   * inside the quote makes every tracked reply report "unopened" forever —
+   * silently, and indistinguishably from a genuinely unopened message.
+   */
+  const QUOTE = '<div class="gmail_quote"><blockquote class="gmail_quote">old</blockquote></div>';
+
+  it('places the tracking pixel BEFORE the quote, not inside it', () => {
+    const { html } = buildTrackedMessage(messageWith({ textBody: 'my reply', htmlQuote: QUOTE }));
+
+    // ORDER, not mere containment. `toContain` passes for BOTH placements
+    // and is therefore vacuous here — the whole defect this asserts against
+    // is a pixel that is present but in the wrong place.
+    expect(html.indexOf(PIXEL_TAG)).toBeLessThan(html.indexOf('gmail_quote'));
+  });
+
+  it('serialises a reply body byte for byte: body, pixel, then quote', () => {
+    const { html } = buildTrackedMessage(messageWith({ textBody: 'my reply', htmlQuote: QUOTE }));
+
+    expect(html).toBe(`<div dir="auto">my reply</div>${PIXEL_TAG}${QUOTE}`);
+  });
+
+  it('with no quote the pixel still appends to the body root — unchanged behaviour', () => {
+    const { html } = buildTrackedMessage(messageWith({ textBody: 'new mail' }));
+
+    expect(html).toBe(`<div dir="auto">new mail</div>${PIXEL_TAG}`);
+    expect(html.endsWith(PIXEL_TAG)).toBe(true);
+  });
+
+  it('a plain compose is byte-identical whether htmlQuote is absent or undefined', () => {
+    // The regression this guards: every message this product has ever sent
+    // took the no-quote path, and adding the reply path must not move a
+    // single byte of it.
+    expect(buildTrackedMessage(messageWith({ textBody: 'hi' })).html).toBe(
+      buildTrackedMessage(messageWith({ textBody: 'hi', htmlQuote: undefined })).html,
+    );
+  });
+
+  it('leaves the plaintext alternative free of both pixel and quote markup', () => {
+    const { text } = buildTrackedMessage(messageWith({ textBody: 'my reply', htmlQuote: QUOTE }));
+
+    expect(text).toBe('my reply');
+    expect(text).not.toContain('gmail_quote');
+    expect(text).not.toContain('<img');
+  });
+});

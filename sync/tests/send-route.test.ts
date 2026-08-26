@@ -6,6 +6,10 @@ import {
   MAX_IDENTITY_ID_CHARS,
   MAX_RECIPIENT_CHARS,
   MAX_RECIPIENTS,
+  MAX_FROM_LABEL_CHARS,
+  MAX_MESSAGE_ID_CHARS,
+  MAX_QUOTE_BODY_BYTES,
+  MAX_REFERENCES,
   MAX_SEND_REQUEST_BODY_BYTES,
   MAX_SUBJECT_CHARS,
   MAX_TEXT_BODY_BYTES,
@@ -872,13 +876,340 @@ describe('POST /api/send — the request body cap at the transport seam', () => 
     const JSON_WORST_CASE_EXPANSION = 6;
     const worstCase =
       MAX_TEXT_BODY_BYTES * JSON_WORST_CASE_EXPANSION +
+      // Plan 9: a REPLY carries the original message's body as well as the
+      // new one, which is what roughly doubled the largest legitimate
+      // request and forced this reserve up from 768 KiB.
+      MAX_QUOTE_BODY_BYTES * JSON_WORST_CASE_EXPANSION +
+      MAX_REFERENCES * (MAX_MESSAGE_ID_CHARS * JSON_WORST_CASE_EXPANSION + 3) +
+      MAX_MESSAGE_ID_CHARS * JSON_WORST_CASE_EXPANSION +
+      MAX_FROM_LABEL_CHARS * JSON_WORST_CASE_EXPANSION +
       MAX_SUBJECT_CHARS * JSON_WORST_CASE_EXPANSION +
       // 4 bytes per character at most in UTF-8, plus quotes and a comma.
       MAX_RECIPIENTS * (MAX_RECIPIENT_CHARS * 4 + 3) +
       MAX_IDENTITY_ID_CHARS * 4 +
-      // field names, braces, colons
-      100;
+      // sentAtMs, field names, braces, colons
+      220;
 
     expect(worstCase).toBeLessThanOrEqual(MAX_SEND_REQUEST_BODY_BYTES);
   });
+});
+
+/**
+ * Plan 9 Task 3 — replying.
+ *
+ * `inReplyTo` and `references` become RAW HEADERS on the outgoing message,
+ * and `quote` becomes the body's quoted original. All three arrive over
+ * HTTP, so all three are validated here rather than trusted.
+ */
+describe('POST /api/send — threading headers', () => {
+  const IN_REPLY_TO = '<original@example.com>';
+  const REFERENCES = ['<first@example.com>', '<original@example.com>'];
+
+  it('emits In-Reply-To and References so the reply lands in the existing thread', async () => {
+    // The single most visible way a mail client looks broken: a reply that
+    // arrives in the recipient's Gmail as a brand-new thread.
+    const { transports, calls } = makeFakeTransports();
+
+    const response = await handleSend(
+      sendRequest(validBody({ inReplyTo: IN_REPLY_TO, references: REFERENCES })),
+      makeDeps({ transports }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(calls[0]!.inReplyTo).toBe(IN_REPLY_TO);
+    expect(calls[0]!.references).toEqual(REFERENCES);
+  });
+
+  it('puts the same threading headers on EVERY per-recipient copy', async () => {
+    // One logical message fans out to N copies (spec §5.3). A copy missing
+    // the headers threads for some recipients and not others.
+    const { transports, calls } = makeFakeTransports();
+
+    await handleSend(
+      sendRequest(
+        validBody({
+          to: ['one@example.com', 'two@example.com'],
+          inReplyTo: IN_REPLY_TO,
+          references: REFERENCES,
+        }),
+      ),
+      makeDeps({ transports }),
+    );
+
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call.inReplyTo).toBe(IN_REPLY_TO);
+      expect(call.references).toEqual(REFERENCES);
+    }
+  });
+
+  it('sets NEITHER header for a plain compose — byte-identical to before Plan 9', async () => {
+    const { transports, calls } = makeFakeTransports();
+
+    await handleSend(sendRequest(validBody()), makeDeps({ transports }));
+
+    expect(calls[0]!.inReplyTo).toBeUndefined();
+    expect(calls[0]!.references).toBeUndefined();
+  });
+
+  it('omits References when the chain is empty rather than sending a blank header', async () => {
+    const { transports, calls } = makeFakeTransports();
+
+    await handleSend(
+      sendRequest(validBody({ inReplyTo: IN_REPLY_TO, references: [] })),
+      makeDeps({ transports }),
+    );
+
+    expect(calls[0]!.inReplyTo).toBe(IN_REPLY_TO);
+    expect(calls[0]!.references).toBeUndefined();
+  });
+});
+
+describe('POST /api/send — header injection through the threading fields', () => {
+  /**
+   * A CR or LF inside `inReplyTo` TERMINATES the header and lets whatever
+   * follows become a header of the attacker's choosing — `Bcc:` being the
+   * one that matters, since it silently copies the user's mail elsewhere.
+   *
+   * Rejected outright rather than stripped-and-continued: a silently
+   * mangled thread id is indistinguishable from a working one until the
+   * reply lands unthreaded, days later, with no error anywhere.
+   */
+  const injectionCases: readonly (readonly [string, unknown])[] = [
+    ['a Message-ID containing CRLF', validBody({ inReplyTo: '<a@b>\r\nBcc: attacker@evil.test' })],
+    ['a Message-ID containing a bare LF', validBody({ inReplyTo: '<a@b>\nBcc: attacker@evil.test' })],
+    ['a Message-ID containing a bare CR', validBody({ inReplyTo: '<a@b>\rBcc: attacker@evil.test' })],
+    ['a reference containing CRLF', validBody({ references: ['<a@b>\r\nBcc: attacker@evil.test'] })],
+    ['a non-string inReplyTo', validBody({ inReplyTo: 42 })],
+    ['an empty inReplyTo', validBody({ inReplyTo: '' })],
+    ['a references that is not an array', validBody({ references: '<a@b>' })],
+    ['a non-string reference', validBody({ references: [42] })],
+    ['an empty reference', validBody({ references: [''] })],
+  ];
+
+  for (const [label, body] of injectionCases) {
+    it(`rejects ${label} with a 400`, async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const response = await handleSend(sendRequest(body), makeDeps());
+
+      expect(response.status).toBe(400);
+      expect(await readJson<SendBody>(response)).toEqual({ error: 'invalid request body' });
+    });
+  }
+
+  it('never lets a rejected value reach the transport at all', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { transports, calls } = makeFakeTransports();
+
+    await handleSend(
+      sendRequest(validBody({ inReplyTo: '<a@b>\r\nBcc: attacker@evil.test' })),
+      makeDeps({ transports }),
+    );
+
+    expect(calls).toHaveLength(0);
+  });
+
+  it(`rejects a References chain longer than ${MAX_REFERENCES}`, async () => {
+    // An unbounded References header is an unbounded header: a long-running
+    // thread would grow it until the SMTP server refused the whole message.
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const response = await handleSend(
+      sendRequest(
+        validBody({ references: Array.from({ length: MAX_REFERENCES + 1 }, (_, i) => `<${i}@b>`) }),
+      ),
+      makeDeps(),
+    );
+
+    expect(response.status).toBe(400);
+  });
+
+  it(`accepts a References chain of exactly ${MAX_REFERENCES}`, async () => {
+    const response = await handleSend(
+      sendRequest(
+        validBody({ references: Array.from({ length: MAX_REFERENCES }, (_, i) => `<${i}@b>`) }),
+      ),
+      makeDeps(),
+    );
+
+    expect(response.status).toBe(200);
+  });
+
+  it(`rejects a message id longer than ${MAX_MESSAGE_ID_CHARS} characters`, async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const response = await handleSend(
+      sendRequest(validBody({ inReplyTo: `<${'x'.repeat(MAX_MESSAGE_ID_CHARS)}>` })),
+      makeDeps(),
+    );
+
+    expect(response.status).toBe(400);
+  });
+});
+
+describe('POST /api/send — the quoted original (spec §5.2 and §5.6)', () => {
+  /** What our own Sent copy of the message being replied to looks like:
+   *  the ORIGINAL recipient's live token, on our own tracking origin. */
+  const ORIGINAL_TOKEN = 'deadbeefdeadbeefdeadbeefdeadbeef';
+  const ORIGINAL_PIXEL = `<img alt="" src="https://track.example/o/${ORIGINAL_TOKEN}.png">`;
+
+  function replyBody(overrides: Record<string, unknown> = {}) {
+    return validBody({
+      textBody: 'my reply',
+      inReplyTo: '<original@example.com>',
+      quote: {
+        originalHtml: `<p>Here are the numbers.</p>${ORIGINAL_PIXEL}`,
+        originalText: null,
+        fromLabel: 'Ada <ada@example.com>',
+        sentAtMs: 1_700_000_000_000,
+      },
+      ...overrides,
+    });
+  }
+
+  it('strips the ORIGINAL recipient\'s pixel out of the quote while keeping OURS (§5.6)', async () => {
+    // THE ORDERING PIN. Two ways to break this, both caught here:
+    //
+    //  - drop the strip entirely: the original token survives into the
+    //    reply and re-fires forever, reporting opens for a recipient who
+    //    did nothing. The first assertion fails.
+    //  - run the strip AFTER the new pixel is injected, i.e. over the
+    //    assembled body: it deletes OUR pixel too, because ours is on the
+    //    same origin under the same /o/ path, and the reply goes out
+    //    untracked while looking perfectly fine. The second assertion fails.
+    //
+    // Neither is observable from src/send/quote.ts alone — nothing there
+    // injects a pixel — which is why this lives at the route.
+    const { transports, calls } = makeFakeTransports();
+
+    await handleSend(sendRequest(replyBody()), makeDeps({ transports }));
+
+    const html = calls[0]!.html;
+    expect(html).not.toContain(ORIGINAL_TOKEN);
+    expect(html).toContain('src="https://track.example/o/');
+    expect(html).toContain('Here are the numbers.');
+  });
+
+  it('places OUR pixel before the quote, not inside it (§5.2)', async () => {
+    // ORDER, not containment: `toContain` passes for a pixel buried inside
+    // the collapsed quote, which is the exact defect §5.2 forbids.
+    const { transports, calls } = makeFakeTransports();
+
+    await handleSend(sendRequest(replyBody()), makeDeps({ transports }));
+
+    const html = calls[0]!.html;
+    expect(html.indexOf('/o/')).toBeLessThan(html.indexOf('gmail_quote'));
+  });
+
+  it('gives each recipient their OWN pixel before one shared quote', async () => {
+    const { transports, calls } = makeFakeTransports();
+
+    await handleSend(
+      sendRequest(replyBody({ to: ['one@example.com', 'two@example.com'] })),
+      makeDeps({ transports }),
+    );
+
+    const tokens = calls.map((call) => /\/o\/([^.]+)\.png/.exec(call.html)?.[1]);
+    expect(new Set(tokens).size).toBe(2);
+    for (const call of calls) {
+      expect(call.html.indexOf('/o/')).toBeLessThan(call.html.indexOf('gmail_quote'));
+    }
+  });
+
+  it('quotes plain text ESCAPED rather than as markup', async () => {
+    const { transports, calls } = makeFakeTransports();
+
+    await handleSend(
+      sendRequest(
+        replyBody({
+          quote: {
+            originalHtml: null,
+            originalText: '<script>alert(1)</script>',
+            fromLabel: 'Ada <ada@example.com>',
+            sentAtMs: 1_700_000_000_000,
+          },
+        }),
+      ),
+      makeDeps({ transports }),
+    );
+
+    expect(calls[0]!.html).not.toContain('<script>');
+    expect(calls[0]!.html).toContain('&lt;script&gt;');
+  });
+
+  it('accepts a quote whose original carried no usable Date', async () => {
+    // ParsedMessage.date is nullable and a message with no Date header is
+    // ordinary mail. "On Invalid Date, NaN ... wrote:" must never go out.
+    const { transports, calls } = makeFakeTransports();
+
+    const response = await handleSend(
+      sendRequest(
+        replyBody({
+          quote: {
+            originalHtml: '<p>x</p>',
+            originalText: null,
+            fromLabel: 'Ada <ada@example.com>',
+            sentAtMs: null,
+          },
+        }),
+      ),
+      makeDeps({ transports }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(calls[0]!.html).toContain('Ada &lt;ada@example.com&gt; wrote:');
+    expect(calls[0]!.html).not.toContain('NaN');
+    expect(calls[0]!.html).not.toContain('Invalid Date');
+  });
+
+  it('emits no quote markup at all for a plain compose', async () => {
+    const { transports, calls } = makeFakeTransports();
+
+    await handleSend(sendRequest(validBody()), makeDeps({ transports }));
+
+    expect(calls[0]!.html).toBe(
+      `<div dir="auto">body text</div><img alt="" src="https://track.example/o/${'f'.repeat(31)}0.png">`,
+    );
+  });
+
+  const quoteRejections: readonly (readonly [string, unknown])[] = [
+    ['a quote that is not an object', validBody({ quote: 'old mail' })],
+    ['a quote with no fromLabel', validBody({ quote: { originalHtml: '<p>x</p>', originalText: null, sentAtMs: 1 } })],
+    [
+      'a fromLabel carrying a newline',
+      validBody({
+        quote: { originalHtml: '<p>x</p>', originalText: null, fromLabel: 'a\r\nb', sentAtMs: 1 },
+      }),
+    ],
+    [
+      'a non-numeric sentAtMs — timestamps are epoch-ms NUMBERS on this wire',
+      validBody({
+        quote: {
+          originalHtml: '<p>x</p>',
+          originalText: null,
+          fromLabel: 'A <a@x.com>',
+          sentAtMs: '2023-11-14T22:13:20Z',
+        },
+      }),
+    ],
+    [
+      'a quote body over the byte cap',
+      validBody({
+        quote: {
+          originalHtml: 'x'.repeat(MAX_QUOTE_BODY_BYTES + 1),
+          originalText: null,
+          fromLabel: 'A <a@x.com>',
+          sentAtMs: 1,
+        },
+      }),
+    ],
+  ];
+
+  for (const [label, body] of quoteRejections) {
+    it(`rejects ${label} with a 400`, async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const response = await handleSend(sendRequest(body), makeDeps());
+
+      expect(response.status).toBe(400);
+      expect(await readJson<SendBody>(response)).toEqual({ error: 'invalid request body' });
+    });
+  }
 });

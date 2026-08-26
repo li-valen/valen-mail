@@ -113,6 +113,17 @@ export interface TrackedMessage {
   readonly cc?: readonly string[];
   readonly subject: string;
   readonly textBody: string;
+  /**
+   * The quoted original, as ./quote.ts's single `.gmail_quote` element —
+   * absent for a plain compose, which is every message this product sent
+   * before Plan 9.
+   *
+   * ALREADY STRIPPED of any Postbox pixel the original carried (spec §5.6)
+   * and already escaped where it needed to be: this builder splices it in
+   * verbatim. It is html by construction, so escaping it here would show
+   * the recipient the quote's own markup as literal text.
+   */
+  readonly htmlQuote?: string;
   /** This recipient's own opaque 32-hex token, minted by tracking. */
   readonly token: string;
   /** TRACKING_BASE_URL — with or without a trailing slash, both work. */
@@ -164,6 +175,14 @@ function pixelUrl(pixelBase: string, token: string): string {
  *
  * `dir="auto"` lets the client pick direction from the first strong
  * character rather than forcing LTR on a body that may be neither.
+ *
+ * PIXEL PLACEMENT IS BINDING TOO (spec §5.2): when a quote is present the
+ * pixel is spliced in BEFORE it, never inside it. Gmail collapses quoted
+ * text behind a toggle, and an image inside the collapsed region is not
+ * fetched until the reader expands it — so a pixel placed inside a quote
+ * reports every tracked reply as "unopened", forever, and does it silently.
+ * With no quote the pixel is appended to the body root, which is exactly
+ * what this function has always done and must keep doing byte for byte.
  */
 export function buildTrackedMessage(message: TrackedMessage): TrackedMessageBody {
   // Normalised before escaping so CRLF, bare CR and LF all become the same
@@ -176,6 +195,7 @@ export function buildTrackedMessage(message: TrackedMessage): TrackedMessageBody
     text: message.textBody,
     html:
       `<div dir="auto">${escaped}</div>` +
-      `<img alt="" src="${pixelUrl(message.pixelBase, message.token)}">`,
+      `<img alt="" src="${pixelUrl(message.pixelBase, message.token)}">` +
+      (message.htmlQuote ?? ''),
   };
 }

@@ -4,6 +4,7 @@ import type { Transports } from '../send/transports';
 import { json, PRIVATE_NO_STORE } from './http.ts';
 import { buildMessageId, mintTokens, sendTracked } from '../send/send.ts';
 import type { MintSend } from '../send/send';
+import { buildQuotedHtml } from '../send/quote.ts';
 
 /**
  * POST /api/send (Plan 4 Task 3) — the product's send path.
@@ -41,10 +42,44 @@ export const MAX_RECIPIENTS = 25;
 export const MAX_IDENTITY_ID_CHARS = 64;
 /** RFC 5321's maximum forward-path length. */
 export const MAX_RECIPIENT_CHARS = 254;
+/**
+ * One `Message-ID`, angle brackets included. Matches the 256 characters
+ * tracking's POST /api/tokens accepts and the bound ../send/send.ts's
+ * `buildMessageId` truncates its own output to, so the three numbers are
+ * visibly the same number rather than coincidentally equal.
+ */
+export const MAX_MESSAGE_ID_CHARS = 256;
+/**
+ * How long a `References` chain this route will emit.
+ *
+ * The header is genuinely unbounded in RFC 5322 and grows by one id per
+ * message, so a thread nobody ever leaves would eventually build a header
+ * the receiving server refuses — taking the whole message with it. 50 is
+ * far past any thread a human reads and short enough that the header stays
+ * a few kilobytes.
+ *
+ * A chain longer than this is REFUSED rather than truncated: silently
+ * dropping the oldest ids would produce a reply that threads correctly in
+ * some clients and not others, which is worse than an honest 400.
+ */
+export const MAX_REFERENCES = 50;
+/** The display form of the original sender, as it appears in the quote's
+ *  attribution line ("Ada Lovelace <ada@example.com>"). */
+export const MAX_FROM_LABEL_CHARS = 320;
+/**
+ * The original body a reply may quote — html and plaintext TOGETHER, in
+ * bytes.
+ *
+ * Combined rather than per-alternative because ../send/quote.ts uses
+ * exactly one of them (html when present, plaintext otherwise), so a
+ * per-field cap would reserve transport budget for bytes that can never
+ * both be used.
+ */
+export const MAX_QUOTE_BODY_BYTES = 100 * 1024;
 
 /**
  * The largest raw HTTP body ../api/server.ts will buffer for THIS route
- * (fix round 1) — 768 KiB.
+ * (fix round 1) — 1,536 KiB.
  *
  * The caps above bound the message; this bounds the bytes on the wire, and
  * the two are not the same number. `MAX_TEXT_BODY_BYTES` is measured on
@@ -57,13 +92,23 @@ export const MAX_RECIPIENT_CHARS = 254;
  *
  * Worst case, all fields maximal and every escapable byte escaped:
  *
- *   textBody     102,400 x 6            = 614,400
- *   subject          500 x 6            =   3,000
- *   recipients        25 x (254 x 4 + 3) =  25,475
- *   identityId        64 x 4            =     256
- *   field names, braces, colons          ~    100
- *                                        ---------
- *                                          643,231  ->  768 KiB reserved
+ *   textBody     102,400 x 6            =   614,400
+ *   quote body   102,400 x 6            =   614,400
+ *   references        50 x (256 x 6 + 3) =    76,950
+ *   recipients        25 x (254 x 4 + 3) =    25,475
+ *   fromLabel        320 x 6            =     1,920
+ *   inReplyTo        256 x 6            =     1,536
+ *   subject          500 x 6            =     3,000
+ *   identityId        64 x 4            =       256
+ *   sentAtMs, field names, braces, colons ~      220
+ *                                          ---------
+ *                                          1,338,157  -> 1,536 KiB reserved
+ *
+ * Raised from 768 KiB by Plan 9, which added the reply fields: a reply
+ * carries the ORIGINAL message's body as well as the new one, so the
+ * largest legitimate request roughly doubled. The raise buys nothing an
+ * attacker wants — the route is behind the auth gate and behind a 30-per-
+ * hour cap, so the worst an authenticated caller can hold is 30 x 1.5 MiB.
  *
  * tests/send-route.test.ts recomputes that sum from the constants above
  * and asserts it fits, so raising any component cap without raising this
@@ -76,7 +121,7 @@ export const MAX_RECIPIENT_CHARS = 254;
  * behind the auth gate, so the same ceiling buys nothing and costs the
  * user their long emails.
  */
-export const MAX_SEND_REQUEST_BODY_BYTES = 768 * 1024;
+export const MAX_SEND_REQUEST_BODY_BYTES = 1536 * 1024;
 
 /**
  * The global send budget: 30 sends per hour, in memory, counting EVERY
@@ -126,6 +171,147 @@ const INVALID_BODY_ERROR = 'invalid request body';
  */
 const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F]/;
 
+/**
+ * True when a value must never be interpolated into a header.
+ *
+ * `inReplyTo` and each `references` entry become RAW header values, so a CR
+ * or LF inside one TERMINATES that header and lets whatever follows become
+ * a header of the caller's choosing — `Bcc:` being the one that matters,
+ * since it silently copies the user's mail somewhere they never asked for.
+ *
+ * The whole C0 range is refused rather than just CR/LF: no legal
+ * message-id or display name carries one, and a check narrower than the
+ * one already applied to recipients and subjects would be an asymmetry
+ * this file cannot justify.
+ *
+ * Callers REJECT on true — never strip and continue. A silently mangled
+ * thread id is indistinguishable from a working one until the reply lands
+ * unthreaded days later, with no error anywhere; a 400 is the honest
+ * answer while there is still a person watching.
+ */
+function hasHeaderInjection(value: string): boolean {
+  return CONTROL_CHARACTERS.test(value);
+}
+
+/** One message-id as this route will emit it: non-empty, bounded, and
+ *  carrying nothing that could close the header it lands in. */
+function isUsableMessageId(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= MAX_MESSAGE_ID_CHARS &&
+    !hasHeaderInjection(value)
+  );
+}
+
+/**
+ * The `References` chain, or null when the field was present and unusable.
+ *
+ * Absent becomes `[]` rather than null — the same rule
+ * ../api/message.ts's `normalizeReferences` follows on the read side, so
+ * the value round-trips through the client unchanged in shape.
+ */
+function parseReferences(value: unknown): readonly string[] | null {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) return null;
+  if (value.length > MAX_REFERENCES) return null;
+  if (!value.every(isUsableMessageId)) return null;
+  return value;
+}
+
+/** The quoted original, as it arrives over HTTP. `sentAtMs` mirrors
+ *  ParsedMessage.date exactly: epoch MILLISECONDS or null, never an ISO
+ *  string. */
+interface ValidQuote {
+  readonly originalHtml: string | null;
+  readonly originalText: string | null;
+  readonly fromLabel: string;
+  readonly sentAtMs: number | null;
+}
+
+/** A body alternative of the quoted original: a string, or null for "this
+ *  message had none". */
+function parseQuoteBody(value: unknown): string | null | undefined {
+  if (value === null || value === undefined) return null;
+  return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * Validates the quote source. Returns null for anything unusable, which
+ * the caller turns into the same one 400 every other malformed field gets.
+ *
+ * The SOURCE arrives here, never pre-built html: the quote is assembled
+ * server-side by ../send/quote.ts so that spec §5.6's strip runs against
+ * the real TRACKING_BASE_URL — a value the browser client deliberately
+ * never learns (client/src/composeApi.ts: "this module never learns a
+ * second base URL"). A client-built quote could not perform that strip at
+ * all, and would duplicate the quote builder besides.
+ */
+function parseQuote(value: unknown): ValidQuote | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+
+  const originalHtml = parseQuoteBody(record.originalHtml);
+  const originalText = parseQuoteBody(record.originalText);
+  if (originalHtml === undefined || originalText === undefined) return null;
+
+  const quotedBytes =
+    Buffer.byteLength(originalHtml ?? '', 'utf8') + Buffer.byteLength(originalText ?? '', 'utf8');
+  if (quotedBytes > MAX_QUOTE_BODY_BYTES) return null;
+
+  const fromLabel = record.fromLabel;
+  if (
+    typeof fromLabel !== 'string' ||
+    fromLabel.length === 0 ||
+    fromLabel.length > MAX_FROM_LABEL_CHARS ||
+    hasHeaderInjection(fromLabel)
+  ) {
+    return null;
+  }
+
+  // Epoch MILLISECONDS or null, matching ParsedMessage.date. An ISO string
+  // is refused rather than coerced: three separate defects in this project
+  // came from a timestamp that was a string at one hop and a number at the
+  // next.
+  const sentAtMs = record.sentAtMs;
+  if (sentAtMs !== null && typeof sentAtMs !== 'number') return null;
+  if (sentAtMs !== null && !Number.isFinite(sentAtMs)) return null;
+
+  return { originalHtml, originalText, fromLabel, sentAtMs };
+}
+
+/**
+ * The three fields a reply adds, all absent for a plain compose.
+ *
+ * Parsed as a unit so ./parseSendBody stays about the shape of a message
+ * rather than the shape of a message plus the shape of a thread.
+ */
+interface ReplyFields {
+  readonly inReplyTo?: string;
+  readonly references: readonly string[];
+  readonly quote?: ValidQuote;
+}
+
+/**
+ * Validates the reply fields, returning null when any PRESENT one is
+ * unusable — a malformed field that becomes a header is a refusal, not a
+ * shrug (see hasHeaderInjection).
+ */
+function parseReplyFields(record: Record<string, unknown>): ReplyFields | null {
+  const inReplyTo = record.inReplyTo;
+  if (inReplyTo !== undefined && !isUsableMessageId(inReplyTo)) return null;
+
+  const references = parseReferences(record.references);
+  if (references === null) return null;
+
+  const quoteRaw = record.quote;
+  if (quoteRaw === undefined || quoteRaw === null) return { inReplyTo, references };
+
+  const quote = parseQuote(quoteRaw);
+  if (quote === null) return null;
+  return { inReplyTo, references, quote };
+}
+
 export interface SendRouteDeps {
   readonly accounts: readonly AccountConfig[];
   /** Null when the router was built without them — sends are refused
@@ -146,6 +332,12 @@ interface ValidRequest {
   readonly cc: readonly string[];
   readonly subject: string;
   readonly textBody: string;
+  /** Absent for a plain compose, which is every message this product sent
+   *  before Plan 9 — and which must stay byte-identical. */
+  readonly inReplyTo?: string;
+  /** Oldest → newest. `[]` when absent. */
+  readonly references: readonly string[];
+  readonly quote?: ValidQuote;
 }
 
 /**
@@ -216,7 +408,10 @@ function parseSendBody(body: unknown): ValidRequest | null {
     return null;
   }
 
-  return { identityId, to, cc, subject, textBody };
+  const reply = parseReplyFields(record);
+  if (reply === null) return null;
+
+  return { identityId, to, cc, subject, textBody, ...reply };
 }
 
 /**
@@ -268,9 +463,11 @@ export async function handleSend(request: Request, deps: SendRouteDeps): Promise
   if (!parsed) {
     // Names the constraints, never the values.
     console.error(
-      'send: rejected — body did not match {identityId,to,cc?,subject,textBody} within its ' +
+      'send: rejected — body did not match ' +
+        '{identityId,to,cc?,subject,textBody,inReplyTo?,references?,quote?} within its ' +
         `caps (subject ${MAX_SUBJECT_CHARS} chars, body ${MAX_TEXT_BODY_BYTES} bytes, ` +
-        `${MAX_RECIPIENTS} recipients)`,
+        `${MAX_RECIPIENTS} recipients, ${MAX_REFERENCES} references, ` +
+        `quote ${MAX_QUOTE_BODY_BYTES} bytes) or carried a CR/LF in a field that becomes a header`,
     );
     return json({ error: INVALID_BODY_ERROR }, 400, PRIVATE_NO_STORE);
   }
@@ -327,6 +524,17 @@ export async function handleSend(request: Request, deps: SendRouteDeps): Promise
     return json({ error: 'tracking unavailable' }, 502, PRIVATE_NO_STORE);
   }
 
+  // Assembled HERE, from the source the client sent, and only after the
+  // tracking config is known to exist — spec §5.6's strip needs the real
+  // TRACKING_BASE_URL, and it must run before ../send/build.ts injects the
+  // NEW pixel. Invert that order and the strip eats our own fresh pixel
+  // (same origin, same /o/ path) and the reply goes out untracked while
+  // looking perfectly fine. tests/send-route.test.ts pins both directions.
+  const htmlQuote =
+    parsed.quote === undefined
+      ? undefined
+      : buildQuotedHtml({ ...parsed.quote, trackingBaseUrl: deps.trackingConfig.baseUrl });
+
   const results = await sendTracked(
     { transport },
     {
@@ -336,7 +544,10 @@ export async function handleSend(request: Request, deps: SendRouteDeps): Promise
       cc: parsed.cc,
       subject: parsed.subject,
       textBody: parsed.textBody,
+      htmlQuote,
       messageId,
+      inReplyTo: parsed.inReplyTo,
+      references: parsed.references,
       // The pixel base IS the tracking base url — one deployment serves
       // both the mint route and /o/{token}.png, so there is no second
       // environment variable to configure or to get out of step.

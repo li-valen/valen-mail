@@ -233,7 +233,28 @@ export interface SendTrackedRequest {
   readonly cc: readonly string[];
   readonly subject: string;
   readonly textBody: string;
+  /**
+   * The quoted original as ../send/quote.ts built it, or undefined for a
+   * plain compose. Already stripped of any Postbox pixel the original
+   * carried (spec §5.6) — the strip runs at quote construction, BEFORE
+   * ./build.ts injects this recipient's new pixel immediately in front of
+   * it (spec §5.2).
+   */
+  readonly htmlQuote?: string;
   readonly messageId: string;
+  /**
+   * The message being replied to, angle brackets included, or undefined
+   * for a new thread.
+   *
+   * Emitted verbatim as `In-Reply-To`, so ../api/send.ts refuses any value
+   * carrying a CR or LF before it ever reaches this module — a newline
+   * here would terminate the header and let the rest forge a `Bcc:`.
+   */
+  readonly inReplyTo?: string;
+  /** The thread's `References` chain, oldest → newest. Emitted as one
+   *  space-joined header; omitted entirely when empty rather than sent
+   *  blank. */
+  readonly references?: readonly string[];
   readonly pixelBase: string;
   readonly recipients: readonly MintedToken[];
 }
@@ -281,6 +302,7 @@ export async function sendTracked(
       cc: request.cc,
       subject: request.subject,
       textBody: request.textBody,
+      htmlQuote: request.htmlQuote,
       token: recipient.token,
       pixelBase: request.pixelBase,
     };
@@ -297,6 +319,14 @@ export async function sendTracked(
       text,
       html,
       messageId: request.messageId,
+      // Threading, on EVERY per-recipient copy: a copy missing these
+      // threads for some recipients and not others. Both omitted rather
+      // than sent empty for a plain compose, so a new message is
+      // byte-identical to what this module produced before Plan 9.
+      ...(request.inReplyTo === undefined ? {} : { inReplyTo: request.inReplyTo }),
+      ...(request.references === undefined || request.references.length === 0
+        ? {}
+        : { references: request.references }),
       // Envelope: exactly one RCPT TO. This is what makes the copy
       // private to this recipient despite the group headers above.
       envelope: { from: envelopeFrom, to: [recipient.recipientEmail] },
