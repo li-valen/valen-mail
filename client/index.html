@@ -44,7 +44,16 @@
       })();
     </script>
     <!-- iOS: makes "Add to Home Screen" launch in the manifest's standalone
-         display mode, which Web Push requires. -->
+         display mode, which Web Push requires.
+
+         BOTH TAGS, not one. `mobile-web-app-capable` is the standard name
+         and the only one Chrome reads; it warns in the console when it
+         sees the `apple-` prefixed form alone. Safari on iOS reads only
+         the `apple-` form, and iOS is the platform this app is actually
+         installed on, so dropping it to silence the warning would break
+         the installed launch mode outright. The migration path is to
+         carry both, which is what this does. -->
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <link rel="manifest" href="/manifest.webmanifest" />
