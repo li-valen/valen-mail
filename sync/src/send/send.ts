@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { SendMailOptions, Transport } from 'nodemailer';
 import { buildTrackedMessage, formatFrom, sanitizeAddress } from './build.ts';
 import type { TrackedMessage } from './build';
+import type { DecodedAttachment } from './attachments';
 import { REQUEST_TIMEOUT_MS } from '../api/opens.ts';
 import { errorCode } from './error-code.ts';
 
@@ -255,6 +256,17 @@ export interface SendTrackedRequest {
    *  space-joined header; omitted entirely when empty rather than sent
    *  blank. */
   readonly references?: readonly string[];
+  /**
+   * The files riding on this message, already validated and DECODED
+   * (./attachments.ts's `parseAttachments`), or absent for a message with
+   * none — which is every message this product sent before Plan 11.
+   *
+   * The SAME list goes on every per-recipient copy. That is what spec
+   * §5.3.1 is about: N copies means Gmail files N copies of every byte
+   * here into Sent, so ../api/send.ts decides BEFORE calling this whether
+   * the message can still afford per-recipient tokens.
+   */
+  readonly attachments?: readonly DecodedAttachment[];
   readonly pixelBase: string;
   readonly recipients: readonly MintedToken[];
 }
@@ -327,6 +339,15 @@ export async function sendTracked(
       ...(request.references === undefined || request.references.length === 0
         ? {}
         : { references: request.references }),
+      // OMITTED rather than sent as [], exactly like `cc` above. A
+      // message with no files must hand the transport the object it
+      // always did — an `attachments: []` is a different object, and
+      // whether nodemailer happens to compose it identically today is
+      // that library's business, not a guarantee this service may lean
+      // on. tests/send-dispatch.test.ts asserts the key is absent.
+      ...(request.attachments === undefined || request.attachments.length === 0
+        ? {}
+        : { attachments: request.attachments }),
       // Envelope: exactly one RCPT TO. This is what makes the copy
       // private to this recipient despite the group headers above.
       envelope: { from: envelopeFrom, to: [recipient.recipientEmail] },

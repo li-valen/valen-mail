@@ -16,6 +16,12 @@ import {
   SEND_RATE_LIMIT_MAX_ATTEMPTS,
   SEND_RATE_LIMIT_WINDOW_MS,
 } from '../src/api/send.ts';
+import {
+  MAX_ATTACHMENT_COUNT,
+  MAX_ATTACHMENT_TOTAL_BYTES,
+  MAX_ATTACHMENT_FILENAME_CHARS,
+  MAX_ATTACHMENT_CONTENT_TYPE_CHARS,
+} from '../src/send/attachments.ts';
 import type { SendRouteDeps } from '../src/api/send';
 import { createRouter } from '../src/api/routes.ts';
 import {
@@ -887,10 +893,24 @@ describe('POST /api/send — the request body cap at the transport seam', () => 
       // 4 bytes per character at most in UTF-8, plus quotes and a comma.
       MAX_RECIPIENTS * (MAX_RECIPIENT_CHARS * 4 + 3) +
       MAX_IDENTITY_ID_CHARS * 4 +
+      // Plan 11: attachments arrive as base64, which INFLATES by 4/3
+      // rather than escaping by 6 — every base64 character is JSON-safe.
+      // Using the x6 factor here would over-reserve by four times and
+      // using the decoded size would under-reserve by a third.
+      Math.ceil(MAX_ATTACHMENT_TOTAL_BYTES / 3) * 4 +
+      MAX_ATTACHMENT_COUNT *
+        (MAX_ATTACHMENT_FILENAME_CHARS * JSON_WORST_CASE_EXPANSION +
+          MAX_ATTACHMENT_CONTENT_TYPE_CHARS * JSON_WORST_CASE_EXPANSION +
+          // {"filename":"","contentType":"","contentBase64":""},
+          64) +
       // sentAtMs, field names, braces, colons
       220;
 
     expect(worstCase).toBeLessThanOrEqual(MAX_SEND_REQUEST_BODY_BYTES);
+    // And it is not fitting by accident: the reserve must be big enough to
+    // be about attachments at all. Drop the attachment cap out of the sum
+    // and the old 1,536 KiB would have covered it.
+    expect(worstCase).toBeGreaterThan(1536 * 1024);
   });
 });
 
@@ -1212,4 +1232,284 @@ describe('POST /api/send — the quoted original (spec §5.2 and §5.6)', () => 
       expect(await readJson<SendBody>(response)).toEqual({ error: 'invalid request body' });
     });
   }
+});
+
+/**
+ * Plan 11 Task 2 — attachments, and spec §5.3.1's BINDING mitigation.
+ *
+ * Postbox sends one tokenized copy per recipient and Gmail files every one
+ * of them into Sent, so an attachment costs `bytes x recipients` of a
+ * 15 GB quota. Above TRACKED_SEND_BYTE_BUDGET the message degrades to a
+ * single shared token — the tests below are what stop that rule from
+ * being quietly re-derived as a plain size check.
+ */
+
+const MEBIBYTE = 1024 * 1024;
+
+function attachmentOf(bytes: number, filename = 'report.pdf') {
+  return {
+    filename,
+    contentType: 'application/pdf',
+    contentBase64: Buffer.alloc(bytes, 0x41).toString('base64'),
+  };
+}
+
+const FIVE_RECIPIENTS = ['a@x.com', 'b@x.com', 'c@x.com', 'd@x.com', 'e@x.com'];
+
+describe('POST /api/send — attachment validation (every field is attacker-reachable)', () => {
+  it('rejects a filename containing CRLF (Content-Disposition injection)', async () => {
+    const res = await handleSend(
+      sendRequest(
+        validBody({
+          attachments: [
+            { filename: 'a.txt\r\nX-Injected: 1', contentType: 'text/plain', contentBase64: 'aGk=' },
+          ],
+        }),
+      ),
+      makeDeps(),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a filename containing a path separator', async () => {
+    const res = await handleSend(
+      sendRequest(
+        validBody({
+          attachments: [
+            { filename: '../../etc/passwd', contentType: 'text/plain', contentBase64: 'aGk=' },
+          ],
+        }),
+      ),
+      makeDeps(),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects undecodable base64 rather than sending a truncated file', async () => {
+    const res = await handleSend(
+      sendRequest(
+        validBody({
+          attachments: [
+            { filename: 'a.txt', contentType: 'text/plain', contentBase64: 'not!base64' },
+          ],
+        }),
+      ),
+      makeDeps(),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a content type that is not a bare type/subtype', async () => {
+    const res = await handleSend(
+      sendRequest(
+        validBody({
+          attachments: [
+            { filename: 'a.txt', contentType: 'text/plain; charset=utf-8', contentBase64: 'aGk=' },
+          ],
+        }),
+      ),
+      makeDeps(),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('sends NOTHING at all when an attachment is refused', async () => {
+    // A refusal must cost no SMTP and no minted rows: the message is
+    // invalid as a whole, not "valid apart from one file".
+    const mint = makeMintFetch();
+    const { transports, calls } = makeFakeTransports();
+
+    const res = await handleSend(
+      sendRequest(
+        validBody({
+          attachments: [
+            { filename: 'a.txt', contentType: 'text/plain', contentBase64: 'not!base64' },
+          ],
+        }),
+      ),
+      makeDeps({ fetchImpl: mint.fetchImpl, transports }),
+    );
+
+    expect(res.status).toBe(400);
+    expect(mint.spy).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('never echoes a rejected filename into the response or the log', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await handleSend(
+      sendRequest(
+        validBody({
+          attachments: [
+            { filename: 'salary-review-kate.pdf/x', contentType: 'text/plain', contentBase64: 'aGk=' },
+          ],
+        }),
+      ),
+      makeDeps(),
+    );
+
+    const body = await readJson<SendBody>(res);
+    expect(JSON.stringify(body)).not.toContain('salary-review-kate');
+    for (const call of errors.mock.calls) {
+      expect(call.join(' ')).not.toContain('salary-review-kate');
+    }
+  });
+});
+
+describe('POST /api/send — a message with no attachments is untouched', () => {
+  it('hands the transport an options object with no attachments key at all', async () => {
+    // THE REGRESSION THAT MATTERS MOST: every send this product made
+    // before Plan 11 must produce exactly the bytes it always did.
+    const { transports, calls } = makeFakeTransports();
+
+    await handleSend(sendRequest(validBody()), makeDeps({ transports }));
+
+    expect(calls).toHaveLength(1);
+    expect('attachments' in calls[0]!).toBe(false);
+    expect(Object.keys(calls[0]!).sort()).toEqual(
+      ['envelope', 'from', 'html', 'messageId', 'subject', 'text', 'to'].sort(),
+    );
+  });
+
+  it('keeps per-recipient tokens for a plain message however long the list', async () => {
+    const { transports, calls } = makeFakeTransports();
+
+    await handleSend(
+      sendRequest(validBody({ to: FIVE_RECIPIENTS })),
+      makeDeps({ transports }),
+    );
+
+    const tokens = new Set(calls.map((call) => /\/o\/([^.]+)\.png/.exec(call.html!)?.[1]));
+    expect(tokens.size).toBe(5);
+  });
+});
+
+describe('POST /api/send — attachments reach SMTP decoded', () => {
+  it('puts the decoded bytes, filename and type on every recipient copy', async () => {
+    const { transports, calls } = makeFakeTransports();
+
+    const res = await handleSend(
+      sendRequest(
+        validBody({
+          to: ['one@example.com', 'two@example.com'],
+          attachments: [
+            { filename: 'notes.txt', contentType: 'text/plain', contentBase64: 'aGk=' },
+          ],
+        }),
+      ),
+      makeDeps({ transports }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call.attachments).toHaveLength(1);
+      const attachment = call.attachments![0]!;
+      expect(attachment.filename).toBe('notes.txt');
+      expect(attachment.contentType).toBe('text/plain');
+      // DECODED, not the base64 text. Sending 'aGk=' as the body would be
+      // a file the recipient opens to find base64 in.
+      expect(attachment.content.toString('utf8')).toBe('hi');
+    }
+  });
+});
+
+describe('POST /api/send — spec §5.3.1 degradation', () => {
+  it('uses ONE shared token when the budget forces degradation', async () => {
+    // 10 MiB x 5 recipients = 50 MiB of a 15 GB quota. The file is fine on
+    // its own; the multiplication is not.
+    const { transports, calls } = makeFakeTransports();
+
+    const res = await handleSend(
+      sendRequest(
+        validBody({ to: FIVE_RECIPIENTS, attachments: [attachmentOf(10 * MEBIBYTE)] }),
+      ),
+      makeDeps({ transports }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(5);
+    const tokens = new Set(calls.map((call) => /\/o\/([^.]+)\.png/.exec(call.html!)?.[1]));
+    expect(tokens.size).toBe(1);
+  });
+
+  it('mints exactly ONE token, attributed to nobody, when it degrades', async () => {
+    const mint = makeMintFetch();
+
+    await handleSend(
+      sendRequest(
+        validBody({ to: FIVE_RECIPIENTS, attachments: [attachmentOf(10 * MEBIBYTE)] }),
+      ),
+      makeDeps({ fetchImpl: mint.fetchImpl }),
+    );
+
+    const body = mint.bodies[0] as { sends: Record<string, string>[] };
+    expect(body.sends).toHaveLength(1);
+    // Never a recipient's address: the message genuinely cannot say who
+    // opened it, and writing a name here would be the product inventing
+    // the answer (§7A.2).
+    expect(body.sends[0]!.recipientEmail).toBe('someone');
+    for (const recipient of FIVE_RECIPIENTS) {
+      expect(body.sends[0]!.recipientEmail).not.toBe(recipient);
+    }
+  });
+
+  it('still reports a result for every real recipient after degrading', async () => {
+    const res = await handleSend(
+      sendRequest(
+        validBody({ to: FIVE_RECIPIENTS, attachments: [attachmentOf(10 * MEBIBYTE)] }),
+      ),
+      makeDeps(),
+    );
+
+    expect(await readJson<SendBody>(res)).toEqual({
+      results: FIVE_RECIPIENTS.map((recipientEmail) => ({ recipientEmail, ok: true })),
+    });
+  });
+
+  it('does NOT degrade the same file to a single recipient', async () => {
+    // 10 MiB x 1 is 10 MiB. The rule is about multiplication, not size.
+    const mint = makeMintFetch();
+
+    await handleSend(
+      sendRequest(validBody({ to: ['solo@x.com'], attachments: [attachmentOf(10 * MEBIBYTE)] })),
+      makeDeps({ fetchImpl: mint.fetchImpl }),
+    );
+
+    const body = mint.bodies[0] as { sends: Record<string, string>[] };
+    expect(body.sends).toHaveLength(1);
+    expect(body.sends[0]!.recipientEmail).toBe('solo@x.com');
+  });
+
+  it('does NOT degrade a small attachment sent to the same five people', async () => {
+    const { transports, calls } = makeFakeTransports();
+
+    await handleSend(
+      sendRequest(
+        validBody({ to: FIVE_RECIPIENTS, attachments: [attachmentOf(64 * 1024)] }),
+      ),
+      makeDeps({ transports }),
+    );
+
+    const tokens = new Set(calls.map((call) => /\/o\/([^.]+)\.png/.exec(call.html!)?.[1]));
+    expect(tokens.size).toBe(5);
+  });
+
+  it('still delivers the file on every copy after degrading', async () => {
+    // Degrading changes the TOKEN, never the message. Everyone still gets
+    // what was attached.
+    const { transports, calls } = makeFakeTransports();
+
+    await handleSend(
+      sendRequest(
+        validBody({ to: FIVE_RECIPIENTS, attachments: [attachmentOf(10 * MEBIBYTE)] }),
+      ),
+      makeDeps({ transports }),
+    );
+
+    for (const call of calls) {
+      expect(call.attachments).toHaveLength(1);
+      expect(call.attachments![0]!.content).toHaveLength(10 * MEBIBYTE);
+    }
+  });
 });

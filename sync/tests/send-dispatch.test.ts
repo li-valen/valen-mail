@@ -580,3 +580,84 @@ describe('sendTracked — sequential dispatch', () => {
     expect(JSON.stringify(request)).toBe(snapshot);
   });
 });
+
+/**
+ * Plan 11 Task 2 — attachments on the wire to nodemailer.
+ *
+ * The bytes are handed over decoded. nodemailer turns them into MIME;
+ * nothing in this project builds a multipart body by hand.
+ */
+describe('sendTracked — attachments', () => {
+  const REPORT = {
+    filename: 'report.pdf',
+    contentType: 'application/pdf',
+    content: Buffer.from('%PDF-1.4 pretend', 'utf8'),
+  };
+
+  it('OMITS the attachments field entirely when there are none', async () => {
+    // THE REGRESSION THAT MATTERS MOST. Every message this product sent
+    // before Plan 11 had no attachments, and the object handed to the
+    // transport must be the object it always was. nodemailer 9.0.5 does
+    // in fact compose an empty array the same way it composes an absent
+    // one (checked, by reading the composed bytes back) — but that is a
+    // detail of the library behind this call, not a promise this service
+    // may lean on. The key is simply not there.
+    const { transport, calls } = makeFakeTransport();
+
+    await sendTracked({ transport }, sendRequest());
+
+    for (const call of calls) {
+      expect('attachments' in call.options).toBe(false);
+    }
+  });
+
+  it('omits the field for an explicitly empty list too', async () => {
+    const { transport, calls } = makeFakeTransport();
+
+    await sendTracked({ transport }, sendRequest({ attachments: [] }));
+
+    for (const call of calls) {
+      expect('attachments' in call.options).toBe(false);
+    }
+  });
+
+  it('hands nodemailer the decoded bytes, filename and type on EVERY copy', async () => {
+    // Every recipient gets the file, not just the first — the copies
+    // differ only in envelope and token (spec §5.3).
+    const { transport, calls } = makeFakeTransport();
+
+    await sendTracked({ transport }, sendRequest({ attachments: [REPORT] }));
+
+    expect(calls).toHaveLength(3);
+    for (const call of calls) {
+      expect(call.options.attachments).toEqual([
+        {
+          filename: 'report.pdf',
+          contentType: 'application/pdf',
+          content: Buffer.from('%PDF-1.4 pretend', 'utf8'),
+        },
+      ]);
+    }
+  });
+
+  it('leaves the text and html alternatives untouched — the pixel is still the pixel', async () => {
+    const { transport, calls } = makeFakeTransport();
+
+    await sendTracked({ transport }, sendRequest({ attachments: [REPORT] }));
+
+    for (const call of calls) {
+      expect(call.options.text).toBe('body text');
+      expect(call.options.html).toContain('<img alt="" src="https://track.example/o/');
+    }
+  });
+
+  it('does not mutate the attachment list it was given', async () => {
+    const { transport } = makeFakeTransport();
+    const attachments = [REPORT];
+
+    await sendTracked({ transport }, sendRequest({ attachments }));
+
+    expect(attachments).toEqual([REPORT]);
+    expect(attachments).toHaveLength(1);
+  });
+});

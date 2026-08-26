@@ -13,7 +13,9 @@
  * Narrow on purpose: this declares the surface sync/src/send/ actually
  * calls today — `createTransport`, and the returned transport's
  * `sendMail()` and `close()` — not nodemailer's full API (verify, pooled
- * transports, OAuth2, DKIM, attachments, streams, callbacks, ...).
+ * transports, OAuth2, DKIM, streams, callbacks, ...). Plan 11 added
+ * `attachments`, in the one form this service produces; see
+ * SendMailAttachment below.
  *
  * Plan 4 Task 3 added `sendMail`, which Task 2 deliberately left out until
  * a caller existed. Every field below was checked against the INSTALLED
@@ -63,6 +65,36 @@ declare module 'nodemailer' {
   }
 
   /**
+   * One attachment, in the only form this service produces: a decoded
+   * Buffer with a name and a media type.
+   *
+   * VERIFIED AGAINST THE INSTALLED nodemailer 9.0.5 rather than written
+   * from memory, as everything else in this file was — a message composed
+   * through `streamTransport` with exactly these three fields emits:
+   *
+   *   Content-Type: application/pdf; name="=?UTF-8?Q?...?="
+   *   Content-Transfer-Encoding: base64
+   *   Content-Disposition: attachment; filename*0*=utf-8''...
+   *
+   * inside a `multipart/mixed` that wraps the existing
+   * `multipart/alternative`. So nodemailer does the base64 re-encoding and
+   * the RFC 2231 filename encoding; this service hands over raw bytes and
+   * a plain name, and never builds MIME itself.
+   *
+   * `content` is a Buffer only. nodemailer also accepts a string, a
+   * stream, a `path`, an `href` and a `raw` — `path` and `href` in
+   * particular would make an outgoing message fetch a file from the
+   * filesystem or the network at send time, which is not a capability
+   * this route should be able to reach from a JSON request body. Leaving
+   * them undeclared is the cheapest way to keep them unreachable.
+   */
+  export interface SendMailAttachment {
+    readonly filename: string;
+    readonly contentType: string;
+    readonly content: Buffer;
+  }
+
+  /**
    * The mail options sync/src/send/send.ts passes, and only those.
    *
    * `to`/`cc` are declared as string arrays because that is all this
@@ -93,6 +125,12 @@ declare module 'nodemailer' {
      */
     readonly inReplyTo?: string;
     readonly references?: readonly string[];
+    /**
+     * OMITTED, never `[]`, when a message carries no files — the same rule
+     * `cc` follows just above, and for the same reason: a send with no
+     * attachments must hand the transport the object it always did.
+     */
+    readonly attachments?: readonly SendMailAttachment[];
     readonly envelope: SendMailEnvelope;
   }
 

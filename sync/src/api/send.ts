@@ -3,8 +3,19 @@ import type { RateLimiter } from './rate-limit';
 import type { Transports } from '../send/transports';
 import { json, PRIVATE_NO_STORE } from './http.ts';
 import { buildMessageId, mintTokens, sendTracked } from '../send/send.ts';
-import type { MintSend } from '../send/send';
+import type { MintSend, MintedToken } from '../send/send';
 import { buildQuotedHtml } from '../send/quote.ts';
+import {
+  chooseTokenStrategy,
+  parseAttachments,
+  MAX_ATTACHMENT_COUNT,
+  MAX_ATTACHMENT_TOTAL_BYTES,
+  MAX_ATTACHMENT_FILENAME_CHARS,
+  MAX_ATTACHMENT_CONTENT_TYPE_CHARS,
+  SHARED_TOKEN_RECIPIENT,
+  TRACKED_SEND_BYTE_BUDGET,
+} from '../send/attachments.ts';
+import type { DecodedAttachment, TokenStrategy } from '../send/attachments';
 
 /**
  * POST /api/send (Plan 4 Task 3) — the product's send path.
@@ -78,8 +89,8 @@ export const MAX_FROM_LABEL_CHARS = 320;
 export const MAX_QUOTE_BODY_BYTES = 100 * 1024;
 
 /**
- * The largest raw HTTP body ../api/server.ts will buffer for THIS route
- * (fix round 1) — 1,536 KiB.
+ * The largest raw HTTP body ../api/server.ts will buffer for THIS route —
+ * 16 MiB.
  *
  * The caps above bound the message; this bounds the bytes on the wire, and
  * the two are not the same number. `MAX_TEXT_BODY_BYTES` is measured on
@@ -88,27 +99,39 @@ export const MAX_QUOTE_BODY_BYTES = 100 * 1024;
  * bytes for one. A body at exactly the decoded cap can therefore arrive as
  * six times its measured size, and a transport cap set to the decoded
  * number would refuse a perfectly valid message with an opaque 413 before
- * the route ever ran. That is precisely the defect this constant fixes.
+ * the route ever ran.
+ *
+ * ATTACHMENTS DO NOT ESCAPE, THEY INFLATE. Base64 is 4/3 the size of what
+ * it encodes and every character of it is JSON-safe, so the attachment
+ * term is a flat `ceil(bytes / 3) * 4` rather than a x6 escape factor —
+ * conflating the two would over-reserve by four times.
  *
  * Worst case, all fields maximal and every escapable byte escaped:
  *
- *   textBody     102,400 x 6            =   614,400
- *   quote body   102,400 x 6            =   614,400
+ *   attachments  ceil(10,485,760/3) x 4 = 13,981,016
+ *   attachment metadata 10 x (255x6 + 255x6 + 64) =  31,240
+ *   textBody     102,400 x 6            =    614,400
+ *   quote body   102,400 x 6            =    614,400
  *   references        50 x (256 x 6 + 3) =    76,950
  *   recipients        25 x (254 x 4 + 3) =    25,475
- *   fromLabel        320 x 6            =     1,920
- *   inReplyTo        256 x 6            =     1,536
- *   subject          500 x 6            =     3,000
- *   identityId        64 x 4            =       256
- *   sentAtMs, field names, braces, colons ~      220
- *                                          ---------
- *                                          1,338,157  -> 1,536 KiB reserved
+ *   fromLabel        320 x 6            =      1,920
+ *   inReplyTo        256 x 6            =      1,536
+ *   subject          500 x 6            =      3,000
+ *   identityId        64 x 4            =        256
+ *   sentAtMs, field names, braces, colons ~       220
+ *                                          ----------
+ *                                          15,350,413  -> 16 MiB reserved
  *
- * Raised from 768 KiB by Plan 9, which added the reply fields: a reply
- * carries the ORIGINAL message's body as well as the new one, so the
- * largest legitimate request roughly doubled. The raise buys nothing an
- * attacker wants — the route is behind the auth gate and behind a 30-per-
- * hour cap, so the worst an authenticated caller can hold is 30 x 1.5 MiB.
+ * Raised from 768 KiB by Plan 9 (a reply carries the ORIGINAL body as well
+ * as the new one), and from 1,536 KiB by Plan 11, which is the raise that
+ * changes the risk rather than just the arithmetic. The earlier note here
+ * read "the worst an authenticated caller can hold is 30 x 1.5 MiB"; it is
+ * now 30 x 16 MiB, about 480 MiB, if all 30 of the hourly budget were in
+ * flight at once. That is why ../send/attachments.ts caps attachments at
+ * 10 MiB rather than at Gmail's own 25 MB ceiling — the same pessimistic
+ * bound at 25 MB is 1.2 GB, which this box does not have. The route is
+ * still behind the auth gate and the 30-per-hour cap; the exposure is a
+ * deliberate, bounded trade for being able to send a file at all.
  *
  * tests/send-route.test.ts recomputes that sum from the constants above
  * and asserts it fits, so raising any component cap without raising this
@@ -121,7 +144,7 @@ export const MAX_QUOTE_BODY_BYTES = 100 * 1024;
  * behind the auth gate, so the same ceiling buys nothing and costs the
  * user their long emails.
  */
-export const MAX_SEND_REQUEST_BODY_BYTES = 1536 * 1024;
+export const MAX_SEND_REQUEST_BODY_BYTES = 16 * 1024 * 1024;
 
 /**
  * The global send budget: 30 sends per hour, in memory, counting EVERY
@@ -338,6 +361,16 @@ interface ValidRequest {
   /** Oldest → newest. `[]` when absent. */
   readonly references: readonly string[];
   readonly quote?: ValidQuote;
+  /** Validated and DECODED. `[]` for a message with no files, which is
+   *  every message this product sent before Plan 11. */
+  readonly attachments: readonly DecodedAttachment[];
+  /**
+   * Total DECODED attachment bytes — what spec §5.3.1's budget is measured
+   * in. Carried alongside the list rather than recomputed at the call site
+   * so there is exactly one place this number is derived, and no chance of
+   * the base64 length being summed by mistake somewhere downstream.
+   */
+  readonly attachmentBytes: number;
 }
 
 /**
@@ -367,14 +400,30 @@ function parseAddressList(value: unknown, required: boolean): readonly string[] 
 }
 
 /**
- * Validates the request body, returning the narrowed shape or null.
+ * The outcome of validating a body: the narrowed request, or a CODE
+ * naming which constraint it broke.
  *
- * One verdict for every failure (see INVALID_BODY_ERROR): a field-by-field
- * error message on this route would have to name the field that was wrong,
- * and the fields are recipients and a subject.
+ * The code exists for the LOG, never for the response — the client still
+ * gets the one INVALID_BODY_ERROR string, because a field-by-field error
+ * on this route would have to name the field that was wrong and the
+ * fields are recipients and a subject. A code is safe to log by
+ * construction: it is drawn from a fixed vocabulary and can never carry a
+ * filename, an address or a byte of the message.
  */
-function parseSendBody(body: unknown): ValidRequest | null {
-  if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
+type SendBodyParse =
+  | { readonly ok: true; readonly request: ValidRequest }
+  | { readonly ok: false; readonly reason: string };
+
+/**
+ * Validates the request body, returning the narrowed shape or the
+ * constraint it broke.
+ *
+ * One verdict for every failure as far as the CALLER is concerned (see
+ * INVALID_BODY_ERROR); the reason travels only as far as the log line.
+ */
+function parseSendBody(body: unknown): SendBodyParse {
+  const shape = { ok: false, reason: 'shape' } as const;
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return shape;
   const record = body as Record<string, unknown>;
 
   const identityId = record.identityId;
@@ -383,16 +432,16 @@ function parseSendBody(body: unknown): ValidRequest | null {
     identityId.length === 0 ||
     identityId.length > MAX_IDENTITY_ID_CHARS
   ) {
-    return null;
+    return { ok: false, reason: 'identityId' };
   }
 
   const to = parseAddressList(record.to, true);
-  if (!to || to.length === 0) return null;
+  if (!to || to.length === 0) return { ok: false, reason: 'to' };
 
   const cc = parseAddressList(record.cc, false);
-  if (!cc) return null;
+  if (!cc) return { ok: false, reason: 'cc' };
 
-  if (to.length + cc.length > MAX_RECIPIENTS) return null;
+  if (to.length + cc.length > MAX_RECIPIENTS) return { ok: false, reason: 'recipient_count' };
 
   const subject = record.subject;
   if (
@@ -400,18 +449,64 @@ function parseSendBody(body: unknown): ValidRequest | null {
     subject.length > MAX_SUBJECT_CHARS ||
     /[\r\n]/.test(subject)
   ) {
-    return null;
+    return { ok: false, reason: 'subject' };
   }
 
   const textBody = record.textBody;
   if (typeof textBody !== 'string' || Buffer.byteLength(textBody, 'utf8') > MAX_TEXT_BODY_BYTES) {
-    return null;
+    return { ok: false, reason: 'textBody' };
   }
 
   const reply = parseReplyFields(record);
-  if (reply === null) return null;
+  if (reply === null) return { ok: false, reason: 'reply_fields' };
 
-  return { identityId, to, cc, subject, textBody, ...reply };
+  // Attachments last: it is the only field whose validation allocates
+  // (base64 has to be decoded to be checked at all), so every cheap
+  // structural refusal above happens before a megabyte is copied.
+  const attachments = parseAttachments(record.attachments);
+  if (!attachments.ok) return { ok: false, reason: `attachment:${attachments.reason}` };
+
+  return {
+    ok: true,
+    request: {
+      identityId,
+      to,
+      cc,
+      subject,
+      textBody,
+      ...reply,
+      attachments: attachments.attachments,
+      attachmentBytes: attachments.totalBytes,
+    },
+  };
+}
+
+/**
+ * Who gets which token.
+ *
+ * PER-RECIPIENT: exactly what the mint returned, one token each, in
+ * order — unchanged from every send this product made before Plan 11.
+ *
+ * SHARED: the single minted token, paired with every REAL recipient, so
+ * ../send/send.ts still sends one envelope per person and the route still
+ * reports one result per person. Only the pixel is shared; nobody
+ * receives less mail because the message degraded.
+ *
+ * Returns null when a shared mint came back with nothing to share, which
+ * `mintTokens` should already have refused (it checks the response length
+ * against the sends it answers). Kept as a real branch rather than a
+ * non-null assertion: the alternative is a crash inside the send loop,
+ * after some copies have gone out.
+ */
+function pairTokensWithRecipients(
+  strategy: TokenStrategy,
+  minted: readonly MintedToken[],
+  recipients: readonly string[],
+): readonly MintedToken[] | null {
+  if (strategy === 'per-recipient') return minted;
+  const shared = minted[0];
+  if (shared === undefined) return null;
+  return recipients.map((recipientEmail) => ({ recipientEmail, token: shared.token }));
 }
 
 /**
@@ -459,18 +554,25 @@ export async function handleSend(request: Request, deps: SendRouteDeps): Promise
     return json({ error: INVALID_BODY_ERROR }, 400, PRIVATE_NO_STORE);
   }
 
-  const parsed = parseSendBody(body);
-  if (!parsed) {
-    // Names the constraints, never the values.
+  const validated = parseSendBody(body);
+  if (!validated.ok) {
+    // Names the constraint that failed, never the value that failed it.
+    // `reason` is a fixed vocabulary (see SendBodyParse) — for an
+    // attachment it is the shape of the problem, `attachment:unsafe_filename`,
+    // never the filename.
     console.error(
-      'send: rejected — body did not match ' +
-        '{identityId,to,cc?,subject,textBody,inReplyTo?,references?,quote?} within its ' +
-        `caps (subject ${MAX_SUBJECT_CHARS} chars, body ${MAX_TEXT_BODY_BYTES} bytes, ` +
+      `send: rejected (${validated.reason}) — body did not match ` +
+        '{identityId,to,cc?,subject,textBody,inReplyTo?,references?,quote?,attachments?} ' +
+        `within its caps (subject ${MAX_SUBJECT_CHARS} chars, body ${MAX_TEXT_BODY_BYTES} bytes, ` +
         `${MAX_RECIPIENTS} recipients, ${MAX_REFERENCES} references, ` +
-        `quote ${MAX_QUOTE_BODY_BYTES} bytes) or carried a CR/LF in a field that becomes a header`,
+        `quote ${MAX_QUOTE_BODY_BYTES} bytes, ${MAX_ATTACHMENT_COUNT} attachments totalling ` +
+        `${MAX_ATTACHMENT_TOTAL_BYTES} decoded bytes, filename ${MAX_ATTACHMENT_FILENAME_CHARS} ` +
+        `chars, content type ${MAX_ATTACHMENT_CONTENT_TYPE_CHARS} chars) or carried a CR/LF in ` +
+        'a field that becomes a header',
     );
     return json({ error: INVALID_BODY_ERROR }, 400, PRIVATE_NO_STORE);
   }
+  const parsed = validated.request;
 
   const identity = deps.accounts.find((account) => account.id === parsed.identityId);
   if (!identity) {
@@ -500,7 +602,31 @@ export async function handleSend(request: Request, deps: SendRouteDeps): Promise
   // copy carries it, exactly as an ordinary group email does, and the
   // tracking rows are minted against that same id.
   const messageId = buildMessageId(identity.email);
-  const sends: readonly MintSend[] = recipients.map((recipientEmail) => ({
+
+  /**
+   * SPEC §5.3.1, AND IT IS DECIDED HERE — BEFORE THE MINT, BEFORE SMTP,
+   * while nothing has happened that cannot be taken back.
+   *
+   * Gmail files every one of the N per-recipient copies into Sent, so the
+   * attachments cost `bytes x recipients` of a 15 GB quota rather than
+   * `bytes`. Above the budget the message falls back to ONE token shared
+   * by every copy: the files still go out to everyone, but the product
+   * stops claiming per-person attribution it would be spending the quota
+   * to buy. The composer says so before the user presses Send
+   * (client/src/attachmentPicker.ts) — this is not a surprise sprung
+   * afterwards.
+   *
+   * DECODED bytes, from ../send/attachments.ts's own accounting. Feeding
+   * this the base64 length would degrade messages 33% early.
+   */
+  const strategy = chooseTokenStrategy(parsed.attachmentBytes, recipients.length);
+
+  // A shared strategy mints ONE row, attributed to nobody
+  // (SHARED_TOKEN_RECIPIENT) rather than to the first recipient — writing
+  // a real address there would make the opens feed name a person on
+  // evidence that says only that somebody opened it.
+  const mintRecipients = strategy === 'shared' ? [SHARED_TOKEN_RECIPIENT] : recipients;
+  const sends: readonly MintSend[] = mintRecipients.map((recipientEmail) => ({
     recipientEmail,
     subject: parsed.subject,
     accountId: identity.id,
@@ -522,6 +648,25 @@ export async function handleSend(request: Request, deps: SendRouteDeps): Promise
         `(${minted.reason}); NOT falling back to an untracked send`,
     );
     return json({ error: 'tracking unavailable' }, 502, PRIVATE_NO_STORE);
+  }
+
+  const perRecipientTokens = pairTokensWithRecipients(strategy, minted.tokens, recipients);
+  if (perRecipientTokens === null) {
+    console.error(
+      `send: refused — a shared-token mint came back empty for account ${identity.id}`,
+    );
+    return json({ error: 'tracking unavailable' }, 502, PRIVATE_NO_STORE);
+  }
+
+  if (strategy === 'shared') {
+    // Counts and the account id only — never a filename, an address or
+    // the token itself.
+    console.error(
+      `send: attachments on ${recipients.length} copies would cost ` +
+        `${parsed.attachmentBytes * recipients.length} bytes against a ` +
+        `${TRACKED_SEND_BYTE_BUDGET}-byte budget for account ${identity.id}; ` +
+        'degraded to one shared token (spec §5.3.1)',
+    );
   }
 
   // Assembled HERE, from the source the client sent, and only after the
@@ -552,7 +697,8 @@ export async function handleSend(request: Request, deps: SendRouteDeps): Promise
       // both the mint route and /o/{token}.png, so there is no second
       // environment variable to configure or to get out of step.
       pixelBase: deps.trackingConfig.baseUrl,
-      recipients: minted.tokens,
+      recipients: perRecipientTokens,
+      attachments: parsed.attachments,
     },
   );
 
