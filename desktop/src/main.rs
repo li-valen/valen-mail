@@ -27,12 +27,28 @@
 //!
 //! What this shell is responsible for, then, is the part a browser tab does
 //! not give you: a real window that remembers itself, a native menu bar
-//! (see menu.rs — without it ⌘C does nothing), and a hard rule that the
-//! window never leaves Postbox (see links.rs and origin.rs).
+//! (see menu.rs — without it ⌘C does nothing), a hard rule that the window
+//! never leaves Postbox (see links.rs and origin.rs), and native new-mail
+//! notifications (poll.rs, mailwatch.rs, inbox.rs, notify.rs).
+//!
+//! That last one is the one place the "no credential here" rule above gets
+//! a footnote, so it is stated rather than buried: the poll borrows the
+//! session cookie out of WebKit's own store for the duration of one
+//! request and keeps no copy. There is still nothing stored, and still no
+//! keychain. See inbox.rs.
+//!
+//! Notifications are native and not the page's because the page cannot do
+//! it: WKWebView exposes no `PushManager` and denies
+//! `Notification.requestPermission()` outright. poll.rs opens with the
+//! measurement.
 
+mod inbox;
 mod links;
+mod mailwatch;
 mod menu;
+mod notify;
 mod origin;
+mod poll;
 
 use tauri::menu::MenuEvent;
 use tauri::webview::{DownloadEvent, NewWindowResponse};
@@ -94,6 +110,9 @@ fn main() {
         .on_menu_event(handle_menu_event)
         .setup(|app| {
             app.set_menu(menu::build(app.handle())?)?;
+            // Before anything is posted, and once — see notify::register
+            // for what goes wrong when it is not called at all.
+            notify::register(&app.config().identifier);
             let window = build_main_window(app.handle())?;
             // Built hidden, shown here. The window-state plugin's restore
             // is queued onto the event loop rather than run inside
@@ -102,6 +121,7 @@ fn main() {
             // that same resize (see `handle_run_event`).
             window.show()?;
             window.set_focus()?;
+            poll::start(window);
             Ok(())
         })
         .build(tauri::generate_context!())

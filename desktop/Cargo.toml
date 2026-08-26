@@ -15,6 +15,37 @@ tauri-plugin-window-state = "2"
 tauri-plugin-opener = "2"
 url = "2"
 
+# The new-mail poll. `native-tls` rather than `rustls` because it is
+# Security.framework on this target — the same TLS stack WebKit itself
+# uses two lines away — instead of a second, separately-maintained root
+# store bundled into the app. `default-features = false` keeps the
+# default-tls/charset/cookie extras out; this client sends one GET and
+# reads one JSON body.
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "http2", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# RFC 3339 only, for the `date` field of an inbox row. Hand-rolling a
+# timestamp parser for "the format the server happens to emit" is how a
+# clock bug ships; `time` already rides in via mac-notification-sys.
+time = { version = "0.3", default-features = false, features = ["std", "parsing"] }
+
+# The notification itself, at the layer that actually answers the
+# question this app asks of it.
+#
+# tauri-plugin-notification and notify-rust both sit on top of this exact
+# crate, and both were tried first. The plugin reports its permission
+# state as a hardcoded `Granted` (src/desktop.rs) — a stub, not a reading
+# of anything — and throws the interaction response away, and that
+# response is the only way to learn the banner was clicked, which is what
+# brings the window forward. notify-rust keeps the response but reaches
+# it through a handle whose `show()` and `wait_for_response()` each post
+# the notification on macOS, so the pair posts twice. Registering the
+# plugin would additionally add IPC commands to an app that deliberately
+# exposes none. One `Notification::send()` here is one banner and one
+# answer.
+mac-notification-sys = "0.6"
+
 # A shell should not carry a debug-build penalty into the bundle, and the
 # release profile is what `tauri build` uses.
 [profile.release]
