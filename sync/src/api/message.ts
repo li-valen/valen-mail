@@ -284,30 +284,6 @@ function describeFailure(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
 }
 
-/**
- * True when `folder` is THIS account's own Sent mailbox, resolved from the
- * server's RFC 6154 special-use attributes via the pool's existing
- * discovery (no second LIST — see FolderCache.forAccount).
- *
- * Never a name comparison against `[Gmail]/Sent Mail`. Gmail LOCALISES its
- * system folder names to the account owner's language setting
- * (`[Gmail]/Отправленные`, `[Gmail]/Gesendet`), which is the entire reason
- * ../imap/folders.ts discovers them by attribute in the first place. A
- * hardcoded English literal would simply never match on those accounts, so
- * the pixel would stay in the copy they retain — silently, with nothing in
- * any log to notice.
- *
- * `getDiscoveredFolders` is undefined when this account has not completed a
- * LIST yet, and `sent` is null when the server flagged no Sent mailbox at
- * all. Both mean "cannot establish that this is Sent", and both therefore
- * leave the body alone: this predicate gates DELETING something from a
- * rendering of the user's own mail, so an uncertain answer must be "no".
- */
-function isAccountSentFolder(pool: ConnectionPool, accountId: string, folder: string): boolean {
-  const sent = pool.getDiscoveredFolders(accountId)?.sent;
-  return typeof sent === 'string' && sent === folder;
-}
-
 export async function handleMessage(
   db: Db,
   pool: ConnectionPool,
@@ -355,13 +331,15 @@ export async function handleMessage(
   }
 
   const shaped = toParsedMessage(parsed);
-  // Spec 5.6 — strip OUR OWN pixel out of the copy the sender retains,
-  // so re-reading your own sent mail in Postbox never fires it and never
-  // manufactures an open attributed to a recipient. See ./strip-pixel.ts
-  // for why the rule is this narrow and what it deliberately leaves.
-  const message = isAccountSentFolder(pool, accountId, folder)
-    ? { ...shaped, html: stripOwnTrackingPixels(shaped.html, pixelBase) }
-    : shaped;
+  // Spec 5.6 — strip OUR OWN pixel from EVERY rendered body, so reading any
+  // of this user's mail in Postbox never fires a pixel this installation
+  // minted and never manufactures an open attributed to a recipient.
+  // Unconditional on purpose: the Sent copy is the loudest case but not the
+  // only one (a reply quoting the original carries the original's pixel),
+  // and there is exactly one Postbox user, so no folder can hold a pixel of
+  // ours whose firing would report a true fact. See ./strip-pixel.ts for
+  // why the rule is this narrow and what it deliberately leaves alone.
+  const message = { ...shaped, html: stripOwnTrackingPixels(shaped.html, pixelBase) };
   if (message.attachments.length === 0) {
     return json(message, 200, PRIVATE_NO_STORE);
   }

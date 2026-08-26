@@ -128,10 +128,18 @@ function isOwnAddress(address: string, ownAddresses: readonly string[]): boolean
  * shipped: STRIP THE PIXEL AT RENDER, NOT AT SEND. We cannot stop Gmail's
  * own clients from fetching it, but inside Postbox we own the render path
  * completely, so the request is simply never made — see
- * ../api/strip-pixel.ts and its use in ../api/message.ts, scoped to the
- * account's DISCOVERED Sent folder and to our own pixel origin alone. It
- * needs no IMAP write, no expunge, no dependence on Gmail's Message-ID
- * dedupe, and nothing from tracking/.
+ * ../api/strip-pixel.ts and its use in ../api/message.ts. It needs no IMAP
+ * write, no expunge, no dependence on Gmail's Message-ID dedupe, and
+ * nothing from tracking/.
+ *
+ * The rule is UNCONDITIONAL — every rendered body, not just the Sent copy,
+ * which is what spec 5.6 asks for. A reply quoting the original carries the
+ * original recipient's pixel, so an INBOX copy fires it too. And with
+ * exactly one Postbox user, any pixel on our own TRACKING_BASE_URL origin
+ * was minted here for mail that user sent, so no folder holds one whose
+ * firing could report a true fact. What the rule IS scoped by is the
+ * ORIGIN: only our own pixel path, never a third party's and never an
+ * image the user embedded.
  *
  * ITS BOUNDARY, STATED HONESTLY: that closes the case WITHIN POSTBOX
  * ONLY. Opening the same Sent copy in Gmail's own web or mobile client
@@ -140,12 +148,7 @@ function isOwnAddress(address: string, ownAddresses: readonly string[]): boolean
  * so the claim is "Postbox does not lie to you about your own mail" —
  * never "the misattribution is fixed". Rule 2 below remains the only
  * suppression this function performs.
- *
- * KNOWN GAP, deliberately not widened here: spec 5.6 asks for the same
- * strip on ANY rendered body, not just Sent, because a reply quoting the
- * original carries the original recipient's pixel and can fire phantom
- * opens from the INBOX copy. The shipped scope is Sent-only; extending it
- * is a follow-up, recorded rather than silently assumed.
+
  *
  * PUSH ONLY. Rule 2 suppresses the notification, never the event: the
  * opens feed (GET /api/opens, ../api/routes.ts's `handleOpens`) returns

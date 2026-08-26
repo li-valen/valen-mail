@@ -16,6 +16,22 @@
  * iframe. "Postbox does not lie to you about your own mail" is a property
  * we can actually hold, and this module is where it is held.
  *
+ * APPLIED TO EVERY RENDERED BODY, NOT JUST THE SENT COPY. The Sent copy is
+ * the loudest case, not the only one: a reply quoting the original carries
+ * the original recipient's pixel, so rendering that INBOX copy reports
+ * "alice opened your mail" when what actually happened is that Alice
+ * replied and the user read her reply — the same lie in a different folder.
+ * Spec 5.6 asks for the rule on ANY body for exactly this reason ("a reply
+ * or bounce can carry the original pixel and fire phantom opens
+ * indefinitely").
+ *
+ * A folder condition would also protect nothing. This installation has ONE
+ * user, so any pixel on our own TRACKING_BASE_URL origin, in any message in
+ * any of their accounts, was minted here for mail that user sent. Rendering
+ * it can never produce a true fact — only the user's own read reported as
+ * someone else's. Scoping by folder would have been a restriction with no
+ * case behind it.
+ *
  * THE RULE IS DELIBERATELY NARROW, AND BOTH HALVES ARE LOAD-BEARING:
  *
  *  1. Only `<img>` elements whose `src` is an ABSOLUTE url on our own
