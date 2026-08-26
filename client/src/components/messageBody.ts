@@ -177,6 +177,38 @@ export function contentSecurityPolicyFor(): string {
  * pans. This is the standard wide-table treatment, and it is applied only
  * to top-level tables — nested ones stay tables, or every multi-column
  * email would collapse into a single column.
+ *
+ * **`margin-inline:auto` PUTS BACK THE CENTRING `display:block` TOOK
+ * AWAY.** That is the whole of it, and it is one declaration because the
+ * rule above is what broke this: a table box is shrink-to-fit and is
+ * centred by `align="center"`, by an inline `margin:0 auto`, or by the
+ * containers around it; a BLOCK box with an explicit `width` is none of
+ * those, so a fixed-width message pinned itself to the left edge and put
+ * every pixel of slack on the right. Measured in the running app at a
+ * 1280 desktop, 960px frame, on the representative `<table width="640">`:
+ * `gapLeft 16` (body padding, nothing else) against `gapRight 304`.
+ * Auto inline margins take that to `160 / 160`.
+ *
+ * **IT CENTRES ONLY WHERE THERE IS GENUINELY SLACK, which is why one
+ * declaration is enough and no media query is needed.** Auto margins
+ * resolve to zero unless the box's own `width` leaves room:
+ *
+ *  - A full-width email (`width="100%"`, or no width at all — a block box
+ *    fills its container) computes to the container width, so both
+ *    margins are 0 and it gains no side gaps. Measured unchanged at
+ *    `16 / 16` on both viewports.
+ *  - A table too wide to fit is clamped by the `max-width:100%` above
+ *    before margins are resolved, so it also gets 0 and keeps scrolling
+ *    inside its own box. Measured at a 361px frame: an unshrinkable 640
+ *    table stays `16 / 16` with `scrollWidth 612 > clientWidth 329`, and
+ *    the document still does not pan.
+ *
+ * **THE SENDER STILL WINS WHERE THE SENDER SAID SOMETHING.** An inline
+ * `style="margin-left:0"` outranks this rule, and `align="left"`/`"right"`
+ * map to `float`, which auto margins do not touch — both measured to stay
+ * exactly where the sender put them. What this changes is only the case
+ * where the message expressed no horizontal intent at all, and the old
+ * answer to that was "hard left", which no mail client gives.
  */
 const BODY_STYLE = [
   'html{color-scheme:light;background:#ffffff}',
@@ -198,7 +230,7 @@ const BODY_STYLE = [
   'a{color:#1d4ed8}',
   'table{max-width:100%}',
   'pre{white-space:pre-wrap;overflow-wrap:anywhere}',
-  'body>table{display:block;max-width:100%;overflow-x:auto}',
+  'body>table{display:block;max-width:100%;overflow-x:auto;margin-inline:auto}',
   // NOT STYLING — THIS CUTS A FEEDBACK LOOP, and it is the only `!important`
   // in this stylesheet for that reason.
   //

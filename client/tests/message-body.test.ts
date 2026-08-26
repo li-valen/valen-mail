@@ -148,6 +148,13 @@ describe('srcDocFor — the stylesheet that keeps a message inside its frame', (
     return match![1]!;
   };
 
+  /** The declarations of the one `body>table` rule, without its braces. */
+  const bodyTableRule = (): string => {
+    const match = /(?:^|[;}])body>table\{([^}]*)\}/.exec(style());
+    expect(match).not.toBeNull();
+    return match![1]!;
+  };
+
   it('breaks long unbreakable tokens with `anywhere`, not `break-word`', () => {
     // Not interchangeable, and the difference is the whole fix: both wrap
     // a long URL, but only `anywhere` also lowers min-content width,
@@ -181,7 +188,44 @@ describe('srcDocFor — the stylesheet that keeps a message inside its frame', (
     // scroll container so that overflow is confined to that element and
     // the DOCUMENT never pans.
     expect(style()).toContain('table{max-width:100%}');
-    expect(style()).toContain('body>table{display:block;max-width:100%;overflow-x:auto}');
+    // Asserted declaration by declaration rather than as one literal, so
+    // that the centring rule below can be added to, or removed from, this
+    // same block without either test standing in for the other.
+    expect(bodyTableRule()).toContain('display:block');
+    expect(bodyTableRule()).toContain('max-width:100%');
+    expect(bodyTableRule()).toContain('overflow-x:auto');
+  });
+
+  it('centres that block, because display:block is what discarded its centring', () => {
+    // A table box is shrink-to-fit and gets centred by `align="center"`,
+    // by an inline `margin:0 auto`, or by the containers around it. A
+    // BLOCK box with an explicit width is none of those, so the rule
+    // above pinned every fixed-width message to the left edge: measured
+    // in the running app at a 960px frame on a <table width="640">,
+    // gapLeft 16 (body padding, nothing more) against gapRight 304.
+    // Auto inline margins take that to 160/160.
+    expect(bodyTableRule()).toContain('margin-inline:auto');
+  });
+
+  it('centres ONLY where there is slack, so a full-width email gains no side gaps', () => {
+    // Load-bearing, and the reason one declaration is enough: auto margins
+    // resolve to zero unless the box's own width leaves room. `max-width`
+    // has to stay a PERCENTAGE cap in the same block — it is what clamps
+    // an oversized table to the container before margins are resolved, so
+    // the too-wide case keeps scrolling in its own box at 16/16 instead of
+    // being centred with negative slack. A `max-content`/`fit-content`
+    // width here would instead shrink every full-width email and centre
+    // the result, which is a different message than the sender wrote.
+    expect(bodyTableRule()).toMatch(/max-width:100%/);
+    expect(bodyTableRule()).not.toMatch(/width:(?:max|fit|min)-content/);
+  });
+
+  it('leaves the centring scoped to top-level tables, like the block treatment', () => {
+    // An unscoped `table{margin-inline:auto}` would centre every NESTED
+    // table too — in email layout that is the content of the columns, not
+    // the layout, and centring it re-flows the message the sender wrote.
+    expect(style()).not.toMatch(/(?:^|[;}])table\{[^}]*margin-inline:auto/);
+    expect(style()).toMatch(/body>table\{[^}]*margin-inline:auto/);
   });
 
   it('scopes the block-scroll treatment to TOP-LEVEL tables only', () => {
