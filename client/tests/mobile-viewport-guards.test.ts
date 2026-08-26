@@ -4,6 +4,7 @@ import indexHtml from '../index.html?raw';
 import appShellSource from '../src/AppShell.tsx?raw';
 import loginSource from '../src/LoginView.tsx?raw';
 import messageViewSource from '../src/components/MessageView.tsx?raw';
+import touchTargetSource from '../src/ui/touchTarget.ts?raw';
 
 /**
  * THE THREE MOBILE DEFECTS THE INTERFACE AUDIT FOUND, guarded so they
@@ -37,7 +38,11 @@ describe('the reader\'s controls, under a thumb', () => {
     // Measured at 393x852 before this: every control 32px tall, and the
     // worst pair is Archive beside Trash — adjacent, alike, one of them
     // destructive. 44px is where Apple's HIG and WCAG 2.5.5 both land.
-    expect(view).toMatch(/const TOUCH_HEIGHT = 'h-11 lg:h-8'/);
+    expect(touchTargetSource).toMatch(/const TOUCH_HEIGHT = 'h-11 lg:h-8'/);
+    // Stated once, in ui/, because it is now the answer for the reader AND
+    // the composer. A second copy is how the two drift into disagreeing
+    // about what a tap target is.
+    expect(view).toContain("from '../ui/touchTarget'");
   });
 
   it('applies it to EVERY small control in the reader, not most of them', () => {
@@ -52,8 +57,8 @@ describe('the reader\'s controls, under a thumb', () => {
   it('covers the one control that is not a Button either', () => {
     // "Show original colours" is hand-rolled and measured 24px — the WCAG
     // 2.5.8 floor exactly, and the smallest thing in the reader.
-    expect(view).toContain('min-h-11');
-    expect(view).toContain('lg:min-h-0');
+    expect(touchTargetSource).toMatch(/const TOUCH_MIN_HEIGHT = 'min-h-11 lg:min-h-0'/);
+    expect(view).toContain('TOUCH_MIN_HEIGHT');
   });
 });
 

@@ -19,6 +19,7 @@ import { Panel, SKELETON_DELAY_MS } from '../motion';
 import AttachmentList from './MessageAttachments';
 import ThreadContext from './ThreadContext';
 import { formatReceived } from './inboxDates';
+import { TOUCH_HEIGHT, TOUCH_MIN_HEIGHT } from '../ui/touchTarget';
 import {
   FALLBACK_BODY_HEIGHT_PX,
   IFRAME_SANDBOX,
@@ -150,27 +151,7 @@ function MessageHeader({ message, headingRef }: MessageHeaderProps) {
   );
 }
 
-/**
- * THE READER'S CONTROLS, SIZED FOR THE THING OPERATING THEM.
- *
- * `size="sm"` is `h-8` — 32px, which is comfortable under a mouse and
- * cramped under a thumb. Measured at 393x852, every control in the reader
- * came out 32px tall, and the two that matter most are the worst case:
- * Archive and Trash are adjacent, similar-looking, and one of them is
- * destructive. A mis-tap there is not a cosmetic problem.
- *
- * 44px is the figure Apple's HIG and WCAG 2.5.5 both land on. The buttons
- * keep their widths, so the only cost is a taller toolbar on a phone —
- * the row already wraps at this width by design, so it gains one line's
- * worth of height and nothing moves that was not already moving.
- *
- * Restored to `h-8` above `lg:`, where the pointer is a mouse and density
- * is worth more than reach. The breakpoint rather than `pointer-coarse`
- * because `lg:` is the split every other layout decision in this app is
- * expressed in, and one file inventing a second axis is how a codebase
- * ends up with two answers to "is this mobile".
- */
-const TOUCH_HEIGHT = 'h-11 lg:h-8';
+
 
 interface BodyFrameProps {
   readonly html: string;
@@ -444,7 +425,7 @@ function BodyFrame({ html, subject }: BodyFrameProps) {
         <button
           type="button"
           onClick={() => setShowOriginal((previous) => !previous)}
-          className="inline-flex min-h-11 cursor-pointer touch-manipulation items-center self-start rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:min-h-0"
+          className={`${TOUCH_MIN_HEIGHT} inline-flex cursor-pointer touch-manipulation items-center self-start rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}
         >
           {showOriginal ? 'Use dark colours' : 'Show original colours'}
         </button>
