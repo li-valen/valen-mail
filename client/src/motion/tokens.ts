@@ -136,6 +136,30 @@ export type DurationName = keyof typeof DURATION_MS;
 export const MIN_DURATION_MS = 120;
 export const MAX_DURATION_MS = 260;
 
+/**
+ * How long a fetch may take before the reader admits it is loading.
+ *
+ * NOT AN ANIMATION, which is why it is its own constant rather than a
+ * seventh entry in DURATION_MS — nothing moves for this long, and nothing
+ * is eased. It is a THRESHOLD, and it lives in this file because it is
+ * the same perceptual question every value here answers, and because the
+ * alternative is a bare `120` sitting in a component with nothing to
+ * relate it to.
+ *
+ * Tied to MIN_DURATION_MS rather than stated independently: the band's
+ * floor already means "the shortest interval a user reads as a change of
+ * state", and a skeleton that appears and disappears inside that window
+ * is not information, it is a flash. With the message cache in front of
+ * this (src/messageCache.ts), a re-open resolves in well under a
+ * millisecond — showing a skeleton for it would be the app announcing
+ * work it did not do.
+ *
+ * A genuine fetch takes far longer than this, so nothing that is actually
+ * slow becomes silent: the skeleton still appears, just never for a
+ * request that was already finished.
+ */
+export const SKELETON_DELAY_MS = MIN_DURATION_MS;
+
 /** Milliseconds to `motion`'s seconds. The one conversion in the system,
  *  so no component ever writes `0.18` and hopes it matches a `180ms`
  *  somewhere else. */

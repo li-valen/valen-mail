@@ -36,8 +36,19 @@ export class ApiError extends Error {
   }
 }
 
-async function getJson(path: string, fetchImpl: typeof fetch): Promise<unknown> {
-  const response = await fetchImpl(path, REQUEST_INIT);
+/**
+ * `signal` is threaded through for exactly one caller — the speculative
+ * prefetcher (./messagePrefetch.ts), which must be able to abandon a
+ * guess the moment the user navigates away from what motivated it. Every
+ * other call passes nothing and behaves exactly as it did: `signal:
+ * undefined` is what `fetch` sees when the field is absent.
+ */
+async function getJson(
+  path: string,
+  fetchImpl: typeof fetch,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  const response = await fetchImpl(path, signal === undefined ? REQUEST_INIT : { ...REQUEST_INIT, signal });
   if (!response.ok) {
     throw new ApiError(response.status, `${path} returned ${response.status}`);
   }
@@ -614,9 +625,13 @@ export async function getMessage(
   folder: string,
   uid: string,
   fetchImpl: typeof fetch = fetch,
+  /** Aborts the request. Used by ./messagePrefetch.ts to abandon a
+   *  speculative fetch on navigation, and by the reader for nothing — an
+   *  open the user asked for is never cancelled out from under them. */
+  signal?: AbortSignal,
 ): Promise<ParsedMessage> {
   const segments = [accountId, folder, uid].map(encodeURIComponent);
-  const body = await getJson(`/api/message/${segments.join('/')}`, fetchImpl);
+  const body = await getJson(`/api/message/${segments.join('/')}`, fetchImpl, signal);
   return parseMessage(body);
 }
 

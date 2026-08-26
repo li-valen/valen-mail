@@ -8,6 +8,7 @@ import { DEFAULT_FILTER } from './inboxFilters';
 import type { FolderId } from './inboxFilters';
 import type { InboxMessage, OpenEvent } from './api';
 import { foldMessageIndex } from './messageIndex';
+import { messagePrefetcher } from './messagePrefetch';
 import Compose, { DISCARD_DRAFT_PROMPT } from './components/Compose';
 import type { ResultSummary } from './components/composeResults';
 import InboxList from './components/InboxList';
@@ -213,6 +214,18 @@ export default function App() {
   // tracked send's own message lives in Sent, not whichever folder is on
   // screen when its "recent open" row gets clicked.
   const [messageIndex, setMessageIndex] = useState<readonly InboxMessage[]>([]);
+  /**
+   * The CURRENT list, in list order — what InboxList last reported,
+   * unfolded.
+   *
+   * A second copy of the same report, and the two are not redundant:
+   * `messageIndex` above grows forever across folders and accounts (that
+   * is its job) and therefore has no meaningful ORDER, while the reader's
+   * adjacent-message prefetch needs exactly the order the user is looking
+   * at — "the row after this one" is only defined against one list.
+   * Replaced on every report rather than folded, for the same reason.
+   */
+  const [visibleMessages, setVisibleMessages] = useState<readonly InboxMessage[]>([]);
   // Component-local, not persisted — keyed on the message text rather than
   // a plain boolean, so a retry that fails with a DIFFERENT message still
   // shows; only a repeat of the exact message the user already dismissed
@@ -271,6 +284,10 @@ export default function App() {
   // rather than replacing on every report.
   const handleMessagesChange = useCallback((next: readonly InboxMessage[]) => {
     setMessageIndex((known) => foldMessageIndex(known, next));
+    // The same report, kept in order — see `visibleMessages`. Storing the
+    // array by reference means an unchanged list is a no-op update React
+    // bails out of rather than a render.
+    setVisibleMessages(next);
   }, []);
 
   // One object for InboxList, rebuilt only when a selection actually
@@ -332,6 +349,12 @@ export default function App() {
     setSelected(null);
     openedKeyRef.current = null;
     listScrollRef.current = 0;
+    // Every one of these three handlers lands the user on a DIFFERENT
+    // list, so the reader's adjacent-message guesses are about rows that
+    // are no longer anywhere on screen. Cancelling drops them off the
+    // wire and — via the generation guard in src/messagePrefetch.ts —
+    // makes any that already resolved harmless rather than merely late.
+    messagePrefetcher.cancelAll();
   }, []);
 
   /**
@@ -643,6 +666,13 @@ export default function App() {
               <MessageView
                 key={messageKey(selected)}
                 message={selected}
+                // The list the reader was opened FROM, so it can warm the
+                // rows either side of this one. Harmless when the reader
+                // was opened from somewhere else (a thread row, an opens
+                // event): MessageView finds no match and prefetches
+                // nothing rather than guessing at a neighbour in a list
+                // the user is not in.
+                neighbours={visibleMessages}
                 now={now}
                 onBack={closeMessage}
                 onOpen={openMessage}

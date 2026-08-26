@@ -14,6 +14,8 @@ import { EmptyState } from '../ui/EmptyState';
 import { Skeleton } from '../ui/Skeleton';
 import { Settle, SettleGroup } from '../motion';
 import MessageRow from './MessageRow';
+import { messagePrefetcher } from '../messagePrefetch';
+import { targetFor } from '../messageLoader';
 import { groupByDay } from './inboxDates';
 import { LIST_DIVIDERS, LIST_SURFACE } from './listSurface';
 import { isCurrentSelection, resolveLoadMorePage } from './inboxPaging';
@@ -213,6 +215,15 @@ export default function InboxList({
     // page, but discarding also means it correctly skips the
     // `setIsLoadingMore(false)` that would otherwise have cleared it.
     selectionRef.current += 1;
+    // A new selection also supersedes every SPECULATIVE fetch issued for
+    // the old one — see src/messagePrefetch.ts's cancelAll. Same reason
+    // the counter above exists, one layer over: a guess made about the
+    // folder the user just left is worth nothing, and left running it
+    // spends both the account's daily byte budget and the cache's bytes
+    // on mail that is no longer on screen. Called BEFORE the request
+    // below goes out so the reader's own fetch is never queued behind a
+    // guess about somewhere else.
+    messagePrefetcher.cancelAll();
     setLoad({ status: 'loading' });
     setLoadMoreError(null);
     setIsLoadingMore(false);
@@ -302,6 +313,12 @@ export default function InboxList({
       },
     );
   }, [cursor, isLoadingMore, folder, account, search]);
+
+  /** Warms one row's body on hover or focus. Stable identity so the 50
+   *  rows below do not all re-render whenever this component does. */
+  const prefetchMessage = useCallback((row: InboxMessage) => {
+    messagePrefetcher.prefetch(targetFor(row));
+  }, []);
 
   const retry = useCallback(() => setAttempt((previous) => previous + 1), []);
   // What the polite live region says. Derived, not stored: it has to
@@ -486,6 +503,7 @@ export default function InboxList({
                     message={message}
                     now={now}
                     onOpen={onOpenMessage}
+                    onPrefetch={prefetchMessage}
                   />
                 ))}
               </ul>

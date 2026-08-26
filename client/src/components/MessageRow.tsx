@@ -18,6 +18,15 @@ export interface MessageRowProps {
    *  no destination is the defect Plan 6 exists to fix, and an optional
    *  handler would let a caller reintroduce it silently. */
   readonly onOpen: (message: InboxMessage) => void;
+  /**
+   * Warms this message's body before it is opened — fired on MOUSE hover
+   * and on keyboard focus, which are the two moments a user has committed
+   * attention to a row without having clicked yet.
+   *
+   * Optional, unlike `onOpen`: a list that does not prefetch is slower,
+   * not broken, and the opens rail's own row list has no reason to.
+   */
+  readonly onPrefetch?: (message: InboxMessage) => void;
 }
 
 /**
@@ -133,7 +142,7 @@ const AVATAR_TONES: readonly string[] = [
   'bg-teal-100 text-teal-900 dark:bg-teal-950 dark:text-teal-200',
 ];
 
-export default function MessageRow({ message, now, onOpen }: MessageRowProps) {
+export default function MessageRow({ message, now, onOpen, onPrefetch }: MessageRowProps) {
   const { sender, subject, preview, initial, tone } = rowLayoutFor(message);
   const unread = isUnread(message);
   const when = formatWhen(message.date, now);
@@ -143,6 +152,24 @@ export default function MessageRow({ message, now, onOpen }: MessageRowProps) {
       <button
         type="button"
         onClick={() => onOpen(message)}
+        /* PREFETCH TRIGGERS — hover and focus, and nothing else.
+           `pointerType === 'mouse'` is the whole desktop/touch split, and
+           it is not fussiness: on a touch screen `pointerenter` fires
+           immediately before `click`, so an unguarded handler would issue
+           a speculative fetch for the message the very next line is about
+           to fetch for real — two requests, one message, on the device
+           least able to afford either. A mouse hover, by contrast, buys
+           the 100–300ms of human latency between arriving at a row and
+           pressing it.
+           `onFocus` is the keyboard's equivalent of that hover and needs
+           no guard: tabbing to a row is as deliberate as pointing at it.
+           Both are idempotent — see src/messagePrefetch.ts, which drops a
+           request for anything already cached, queued or in flight, so
+           these can fire as often as the browser likes. */
+        onPointerEnter={(event) => {
+          if (event.pointerType === 'mouse') onPrefetch?.(message);
+        }}
+        onFocus={() => onPrefetch?.(message)}
         data-message-key={messageKey(message)}
         /* PLAN 7 TASK 2 — pressed feedback, as a TINT and never a scale.
            A 3% scale is right for a button-shaped button (see

@@ -29,6 +29,7 @@ export {
   MIN_DURATION_MS,
   NAV_PILL_SPRING,
   ROW_ENTER_PX,
+  SKELETON_DELAY_MS,
   seconds,
 } from './tokens';
 export type { Bezier, DurationName } from './tokens';

@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Ref, RefObject } from 'react';
 import { ArrowLeft, FileText } from 'lucide-react';
-import { ApiError, getMessage } from '../api';
+import { ApiError } from '../api';
 import type { InboxMessage, ParsedMessage } from '../api';
+import { messageCache } from '../messageCache';
+import { loadMessage, readCachedMessage, refetchMessage, targetFor } from '../messageLoader';
+import { messagePrefetcher } from '../messagePrefetch';
 import { Alert, AlertDescription } from '../ui/Alert';
 import { Button } from '../ui/Button';
 import { EmptyState } from '../ui/EmptyState';
 import { Skeleton } from '../ui/Skeleton';
-import { Panel } from '../motion';
+import { Panel, SKELETON_DELAY_MS } from '../motion';
 import AttachmentList from './MessageAttachments';
 import ThreadContext from './ThreadContext';
 import { formatReceived } from './inboxDates';
@@ -346,6 +349,16 @@ export interface MessageViewProps {
   /** The inbox row that was opened. Supplies the header and every path
    *  segment the body and attachment requests are built from. */
   readonly message: InboxMessage;
+  /**
+   * The rows either side of this one, in list order — prefetched on open
+   * because people read down a list (see ../messagePrefetch.ts).
+   *
+   * Optional and defaulting to none: the reader is also reachable from a
+   * thread row and from the opens rail, where there is no surrounding
+   * list to be adjacent IN, and guessing one there would be a fetch spent
+   * on a neighbour the user cannot even see.
+   */
+  readonly neighbours?: readonly InboxMessage[];
   /** The list's shared "now", threaded through to the thread rows so a
    *  row reads the same here as it does in the list. */
   readonly now: Date;
@@ -354,23 +367,89 @@ export interface MessageViewProps {
   readonly onOpen: (message: InboxMessage) => void;
 }
 
-export default function MessageView({ message, now, onBack, onOpen }: MessageViewProps) {
-  const [load, setLoad] = useState<LoadState>({ status: 'loading' });
+export default function MessageView({
+  message,
+  neighbours = [],
+  now,
+  onBack,
+  onOpen,
+}: MessageViewProps) {
+  const accountId = message.account_id;
+  const folder = message.folder;
+  const uid = message.uid;
+
+  /**
+   * THE WHOLE POINT OF THE CACHE, and the reason this is a `useState`
+   * INITIALIZER rather than an effect.
+   *
+   * App.tsx keys this component on the message, so opening one mounts it
+   * fresh and this runs during that first render — before any paint. A
+   * message already in the cache is therefore on screen in the first
+   * frame after the click, with no loading state in between, which is
+   * what "instant" actually means. Reading the cache in an effect instead
+   * would paint the skeleton first and replace it a frame later: the same
+   * data, and still a visible flash.
+   *
+   * `readCachedMessage` is a pure read and starts nothing, which is what
+   * makes it safe here — React invokes an initializer during render, and
+   * twice under StrictMode.
+   */
+  const [load, setLoad] = useState<LoadState>(() => {
+    const cached = readCachedMessage(messageCache, { account_id: accountId, folder, uid });
+    return cached === undefined ? { status: 'loading' } : { status: 'ready', parsed: cached };
+  });
   const [attempt, setAttempt] = useState(0);
+  /**
+   * Whether the wait has gone on long enough to be worth telling the user
+   * about — see SKELETON_DELAY_MS in src/motion/tokens.ts.
+   *
+   * Without this, a fetch the server answers from ITS cache in a few
+   * milliseconds still flashes a skeleton, which is the app announcing
+   * work it did not really do. With it, a genuinely slow fetch still gets
+   * its skeleton (and its `role="status"` announcement) after the
+   * threshold; only the fast path stays quiet.
+   */
+  const [isSlow, setIsSlow] = useState(false);
   // The subject heading, for the focus effect below. A direct ref now
   // that the card that used to wrap it (and that the old code reached
   // through with a `querySelector`) is gone.
   const headingRef = useRef<HTMLHeadingElement | null>(null);
 
-  const accountId = message.account_id;
-  const folder = message.folder;
-  const uid = message.uid;
-
   useEffect(() => {
     let cancelled = false;
-    setLoad({ status: 'loading' });
+    const target = { account_id: accountId, folder, uid };
 
-    getMessage(accountId, folder, uid).then(
+    // A retry must fetch, whatever is cached — the cached copy is what
+    // the user is retrying PAST when a previous attempt errored, and on
+    // the error path there is nothing cached anyway.
+    const outcome =
+      attempt === 0
+        ? loadMessage(messageCache, target)
+        : { kind: 'pending' as const, parsed: refetchMessage(messageCache, target) };
+
+    if (outcome.kind === 'cached') {
+      // Already rendered by the initializer above on the mount that
+      // matters. This branch is for the case App.tsx's `key` does not
+      // remount on — the same account and uid in a different folder,
+      // reachable from a thread row — where the identity changed but the
+      // component did not. Compared by reference so an unchanged hit
+      // costs no render at all.
+      setLoad((current) =>
+        current.status === 'ready' && current.parsed === outcome.parsed
+          ? current
+          : { status: 'ready', parsed: outcome.parsed },
+      );
+      setIsSlow(false);
+      return;
+    }
+
+    setLoad({ status: 'loading' });
+    setIsSlow(false);
+    const slowTimer = window.setTimeout(() => {
+      if (!cancelled) setIsSlow(true);
+    }, SKELETON_DELAY_MS);
+
+    outcome.parsed.then(
       (parsed) => {
         if (cancelled) return;
         setLoad({ status: 'ready', parsed });
@@ -384,8 +463,24 @@ export default function MessageView({ message, now, onBack, onOpen }: MessageVie
 
     return () => {
       cancelled = true;
+      window.clearTimeout(slowTimer);
     };
   }, [accountId, folder, uid, attempt]);
+
+  /**
+   * Warms the rows either side of this one. People read down a list, so
+   * the next row is by a wide margin the most likely next open, and the
+   * seconds spent reading THIS message are the free interval to spend on
+   * it — see ../messagePrefetch.ts for the concurrency cap and for why
+   * this is one row out and not ten.
+   */
+  useEffect(() => {
+    const index = neighbours.findIndex(
+      (row) => row.account_id === accountId && row.folder === folder && row.uid === uid,
+    );
+    if (index === -1) return;
+    messagePrefetcher.prefetchAround(neighbours.map(targetFor), index);
+  }, [neighbours, accountId, folder, uid]);
 
   // Focus lands on the subject when the reader opens, because the reader
   // REPLACES the list in place: there is no new page for the browser to
@@ -419,7 +514,7 @@ export default function MessageView({ message, now, onBack, onOpen }: MessageVie
           gap under the header is load-bearing rather than decorative. */}
       <MessageHeader message={message} headingRef={headingRef} />
 
-      {load.status === 'loading' && (
+      {load.status === 'loading' && isSlow && (
         <div className="space-y-3 px-1" aria-busy="true">
           <p className="sr-only" role="status">
             Loading this message…

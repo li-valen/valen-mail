@@ -12,6 +12,7 @@ import {
   MIN_DURATION_MS,
   NAV_PILL_SPRING,
   ROW_ENTER_PX,
+  SKELETON_DELAY_MS,
   seconds,
 } from '../src/motion/tokens';
 
@@ -83,6 +84,29 @@ describe('durations stay inside the band Plan 7 set', () => {
     expect(seconds(DURATION_MS.settle)).toBe(0.18);
     expect(seconds(DURATION_MS.drawer)).toBe(0.26);
     expect(seconds(0)).toBe(0);
+  });
+});
+
+describe('the slow-fetch threshold', () => {
+  it('is the band floor — below it, showing and hiding a skeleton is a flash', () => {
+    // Derived rather than restated, so the two cannot drift:
+    // MIN_DURATION_MS already means "the shortest interval a user reads
+    // as a change of state", which is exactly the question "is this
+    // worth telling them about" asks.
+    expect(SKELETON_DELAY_MS).toBe(MIN_DURATION_MS);
+  });
+
+  it('stays inside the band, like every other value in this file', () => {
+    expect(SKELETON_DELAY_MS).toBeGreaterThanOrEqual(MIN_DURATION_MS);
+    expect(SKELETON_DELAY_MS).toBeLessThanOrEqual(MAX_DURATION_MS);
+  });
+
+  it('is NOT one of the animation durations', () => {
+    // It is a threshold, not a length: nothing moves for this long and
+    // nothing is eased. Folding it into DURATION_MS would put a value
+    // that is never handed to `motion` into the set that is.
+    expect(Object.values(DURATION_MS)).not.toContain(SKELETON_DELAY_MS + 0.5);
+    expect(Object.keys(DURATION_MS)).not.toContain('skeleton');
   });
 });
 
