@@ -372,6 +372,18 @@ export default function AppShell({
    *  covers the last row. */
   const showComposeFab = view !== 'compose' && !isReading;
 
+  /**
+   * Whether SOMETHING is pinned to the bottom edge below `lg:` — the
+   * floating Compose button on a list, or the reader's floating Reply bar
+   * on a message. Either way `<main>` has to end far enough above the edge
+   * that its last row can be scrolled clear of it.
+   *
+   * One flag for both because the failure is the same in both directions:
+   * space with nothing over it is a gap at the foot of every screen, and
+   * something over it with no space hides the last line.
+   */
+  const reservesBottomBar = showComposeFab || isReading;
+
   // Every sidebar control closes the drawer after acting: below `lg:` the
   // sidebar covers the content it just changed, so leaving it open would
   // hide the result of the click that opened it.
@@ -667,7 +679,7 @@ export default function AppShell({
             // scrolled clear of it. Only while that button is actually
             // showing: 80px of dead space under the composer would be a
             // second bug fixing the first.
-            showComposeFab
+            reservesBottomBar
               ? 'pb-[calc(var(--safe-bottom)+5rem)] lg:pb-[var(--safe-bottom)]'
               : 'pb-[var(--safe-bottom)]',
           )}

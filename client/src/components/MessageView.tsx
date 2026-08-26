@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Ref, RefObject } from 'react';
 import type { BodyScheme } from './messageBody';
-import { Archive, ArrowLeft, FileText, Forward, Reply, ReplyAll, Star, Trash2 } from 'lucide-react';
+import { ArrowLeft, FileText, Forward, Reply, ReplyAll } from 'lucide-react';
 import { ApiError } from '../api';
 import type { InboxMessage, ParsedMessage } from '../api';
 import { messageCache } from '../messageCache';
@@ -18,6 +18,7 @@ import { useTheme } from '../useTheme';
 import { Panel, SKELETON_DELAY_MS } from '../motion';
 import AttachmentList from './MessageAttachments';
 import ThreadContext from './ThreadContext';
+import MessageActionsMenu from './MessageActionsMenu';
 import { formatReceived } from './inboxDates';
 import { TOUCH_HEIGHT, TOUCH_MIN_HEIGHT } from '../ui/touchTarget';
 import {
@@ -517,6 +518,10 @@ interface ReplyActionsProps {
    *  — its html to quote and its Message-ID to thread — so a click before
    *  then would open a composer that could neither quote nor thread. */
   readonly isReady: boolean;
+  /** Placement, supplied by the caller. The component is rendered twice —
+   *  see the note on placement above — and this is the ONLY difference
+   *  between the two, which is what keeps them from drifting. */
+  readonly className?: string;
 }
 
 /**
@@ -524,27 +529,56 @@ interface ReplyActionsProps {
  * reachable, and the last thing that was still sending the user back to
  * Gmail.
  *
- * **PLACED ABOVE THE BODY, NOT BELOW IT.** Gmail puts them at the bottom
- * of the message, which is fine for a three-line note and useless for the
- * 3000px newsletters this reader routinely shows: the primary action
- * would be a scroll away from the moment the user decides to take it.
- * Above the body they are visible the instant a message opens, at every
- * message length, with no second copy anywhere to drift out of sync.
+ * **A FLOATING BAR BELOW `lg:`, IN THE FLOW ABOVE IT.** The user, beside
+ * Gmail on a phone: *"Move reply and reply all to the bottom as hovers."*
  *
- * **`flex-wrap`, AND THAT IS THE WHOLE MOBILE STORY.** Three labelled
- * buttons wrap onto two lines at 400px and sit on one line everywhere
- * else. Nothing here is gated to `lg:`, because nothing here is
- * desktop-only — the phone needs these more than the desktop does, since
- * it has no keyboard to press `r` on.
+ * This comment used to argue the opposite, and the argument was sound
+ * about the thing it was arguing against: Gmail's DESKTOP puts these at
+ * the end of the message, which is fine for a three-line note and useless
+ * for the 3000px newsletters this reader routinely shows, because the
+ * primary action ends up a scroll away from the moment the user decides
+ * to take it.
+ *
+ * A FIXED bar is not that. It is pinned to the viewport, so it is visible
+ * at every scroll position and every message length — the property the old
+ * placement was protecting — while giving back the ~60px it was spending
+ * at the top of a 393px screen, which is what the user actually noticed.
+ * Gmail's own iOS app does exactly this, and for the same reason.
+ *
+ * Above `lg:` it stays in the flow where it was. A window that is 900px
+ * tall does not need its actions welded to the bottom edge, and a floating
+ * bar over a desktop reading column is chrome for a problem that width
+ * does not have.
+ *
+ * `AppShell` reserves the height this occupies while a message is open —
+ * see its `isReading`. Space and bar are decided by the same flag there,
+ * because a bar with no space covers the last line of every message.
+ *
+ * **`sticky`, NOT `fixed`, AND THAT IS NOT A STYLE PREFERENCE.** `fixed`
+ * was tried first and silently did not work: the reader sits inside a
+ * `motion` wrapper that leaves `transform: matrix(1, 0, 0, 1, 0, 0)` on the
+ * element after its entrance animation, and ANY transform — including an
+ * identity one — makes that ancestor the containing block for fixed
+ * descendants. The bar was therefore pinned to the top of a 6000px panel
+ * rather than to the viewport. It measured correctly at the bottom of the
+ * scroll (`top: 688`, inside the viewport, which is what made it look
+ * right) and sat at `top: 5665` at the top of the same message. `sticky`
+ * resolves against the scroll container instead and is unaffected by
+ * transformed ancestors.
+ *
+ * The mobile copy therefore renders LAST in the panel, after the body and
+ * the attachments: a sticky element keeps its place in the flow, so
+ * rendering it above the body would have cost the same ~60px at the top
+ * that moving it was meant to give back.
  *
  * DISABLED RATHER THAN ABSENT while the body loads. Rendering them late
  * would move the message down under the user's eyes exactly as it became
  * readable; disabling them costs a moment on a slow fetch and never
  * reflows.
  */
-function ReplyActions({ onReply, isReady }: ReplyActionsProps) {
+function ReplyActions({ onReply, isReady, className }: ReplyActionsProps) {
   return (
-    <div className="flex flex-wrap items-center gap-2 px-1">
+    <div className={cn('flex flex-wrap items-center gap-2', className)}>
       <Button variant="outline" size="sm" className={TOUCH_HEIGHT} disabled={!isReady} onClick={() => onReply('reply')} aria-keyshortcuts="r">
         <Reply aria-hidden="true" />
         Reply
@@ -782,65 +816,33 @@ export default function MessageView({
           is one behaviour with two ways in rather than two
           implementations that agree today.
 
-          `flex-wrap` because five controls plus a "Back to follow-up"
-          label do not fit a 375px viewport on one line, and a toolbar
-          that overflows off the right edge takes Trash with it. */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
+          NO `flex-wrap` any more, and that is the point of the change
+          above: two controls fit one line at every width this app
+          supports, so there is nothing left to wrap. */}
+      <div className="flex items-center justify-between gap-2">
         <Button variant="ghost" size="sm" className={TOUCH_HEIGHT} onClick={onBack}>
           <ArrowLeft aria-hidden="true" />
           {backLabel}
         </Button>
 
-        <span className="flex items-center gap-1">
-        {onMailboxMove !== undefined && (
-          <>
-            {/* ARCHIVE FIRST, and Trash after it, in that order on
-                purpose: archive is the safe, common, reversible one and
-                trash is the one nobody wants to hit by accident. Putting
-                the destructive-looking control under the thumb that was
-                aiming for the safe one is how a list of actions becomes a
-                hazard. */}
-            <Button
-              variant="ghost"
-              size="sm" className={TOUCH_HEIGHT}
-              onClick={() => onMailboxMove('archive')}
-              aria-keyshortcuts="e"
-            >
-              <Archive aria-hidden="true" />
-              Archive
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm" className={TOUCH_HEIGHT}
-              onClick={() => onMailboxMove('trash')}
-              aria-keyshortcuts="#"
-            >
-              <Trash2 aria-hidden="true" />
-              Trash
-            </Button>
-          </>
-        )}
+        {/* ONE control, at the right end of the same line as Back.
+            Was three labelled buttons on a row of their own; at 393px that
+            row could not share a line with Back (125 + 92 + 80 + 71 = 368px
+            before gaps), so `flex-wrap` stacked them and the message began
+            88px lower than it needed to. The user, beside Gmail: "Lets at a
+            ... at the top right on the same level as back to inbox and have
+            that contain archive trash and star instead of having that
+            there."
 
-        {onToggleStar !== undefined && (
-          <Button
-            variant="ghost"
-            size="sm" className={TOUCH_HEIGHT}
-            onClick={onToggleStar}
-            /* `aria-pressed` rather than two labels: this is one toggle
-               in two states, and a screen reader announces the state
-               from the attribute without the name changing under the
-               user mid-session. */
-            aria-pressed={isStarred}
-            aria-keyshortcuts="s"
-          >
-            <Star
-              className={cn('h-4 w-4', isStarred && 'fill-current text-amber-500 dark:text-amber-400')}
-              aria-hidden="true"
-            />
-            {isStarred ? 'Starred' : 'Star'}
-          </Button>
-        )}
-        </span>
+            At EVERY width, not just below `lg:`. The request did not
+            qualify, one implementation is easier to keep honest than two,
+            and the shortcuts (`e`, `#`, `s`) still reach all three without
+            opening anything. */}
+        <MessageActionsMenu
+          onMailboxMove={onMailboxMove}
+          onToggleStar={onToggleStar}
+          isStarred={isStarred}
+        />
       </div>
 
       {/* NO CARD AROUND THE HEADER AND BODY any more. They were one
@@ -851,8 +853,14 @@ export default function MessageView({
           gap under the header is load-bearing rather than decorative. */}
       <MessageHeader message={message} headingRef={headingRef} />
 
+      {/* DESKTOP: where it has always been, above the body. A 900px-tall
+          window does not need its actions welded to an edge. */}
       {onReply !== undefined && (
-        <ReplyActions onReply={onReply} isReady={load.status === 'ready'} />
+        <ReplyActions
+          onReply={onReply}
+          isReady={load.status === 'ready'}
+          className="hidden px-1 lg:flex"
+        />
       )}
 
       {load.status === 'loading' && isSlow && (
@@ -886,6 +894,17 @@ export default function MessageView({
       )}
 
       <ThreadContext message={message} now={now} onOpen={onOpen} />
+      {/* PHONE: the same component, stuck to the bottom of the scrollport.
+          Last in the panel because a sticky box keeps its space in the
+          flow — placed above the body it would still cost the room at the
+          top that this change exists to give back. */}
+      {onReply !== undefined && (
+        <ReplyActions
+          onReply={onReply}
+          isReady={load.status === 'ready'}
+          className="sticky bottom-0 z-30 -mx-4 justify-center border-t border-neutral-200 bg-card px-4 pb-[calc(0.5rem+var(--safe-bottom))] pt-2 sm:-mx-6 dark:border-border lg:hidden"
+        />
+      )}
     </Panel>
   );
 }

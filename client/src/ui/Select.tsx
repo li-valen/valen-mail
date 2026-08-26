@@ -38,7 +38,7 @@ export function Select({ className, children, ref, ...props }: React.ComponentPr
   return (
     <select
       className={cn(
-        'flex h-9 w-full rounded-md border border-neutral-200 bg-card px-3 py-1 text-base transition-colors [color-scheme:light] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50 md:text-sm dark:border-border dark:[color-scheme:dark]',
+        'flex h-11 w-full rounded-md md:h-9 border border-neutral-200 bg-card px-3 py-1 text-base transition-colors [color-scheme:light] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50 md:text-sm dark:border-border dark:[color-scheme:dark]',
         className,
       )}
       ref={ref}

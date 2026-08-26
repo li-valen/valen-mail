@@ -43,6 +43,7 @@ import { Label } from '../ui/Label';
 import { Select } from '../ui/Select';
 import { Textarea } from '../ui/Textarea';
 import { cn } from '../ui/cn';
+import { TOUCH_HEIGHT } from '../ui/touchTarget';
 
 /**
  * The composer: pick an account, name some recipients, write plain text,
@@ -540,7 +541,7 @@ export default function Compose({ reply, onClose, onSent, onDirtyChange }: Compo
           <h2 id={titleId} className="text-base font-semibold">
             {composerTitleFor(reply?.mode ?? null)}
           </h2>
-          <Button type="button" variant="ghost" size="sm" onClick={requestClose} disabled={isSending}>
+          <Button type="button" variant="ghost" size="sm" className={TOUCH_HEIGHT} onClick={requestClose} disabled={isSending}>
             Cancel
           </Button>
         </header>
@@ -620,7 +621,7 @@ export default function Compose({ reply, onClose, onSent, onDirtyChange }: Compo
             <Button
               type="button"
               variant="ghost"
-              size="sm"
+              size="sm" className={TOUCH_HEIGHT}
               disabled={isSending}
               onClick={() => {
                 isCcRevealedByUserRef.current = true;
@@ -707,7 +708,7 @@ export default function Compose({ reply, onClose, onSent, onDirtyChange }: Compo
               <Button
                 type="button"
                 variant="outline"
-                size="sm"
+                size="sm" className={TOUCH_HEIGHT}
                 disabled={isSending}
                 onClick={() => fileInputRef.current?.click()}
               >
@@ -799,7 +800,7 @@ export default function Compose({ reply, onClose, onSent, onDirtyChange }: Compo
             <p id={trackingNoteId} className="text-xs text-muted-foreground">
               {TRACKING_NOTE}
             </p>
-            <Button type="submit" disabled={!canSend} aria-busy={isSending} aria-describedby={trackingNoteId}>
+            <Button type="submit" className={TOUCH_HEIGHT} disabled={!canSend} aria-busy={isSending} aria-describedby={trackingNoteId}>
               {isSending ? (
                 <Loader2 className="animate-spin" aria-hidden="true" />
               ) : (

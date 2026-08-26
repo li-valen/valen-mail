@@ -39,7 +39,11 @@ export const TOUCH_MIN_HEIGHT = 'min-h-11 lg:min-h-0';
  * this app still at `text-sm` (14px) while its neighbours were 16px, so it
  * zoomed and they did not.
  *
- * `lg:text-sm` keeps the denser type on a desktop, where no such scaling
- * happens.
+ * `md:` rather than `lg:` here, deliberately breaking step with the two
+ * constants above: ui/Input.tsx and ui/Select.tsx already express exactly
+ * this rule as `text-base md:text-sm`, and they are why every OTHER field
+ * in the composer is 16px on a phone and does not zoom. Matching the
+ * convention that already works beats inventing a second one two lines
+ * from it.
  */
-export const TOUCH_INPUT_TEXT = 'text-base lg:text-sm';
+export const TOUCH_INPUT_TEXT = 'text-base md:text-sm';

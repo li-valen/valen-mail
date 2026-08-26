@@ -3,6 +3,7 @@ import appSource from '../src/App.tsx?raw';
 import inboxListSource from '../src/components/InboxList.tsx?raw';
 import messageRowSource from '../src/components/MessageRow.tsx?raw';
 import messageViewSource from '../src/components/MessageView.tsx?raw';
+import actionsMenuSource from '../src/components/MessageActionsMenu.tsx?raw';
 import undoNoticeSource from '../src/components/UndoNotice.tsx?raw';
 import actionsSource from '../src/mailboxActions.ts?raw';
 import hookSource from '../src/keyboard/useKeyboardShortcuts.ts?raw';
@@ -37,13 +38,36 @@ function stripComments(source: string): string {
 const APP = stripComments(appSource);
 const LIST = stripComments(inboxListSource);
 const ROW = stripComments(messageRowSource);
-const READER = stripComments(messageViewSource);
+/**
+ * The reader's ACTION SURFACE, which is now two files.
+ *
+ * Archive, Trash and Star used to be three buttons in MessageView.tsx.
+ * They moved behind an overflow menu so the reader's chrome fits one line
+ * on a phone, so a guard that reads only MessageView.tsx would now report
+ * that the user cannot get a message out of the inbox while they plainly
+ * can. The guard follows the buttons.
+ *
+ * Concatenating alone would open a hole this file exists to close: the
+ * menu could contain every action and the reader could simply never render
+ * it, and the strings would still be found. The `renders the menu at all`
+ * case below is what keeps that honest.
+ */
+const READER = stripComments(messageViewSource) + '\n' + stripComments(actionsMenuSource);
+const READER_VIEW_ONLY = stripComments(messageViewSource);
 const UNDO = stripComments(undoNoticeSource);
 const ACTIONS = stripComments(actionsSource);
 const HOOK = stripComments(hookSource);
 const LEAVING = stripComments(closingRowSource);
 
 describe('the reader can actually get a message out of the inbox', () => {
+  it('renders the menu at all, so the actions inside it are reachable', () => {
+    // Without this, every assertion below could pass against a menu
+    // component nothing mounts.
+    expect(/<MessageActionsMenu\b/.test(READER_VIEW_ONLY)).toBe(true);
+    expect(/onMailboxMove=\{onMailboxMove\}/.test(READER_VIEW_ONLY)).toBe(true);
+    expect(/onToggleStar=\{onToggleStar\}/.test(READER_VIEW_ONLY)).toBe(true);
+  });
+
   it('renders both actions', () => {
     for (const label of ['Archive', 'Trash']) {
       expect(READER.includes(label), `the reader does not render "${label}"`).toBe(true);
@@ -56,8 +80,14 @@ describe('the reader can actually get a message out of the inbox', () => {
   });
 
   it('advertises the keyboard equivalent on each control', () => {
-    expect(READER.includes('aria-keyshortcuts="e"')).toBe(true);
-    expect(READER.includes('aria-keyshortcuts="#"')).toBe(true);
+    // The menu declares these as DATA (`shortcut: 'e'`) and binds them to
+    // the attribute once, rather than repeating a literal per button. Both
+    // halves are asserted: the values must exist AND something must
+    // actually put them on the control, or a screen reader announces an
+    // action with no shortcut while the shortcut still works.
+    expect(/aria-keyshortcuts=\{item\.shortcut\}/.test(READER)).toBe(true);
+    expect(/shortcut: 'e'/.test(READER)).toBe(true);
+    expect(/shortcut: '#'/.test(READER)).toBe(true);
   });
 
   it('the destination-wiring guard is not vacuous', () => {

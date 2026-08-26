@@ -5,6 +5,10 @@ import appShellSource from '../src/AppShell.tsx?raw';
 import loginSource from '../src/LoginView.tsx?raw';
 import messageViewSource from '../src/components/MessageView.tsx?raw';
 import touchTargetSource from '../src/ui/touchTarget.ts?raw';
+import composeSource from '../src/components/Compose.tsx?raw';
+import recipientFieldSource from '../src/components/RecipientField.tsx?raw';
+import inputSource from '../src/ui/Input.tsx?raw';
+import selectSource from '../src/ui/Select.tsx?raw';
 
 /**
  * THE THREE MOBILE DEFECTS THE INTERFACE AUDIT FOUND, guarded so they
@@ -30,6 +34,58 @@ import touchTargetSource from '../src/ui/touchTarget.ts?raw';
 function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 }
+
+/** The class list the recipient `<input>` actually carries — a template
+ *  literal, so a plain `toContain` on the file would also match the import
+ *  line and pass while the input itself had been reverted. */
+function recipientInputClasses(): string {
+  const source = stripComments(recipientFieldSource);
+  const input = source.slice(source.indexOf('<input'));
+  return /className=\{`([^`]*)`\}/.exec(input)?.[1] ?? '';
+}
+
+describe('the composer, on a phone', () => {
+  it('never leaves an input under 16px, because iOS ZOOMS THE PAGE if it does', () => {
+    // Not a preference: Safari treats a sub-16px field as unreadable and
+    // scales the whole viewport on focus, leaving the user pinching back
+    // out after tapping "To". Every other field was already 16px via the
+    // atoms' `text-base md:text-sm`; the recipient input was the one left
+    // at a flat `text-sm`, so it zoomed and its neighbours did not.
+    expect(touchTargetSource).toMatch(/const TOUCH_INPUT_TEXT = 'text-base md:text-sm'/);
+
+    // The APPLIED class list, not merely the import. An earlier version of
+    // this test asserted `toContain('TOUCH_INPUT_TEXT')`, which a mutation
+    // reverting the input to a flat `text-sm` sailed straight through —
+    // the import line still mentioned the constant. Read the className the
+    // input actually carries.
+    const applied = recipientInputClasses();
+    expect(applied).toContain('${TOUCH_INPUT_TEXT}');
+    expect(applied).not.toMatch(/\btext-sm\b/);
+  });
+
+  it('gives the recipient chip input a real tap target', () => {
+    // It measured 24px tall — the smallest control in the composer, and a
+    // primary field.
+    expect(recipientInputClasses()).toContain('${TOUCH_MIN_HEIGHT}');
+  });
+
+  it('sizes every small button in the composer for a thumb', () => {
+    const small = stripComments(composeSource).match(/size="sm"/g) ?? [];
+    const sized = stripComments(composeSource).match(/size="sm" className=\{TOUCH_HEIGHT\}/g) ?? [];
+    expect(small.length).toBeGreaterThan(0);
+    expect(sized.length).toBe(small.length);
+  });
+
+  it('sizes Send, which is the one button that must not be missed', () => {
+    expect(stripComments(composeSource)).toMatch(/type="submit" className=\{TOUCH_HEIGHT\}/);
+  });
+
+  it('makes the shared field atoms touch-height on phones and dense on desktop', () => {
+    for (const source of [inputSource, selectSource]) {
+      expect(source).toMatch(/'flex h-11 w-full rounded-md md:h-9/);
+    }
+  });
+});
 
 describe('opening a message strips the shell back to the message, below lg:', () => {
   const shell = stripComments(appShellSource);
@@ -131,7 +187,12 @@ describe('reaching Compose below lg:, where the sidebar is a closed drawer', () 
     // with no space covers the last row. The two come from ONE flag so
     // they cannot drift apart.
     expect(shell).toMatch(/const showComposeFab = view !== 'compose'/);
-    expect(shell).toMatch(/showComposeFab\s*\n?\s*\?\s*'pb-\[calc\(var\(--safe-bottom\)\+5rem\)\] lg:pb-\[var\(--safe-bottom\)\]'/);
+    // One flag now covers BOTH bottom-pinned things — the Compose button on
+    // a list and the reader's sticky Reply bar on a message — because the
+    // failure is identical either way: space with nothing over it is a gap,
+    // something over it with no space hides the last line.
+    expect(shell).toMatch(/const reservesBottomBar = showComposeFab \|\| isReading;/);
+    expect(shell).toMatch(/reservesBottomBar\s*\n?\s*\?\s*'pb-\[calc\(var\(--safe-bottom\)\+5rem\)\] lg:pb-\[var\(--safe-bottom\)\]'/);
     expect(shell).toMatch(/:\s*'pb-\[var\(--safe-bottom\)\]'/);
   });
 

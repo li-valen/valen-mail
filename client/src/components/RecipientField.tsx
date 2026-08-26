@@ -11,6 +11,7 @@ import {
 import { Label } from '../ui/Label';
 import { cn } from '../ui/cn';
 import { CHIP_BASE, CHIP_BAD, CHIP_NEUTRAL, CHIP_REMOVE } from './chip';
+import { TOUCH_INPUT_TEXT, TOUCH_MIN_HEIGHT } from '../ui/touchTarget';
 
 /**
  * One recipient field — To or Cc — as a row of removable chips followed
@@ -176,7 +177,7 @@ export default function RecipientField({
           onChange={(event) => handleInput(event.target.value)}
           onKeyDown={handleKeyDown}
           onBlur={commitPending}
-          className="min-w-[8rem] flex-1 bg-transparent px-1 py-0.5 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
+          className={`min-w-[8rem] flex-1 bg-transparent px-1 py-0.5 outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed ${TOUCH_INPUT_TEXT} ${TOUCH_MIN_HEIGHT}`}
         />
       </div>
 
