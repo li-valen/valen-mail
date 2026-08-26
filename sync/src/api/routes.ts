@@ -587,7 +587,10 @@ export function createRouter(
       const decoded = decodeSegments([parsedMessageMatch[1] ?? '', parsedMessageMatch[2] ?? '']);
       if (decoded instanceof Response) return decoded;
       const [accountId, folder] = decoded;
-      return handleMessage(db, pool, accountId!, folder!, parsedMessageMatch[3] ?? '');
+      // pixelBase is TRACKING_BASE_URL: the render path strips our own
+      // tracking pixel out of the Sent copy (spec 5.6, ./strip-pixel.ts).
+      const uidRaw = parsedMessageMatch[3] ?? '';
+      return handleMessage(db, pool, accountId!, folder!, uidRaw, trackingConfig?.baseUrl ?? null);
     }
 
     const attachmentMatch = path.match(/^\/api\/attachment\/([^/]+)\/([^/]+)\/([^/]+)\/([^/]+)$/);

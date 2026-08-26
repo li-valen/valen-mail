@@ -204,7 +204,7 @@ describe('parsed message route / hostile and malformed MIME', () => {
       connections: { acct1: makeFakeConnection({ chunks: [fixture('malformed')] }) },
     });
 
-    const response = await handleMessage(makeFakeDb(), pool, 'acct1', 'INBOX', '42', {
+    const response = await handleMessage(makeFakeDb(), pool, 'acct1', 'INBOX', '42', null, {
       parseImpl: async () => {
         throw new Error('boom: SENTINEL-BODY-DO-NOT-LOG leaked into the error');
       },
@@ -382,5 +382,108 @@ describe('parsed message route / gate and validation', () => {
     });
     const response = await get(createRouter(makeFakeDb(), pool, TOKEN));
     expect(response.status).toBe(429);
+  });
+});
+
+/**
+ * Spec 5.6 — Postbox strips its OWN tracking pixel out of the copy the
+ * sender retains, so that re-reading your own sent mail inside Postbox
+ * never fires the pixel and never manufactures an open attributed to a
+ * recipient who did nothing.
+ *
+ * Measured 2026-08-25: one send to two recipients produced TWO Sent copies
+ * sharing one Message-ID, each carrying that recipient's OWN live token —
+ * so the Sent copy is byte-identical to a delivered one and no rule over
+ * tokens could ever separate them. Stripping at render is the only place
+ * this is closeable, and it is closeable completely.
+ *
+ * Both directions are asserted deliberately. A stripper that removed every
+ * remote image, or one that stripped in every folder, would satisfy
+ * "the pixel is gone" while breaking something the user asked for.
+ */
+
+const TRACKING = { baseUrl: 'https://track.example', readToken: 'read-token' } as const;
+const OUR_PIXEL = 'https://track.example/o/aaaabbbbccccddddeeeeffff00001111.png';
+/** A LOCALISED Sent name. Gmail localises its system folders, which is why
+ *  folders.ts discovers them by RFC 6154 special-use rather than by name —
+ *  a check hardcoding "[Gmail]/Sent Mail" would silently never fire here. */
+const LOCALISED_SENT = '[Gmail]/Отправленные';
+
+function routerWithFolders(
+  discovered: { inbox: string; sent: string | null; spam: null; trash: null },
+  tracking: typeof TRACKING | null = TRACKING,
+) {
+  const { pool } = makeFakePool({
+    statuses: [['acct1', 'connected']],
+    connections: { acct1: makeFakeConnection({ chunks: [fixture('tracked-sent-copy')] }) },
+    discoveredFolders: { acct1: discovered },
+  });
+  return createRouter(makeFakeDb(), pool, TOKEN, tracking);
+}
+
+function fetchFolder(router: (r: Request) => Promise<Response>, folder: string) {
+  const url = `http://x/api/message/acct1/${encodeURIComponent(folder)}/42`;
+  return router(new Request(url, { headers: auth }));
+}
+
+describe('parsed message route / own-pixel stripping (spec 5.6)', () => {
+  it('removes our pixel from a message in the account Sent folder', async () => {
+    const router = routerWithFolders({ inbox: 'INBOX', sent: LOCALISED_SENT, spam: null, trash: null });
+    const body = await readJson<ParsedMessage>(await fetchFolder(router, LOCALISED_SENT));
+
+    expect(body.html).not.toContain(OUR_PIXEL);
+    expect(body.html).not.toContain('/o/');
+  });
+
+  it('keeps every OTHER image in that same Sent copy', async () => {
+    // The user's own embedded image and a third-party pixel both survive:
+    // remote images load by default at the user's explicit request, so
+    // this route must not become a blanket image remover.
+    const router = routerWithFolders({ inbox: 'INBOX', sent: LOCALISED_SENT, spam: null, trash: null });
+    const body = await readJson<ParsedMessage>(await fetchFolder(router, LOCALISED_SENT));
+
+    expect(body.html).toContain('https://cdn.example/chart.png');
+    expect(body.html).toContain('https://tracker.example/open.gif');
+    expect(body.html).toContain('Here are the numbers.');
+  });
+
+  it('leaves the pixel intact for a message that is NOT in the Sent folder', async () => {
+    // This is the half that makes the discriminator real. Without it, an
+    // implementation that stripped unconditionally would pass every
+    // suppression assertion above.
+    const router = routerWithFolders({ inbox: 'INBOX', sent: LOCALISED_SENT, spam: null, trash: null });
+    const body = await readJson<ParsedMessage>(await fetchFolder(router, 'INBOX'));
+
+    expect(body.html).toContain(OUR_PIXEL);
+  });
+
+  it('uses the DISCOVERED Sent name, not a hardcoded "[Gmail]/Sent Mail"', async () => {
+    // This account's real Sent folder is the localised one. A message in a
+    // folder that merely LOOKS like the English default is not the Sent
+    // folder and must not be stripped — that is what proves the check
+    // consults folder discovery rather than matching a literal.
+    const router = routerWithFolders({ inbox: 'INBOX', sent: LOCALISED_SENT, spam: null, trash: null });
+    const body = await readJson<ParsedMessage>(await fetchFolder(router, '[Gmail]/Sent Mail'));
+
+    expect(body.html).toContain(OUR_PIXEL);
+  });
+
+  it('strips nothing when the account has no discovered Sent folder', async () => {
+    const router = routerWithFolders({ inbox: 'INBOX', sent: null, spam: null, trash: null });
+    const body = await readJson<ParsedMessage>(await fetchFolder(router, LOCALISED_SENT));
+
+    expect(body.html).toContain(OUR_PIXEL);
+  });
+
+  it('strips nothing when tracking is not configured', async () => {
+    // No TRACKING_BASE_URL means no origin to compare against, so there is
+    // no pixel this service can confidently call its own.
+    const router = routerWithFolders(
+      { inbox: 'INBOX', sent: LOCALISED_SENT, spam: null, trash: null },
+      null,
+    );
+    const body = await readJson<ParsedMessage>(await fetchFolder(router, LOCALISED_SENT));
+
+    expect(body.html).toContain(OUR_PIXEL);
   });
 });

@@ -4,6 +4,7 @@ import type { Db } from '../db';
 import type { ConnectionPool } from '../imap/pool';
 import { json, PRIVATE_NO_STORE } from './http.ts';
 import { fetchBudgetedPart, parsePositiveInt, resolveConnection } from './fetch-part.ts';
+import { stripOwnTrackingPixels } from './strip-pixel.ts';
 
 /**
  * GET /api/message/{accountId}/{folder}/{uid} (Plan 6 Task 1) — the PARSED
@@ -283,12 +284,45 @@ function describeFailure(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
 }
 
+/**
+ * True when `folder` is THIS account's own Sent mailbox, resolved from the
+ * server's RFC 6154 special-use attributes via the pool's existing
+ * discovery (no second LIST — see FolderCache.forAccount).
+ *
+ * Never a name comparison against `[Gmail]/Sent Mail`. Gmail LOCALISES its
+ * system folder names to the account owner's language setting
+ * (`[Gmail]/Отправленные`, `[Gmail]/Gesendet`), which is the entire reason
+ * ../imap/folders.ts discovers them by attribute in the first place. A
+ * hardcoded English literal would simply never match on those accounts, so
+ * the pixel would stay in the copy they retain — silently, with nothing in
+ * any log to notice.
+ *
+ * `getDiscoveredFolders` is undefined when this account has not completed a
+ * LIST yet, and `sent` is null when the server flagged no Sent mailbox at
+ * all. Both mean "cannot establish that this is Sent", and both therefore
+ * leave the body alone: this predicate gates DELETING something from a
+ * rendering of the user's own mail, so an uncertain answer must be "no".
+ */
+function isAccountSentFolder(pool: ConnectionPool, accountId: string, folder: string): boolean {
+  const sent = pool.getDiscoveredFolders(accountId)?.sent;
+  return typeof sent === 'string' && sent === folder;
+}
+
 export async function handleMessage(
   db: Db,
   pool: ConnectionPool,
   accountId: string,
   folder: string,
   uidRaw: string,
+  /**
+   * TRACKING_BASE_URL, or null when tracking was not configured.
+   *
+   * A positional parameter rather than a field on `deps` on purpose,
+   * following ../push/opens-poll.ts's `ownAddresses`: `deps` is the
+   * test-injection bag that production never passes, and this is the
+   * opposite — real configuration production must always supply.
+   */
+  pixelBase: string | null,
   deps: MessageHandlerDeps = {},
 ): Promise<Response> {
   const uid = parsePositiveInt(uidRaw);
@@ -320,7 +354,14 @@ export async function handleMessage(
     return json({ error: 'failed to parse message' }, 502);
   }
 
-  const message = toParsedMessage(parsed);
+  const shaped = toParsedMessage(parsed);
+  // Spec 5.6 — strip OUR OWN pixel out of the copy the sender retains,
+  // so re-reading your own sent mail in Postbox never fires it and never
+  // manufactures an open attributed to a recipient. See ./strip-pixel.ts
+  // for why the rule is this narrow and what it deliberately leaves.
+  const message = isAccountSentFolder(pool, accountId, folder)
+    ? { ...shaped, html: stripOwnTrackingPixels(shaped.html, pixelBase) }
+    : shaped;
   if (message.attachments.length === 0) {
     return json(message, 200, PRIVATE_NO_STORE);
   }

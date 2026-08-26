@@ -106,27 +106,46 @@ function isOwnAddress(address: string, ownAddresses: readonly string[]): boolean
  * "{recipientEmail} opened your mail". Nothing recorded about such a hit
  * separates it from the real thing.
  *
- * THAT RESIDUAL WAS INVESTIGATED AND IS NOT CLOSEABLE HERE. Two shapes
- * were scored and both lose (task-self-open-report.md has the evidence):
+ * THAT RESIDUAL IS NOT CLOSEABLE HERE, AND IT IS NOW CLOSED ELSEWHERE.
+ * Three shapes were scored; the first two lose, and MEASUREMENT (one send,
+ * two recipients, 2026-08-25) settled why — see task-self-open-report.md:
  *
  *  - Suppressing the pixel in the retained copy AT SEND TIME is
  *    structurally impossible. One SMTP transaction is MAIL FROM + RCPT TO
  *    + DATA; Gmail delivers DATA and files DATA, and RCPT TO cannot be
  *    empty — so every copy Gmail retains is byte-identical to one a real
  *    recipient received, carrying that recipient's live token. Spec 5.3.1
- *    already states the auto-save cannot be suppressed.
+ *    already states the auto-save cannot be suppressed, and the
+ *    measurement confirms it: N recipients produced N Sent copies sharing
+ *    one Message-ID, each carrying that recipient's OWN live token.
  *  - Marking the retained copy's tokens `'self'` would suppress the very
  *    opens this feature exists to report. By the line above, EVERY minted
  *    token rides in a copy the sender retains, so that set is not a subset
  *    — it is all of them. At one recipient (the common case) it silences
  *    100% of that send's tracking.
  *
- * The fix is post-hoc: replace the sender's retained copy with one whose
- * pixel carries an unminted — therefore inert — token, and gate the push
- * on that replacement being CONFIRMED, so an unhardened send stays silent
- * rather than claiming. It needs nothing from tracking/ (an unminted token
- * records nothing; see lookupToken's early return), and it needs a live
- * measurement of Gmail's Sent-copy behaviour before it can be built.
+ * The measurement makes the third shape the obvious one, and it is what
+ * shipped: STRIP THE PIXEL AT RENDER, NOT AT SEND. We cannot stop Gmail's
+ * own clients from fetching it, but inside Postbox we own the render path
+ * completely, so the request is simply never made — see
+ * ../api/strip-pixel.ts and its use in ../api/message.ts, scoped to the
+ * account's DISCOVERED Sent folder and to our own pixel origin alone. It
+ * needs no IMAP write, no expunge, no dependence on Gmail's Message-ID
+ * dedupe, and nothing from tracking/.
+ *
+ * ITS BOUNDARY, STATED HONESTLY: that closes the case WITHIN POSTBOX
+ * ONLY. Opening the same Sent copy in Gmail's own web or mobile client
+ * still fetches the pixel and still arrives here as a plain `'open'`
+ * naming the recipient. That is genuinely outside this product's reach,
+ * so the claim is "Postbox does not lie to you about your own mail" —
+ * never "the misattribution is fixed". Rule 2 below remains the only
+ * suppression this function performs.
+ *
+ * KNOWN GAP, deliberately not widened here: spec 5.6 asks for the same
+ * strip on ANY rendered body, not just Sent, because a reply quoting the
+ * original carries the original recipient's pixel and can fire phantom
+ * opens from the INBOX copy. The shipped scope is Sent-only; extending it
+ * is a follow-up, recorded rather than silently assumed.
  *
  * PUSH ONLY. Rule 2 suppresses the notification, never the event: the
  * opens feed (GET /api/opens, ../api/routes.ts's `handleOpens`) returns

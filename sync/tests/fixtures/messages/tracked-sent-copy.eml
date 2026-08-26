@@ -1,0 +1,20 @@
+Return-Path: <me@example.com>
+From: "Me" <me@example.com>
+To: alice@example.com, bob@example.com
+Subject: Quarterly numbers
+Date: Tue, 25 Aug 2026 11:00:00 +0000
+Message-ID: <a1e6e31e-tracked@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="ALT-BOUNDARY"
+
+--ALT-BOUNDARY
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+Here are the numbers.
+--ALT-BOUNDARY
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+<div dir="auto">Here are the numbers.<img src="https://cdn.example/chart.png"><img src="https://tracker.example/open.gif"></div><img alt="" src="https://track.example/o/aaaabbbbccccddddeeeeffff00001111.png">
+--ALT-BOUNDARY--
