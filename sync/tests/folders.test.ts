@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   INBOX_FOLDER,
   discoverFolders,
+  folderKindForPath,
   folderSyncOrder,
   missingFolderKinds,
   type MailboxListing,
@@ -71,6 +72,7 @@ describe('discoverFolders', () => {
       sent: '[Gmail]/Sent Mail',
       spam: '[Gmail]/Spam',
       trash: '[Gmail]/Trash',
+      archive: '[Gmail]/All Mail',
     });
   });
 
@@ -90,6 +92,7 @@ describe('discoverFolders', () => {
       sent: '[Gmail]/Отправленные',
       spam: '[Gmail]/Спам',
       trash: '[Gmail]/Корзина',
+      archive: '[Gmail]/Вся почта',
     });
     // Stated as its own assertion so the failure message names the actual
     // regression rather than just "objects differ".
@@ -122,13 +125,19 @@ describe('discoverFolders', () => {
 
     const folders = await discoverFolders(listing(unflagged));
 
-    expect(folders).toEqual({ inbox: 'INBOX', sent: null, spam: null, trash: null });
+    expect(folders).toEqual({ inbox: 'INBOX', sent: null, spam: null, trash: null, archive: null });
   });
 
   it('ignores special-use attributes this service does not sync', async () => {
-    // \All, \Drafts, \Archive and \Flagged are all real special-use values
-    // that must not land in any of the three optional slots. Starred is a
-    // virtual flag query in this product, not a synced folder (Plan 5).
+    // \Drafts and \Flagged are real special-use values that must not land
+    // in any SYNCED slot. Starred is a virtual flag query in this product,
+    // not a synced folder (Plan 5), so claiming `[Gmail]/Starred` here
+    // would sync the same messages twice under a second folder name.
+    //
+    // \All and \Archive are in the fixture on purpose: they resolve the
+    // archive DESTINATION (a place to move a message INTO) and must still
+    // leave sent/spam/trash empty. `folderSyncOrder` below is the
+    // assertion that the destination never becomes a folder to enumerate.
     const onlyUnsynced: readonly MailboxListing[] = [
       box('[Gmail]/All Mail', '\\All'),
       box('[Gmail]/Drafts', '\\Drafts'),
@@ -138,7 +147,14 @@ describe('discoverFolders', () => {
 
     const folders = await discoverFolders(listing(onlyUnsynced));
 
-    expect(folders).toEqual({ inbox: 'INBOX', sent: null, spam: null, trash: null });
+    expect(folders).toEqual({
+      inbox: 'INBOX',
+      sent: null,
+      spam: null,
+      trash: null,
+      archive: 'Archive',
+    });
+    expect(folderSyncOrder(folders)).toEqual([{ kind: 'inbox', path: 'INBOX' }]);
   });
 
   it('always reports INBOX literally, never the entry carrying the \\Inbox attribute', async () => {
@@ -157,7 +173,7 @@ describe('discoverFolders', () => {
   it('tolerates an empty listing rather than throwing', async () => {
     const folders = await discoverFolders(listing([]));
 
-    expect(folders).toEqual({ inbox: 'INBOX', sent: null, spam: null, trash: null });
+    expect(folders).toEqual({ inbox: 'INBOX', sent: null, spam: null, trash: null, archive: null });
   });
 
   it('ignores entries with a missing or empty path — the listing is remote input, not trusted data', async () => {
@@ -214,7 +230,7 @@ describe('folderSyncOrder', () => {
   });
 
   it('skips undiscovered folders without disturbing the order of the rest', async () => {
-    const folders = { inbox: INBOX_FOLDER, sent: null, spam: '[Gmail]/Spam', trash: null };
+    const folders = { inbox: INBOX_FOLDER, sent: null, spam: '[Gmail]/Spam', trash: null, archive: null };
 
     expect(folderSyncOrder(folders)).toEqual([
       { kind: 'inbox', path: 'INBOX' },
@@ -223,7 +239,7 @@ describe('folderSyncOrder', () => {
   });
 
   it('always yields INBOX, even when nothing else was discovered', () => {
-    const folders = { inbox: INBOX_FOLDER, sent: null, spam: null, trash: null };
+    const folders = { inbox: INBOX_FOLDER, sent: null, spam: null, trash: null, archive: null };
 
     expect(folderSyncOrder(folders)).toEqual([{ kind: 'inbox', path: 'INBOX' }]);
   });
@@ -231,7 +247,7 @@ describe('folderSyncOrder', () => {
 
 describe('missingFolderKinds', () => {
   it('names every folder the server did not flag', () => {
-    const folders = { inbox: INBOX_FOLDER, sent: '[Gmail]/Sent Mail', spam: null, trash: null };
+    const folders = { inbox: INBOX_FOLDER, sent: '[Gmail]/Sent Mail', spam: null, trash: null, archive: null };
 
     expect(missingFolderKinds(folders)).toEqual(['spam', 'trash']);
   });
@@ -240,5 +256,100 @@ describe('missingFolderKinds', () => {
     const folders = await discoverFolders(listing(ENGLISH_GMAIL));
 
     expect(missingFolderKinds(folders)).toEqual([]);
+  });
+});
+
+/**
+ * THE ARCHIVE DESTINATION (Plan 9 Task 5).
+ *
+ * "Archive" on Gmail is not a folder the user browses and is not a
+ * folder this service syncs — it is where a message LANDS when it leaves
+ * INBOX. Discovery has to resolve it for the same reason it resolves
+ * Trash (`[Gmail]/All Mail` is `[Gmail]/Вся почта` on a Russian account),
+ * but the sync loop must never visit it: All Mail is every message in the
+ * account, so putting it in `folderSyncOrder` would re-sync the entire
+ * mailbox under a second folder name on every cycle.
+ */
+describe('discoverFolders / the archive destination', () => {
+  it('resolves Gmail\'s All Mail from \\All', async () => {
+    const folders = await discoverFolders(listing(ENGLISH_GMAIL));
+    expect(folders.archive).toBe('[Gmail]/All Mail');
+  });
+
+  it('resolves it by ATTRIBUTE, so a localised account still archives', async () => {
+    const folders = await discoverFolders(listing(RUSSIAN_GMAIL));
+    expect(folders.archive).toBe('[Gmail]/Вся почта');
+    // Named separately so the failure says which regression happened.
+    expect(folders.archive).not.toBe('[Gmail]/All Mail');
+  });
+
+  it('prefers \\Archive over \\All when a server offers both', async () => {
+    // RFC 6154 gives \Archive the exact meaning "messages that are
+    // archived"; \All is Gmail's "every message, archived or not" and is
+    // only the right destination because Gmail has no \Archive. A server
+    // that reports both means the more specific one.
+    const both: readonly MailboxListing[] = [
+      box('INBOX', '\\Inbox'),
+      box('Everything', '\\All'),
+      box('Archive', '\\Archive'),
+    ];
+    const folders = await discoverFolders(listing(both));
+    expect(folders.archive).toBe('Archive');
+  });
+
+  it('is null when the server flags neither', async () => {
+    const folders = await discoverFolders(listing([box('INBOX', '\\Inbox'), box('Receipts')]));
+    expect(folders.archive).toBeNull();
+  });
+
+  it('NEVER enters the sync order — All Mail is the whole mailbox', async () => {
+    const folders = await discoverFolders(listing(ENGLISH_GMAIL));
+    const paths = folderSyncOrder(folders).map((target) => target.path);
+    expect(paths).not.toContain('[Gmail]/All Mail');
+    expect(paths).toEqual(['INBOX', '[Gmail]/Sent Mail', '[Gmail]/Spam', '[Gmail]/Trash']);
+  });
+
+  it('is not reported as a MISSING synced folder — it is never synced', async () => {
+    const folders = await discoverFolders(listing([box('INBOX', '\\Inbox')]));
+    expect(missingFolderKinds(folders)).toEqual(['sent', 'spam', 'trash']);
+  });
+});
+
+/**
+ * The reverse lookup undo needs: given the native path a message came
+ * from, which logical kind was it?
+ *
+ * This is what lets the move route hand the client a logical destination
+ * to move BACK to, instead of the client naming a folder path of its own
+ * — see src/api/move.ts, where an unconstrained destination string would
+ * be an arbitrary-folder-move primitive.
+ */
+describe('folderKindForPath', () => {
+  it('maps every discovered path back to its kind', async () => {
+    const folders = await discoverFolders(listing(ENGLISH_GMAIL));
+    expect(folderKindForPath(folders, 'INBOX')).toBe('inbox');
+    expect(folderKindForPath(folders, '[Gmail]/Sent Mail')).toBe('sent');
+    expect(folderKindForPath(folders, '[Gmail]/Spam')).toBe('spam');
+    expect(folderKindForPath(folders, '[Gmail]/Trash')).toBe('trash');
+    expect(folderKindForPath(folders, '[Gmail]/All Mail')).toBe('archive');
+  });
+
+  it('answers null for a folder this service does not know', async () => {
+    // A user label. There is no logical kind for it, so a move out of it
+    // is not undoable — and the route must say so rather than guessing
+    // INBOX and putting the message somewhere it never was.
+    const folders = await discoverFolders(listing(ENGLISH_GMAIL));
+    expect(folderKindForPath(folders, 'Receipts')).toBeNull();
+  });
+
+  it('matches INBOX case-insensitively — RFC 3501 makes the name special', async () => {
+    const folders = await discoverFolders(listing(ENGLISH_GMAIL));
+    expect(folderKindForPath(folders, 'inbox')).toBe('inbox');
+  });
+
+  it('never matches a null slot, so an undiscovered kind cannot be guessed', async () => {
+    const folders = await discoverFolders(listing([box('INBOX', '\\Inbox')]));
+    expect(folders.trash).toBeNull();
+    expect(folderKindForPath(folders, '')).toBeNull();
   });
 });

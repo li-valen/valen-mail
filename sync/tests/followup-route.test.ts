@@ -26,8 +26,8 @@ const ACCOUNTS: readonly AccountConfig[] = [
 const TRACKING: TrackingConfig = { baseUrl: 'https://tracking.invalid', readToken: 'z'.repeat(32) };
 
 const DISCOVERED = {
-  harvard: { inbox: 'INBOX', sent: '[Gmail]/Sent Mail', spam: null, trash: null },
-  personal: { inbox: 'INBOX', sent: 'Sent Items', spam: null, trash: null },
+  harvard: { inbox: 'INBOX', sent: '[Gmail]/Sent Mail', spam: null, trash: null, archive: null },
+  personal: { inbox: 'INBOX', sent: 'Sent Items', spam: null, trash: null, archive: null },
 };
 
 interface SeenQuery {

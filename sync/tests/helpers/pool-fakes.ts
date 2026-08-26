@@ -557,6 +557,19 @@ export function createFakeDb(): FakeDb {
       upserts[index] = { ...message, flags };
       return true;
     },
+    async deleteStoredMessage(accountId, folder, uid) {
+      // Same reasoning as updateStoredFlag above: the pool suites never
+      // exercise the move path (it is an API route, not part of the sync
+      // cycle), so this is the minimum that keeps this fake a complete
+      // `Db` — it drops whatever this fake recorded via upsertMessage.
+      const index = upserts.findIndex(
+        (message) =>
+          message.accountId === accountId && message.folder === folder && message.uid === uid,
+      );
+      if (index === -1) return false;
+      upserts.splice(index, 1);
+      return true;
+    },
     async close() {},
   };
 }

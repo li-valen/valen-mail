@@ -239,6 +239,34 @@ export interface Db {
     flag: string,
     value: boolean,
   ): Promise<boolean>;
+  /**
+   * Drops the CACHED ROW for a message that has been moved out of a
+   * folder — not the message, which is untouched on the server and, for
+   * an archive, is still sitting in All Mail.
+   *
+   * **This is a cache repair, and it is not optional.** The sync loop
+   * only ever fetches the newest UIDs per folder and upserts them
+   * (imap/fetch.ts); nothing in it notices that a message has LEFT a
+   * folder, so without this the archived message would come back into the
+   * list on the next page load and stay there permanently. The client
+   * removes the row optimistically; this is what makes the removal
+   * survive a refresh.
+   *
+   * Called only AFTER the IMAP move succeeded (see api/move.ts), exactly
+   * like `updateStoredFlag` above: never optimistically ahead of the
+   * remote write, because a row deleted for a move that did not happen is
+   * a message the user can no longer see and no longer act on.
+   *
+   * `attachments` cascades from `messages` on this key (see schema.sql),
+   * so the attachment metadata for the moved message goes with it and
+   * comes back on the next sync of whichever folder now holds it.
+   *
+   * Returns true when a row was removed, false when none matched — a
+   * message the API can address on the server but which this store never
+   * synced (an old UID below the backfill watermark) is a real,
+   * non-exceptional case, and the remote move still stands.
+   */
+  deleteStoredMessage(accountId: string, folder: string, uid: number): Promise<boolean>;
   close(): Promise<void>;
 }
 
@@ -641,6 +669,23 @@ export function openDb(databaseUrl: string): Db {
           where account_id = $1 and folder = $2 and uid = $3
           returning uid`,
         [accountId, folder, uid, flag, value],
+      );
+      return result.rows.length > 0;
+    },
+
+    async deleteStoredMessage(accountId, folder, uid) {
+      // Parameterised, like every other statement here — never string-built
+      // SQL from a route parameter, and `folder` on this path IS a route
+      // parameter (Resolution 4).
+      //
+      // The three-column key is the whole predicate: this deletes ONE
+      // message's row in ONE folder for ONE account, and there is no shape
+      // of this call that can widen. No `folder = any(...)`, no uid range.
+      const result = await pool.query(
+        `delete from messages
+          where account_id = $1 and folder = $2 and uid = $3
+          returning uid`,
+        [accountId, folder, uid],
       );
       return result.rows.length > 0;
     },

@@ -51,6 +51,23 @@ export interface FakeFlagCall {
   readonly mailbox: string | null;
 }
 
+/**
+ * One `messageMove` call the fake IMAP client saw (Plan 9 Task 5).
+ *
+ * `destination` is the half that matters most: a test asserting the
+ * destination came from DISCOVERY rather than from a hardcoded
+ * `[Gmail]/Trash` is asserting the one property that keeps this feature
+ * working on a non-English account. `mailbox` records which folder was
+ * SELECTed when the MOVE was issued, so a test can prove the message was
+ * moved out of the folder the route was addressed at.
+ */
+export interface FakeMoveCall {
+  readonly range: unknown;
+  readonly destination: string;
+  readonly options: Record<string, unknown> | undefined;
+  readonly mailbox: string | null;
+}
+
 export function makeFakeConnection(options: {
   chunks?: readonly Buffer[];
   onDownload?: (call: FakeDownloadCall) => void;
@@ -72,6 +89,26 @@ export function makeFakeConnection(options: {
   /** accountId the fake reports, mirroring ImapConnection.accountId — read
    *  by src/imap/flags.ts for its audit log. */
   accountId?: string;
+  /** Records every MOVE this connection is asked to perform. A suite that
+   *  expects NO move asserts the array it owns stayed empty. */
+  onMove?: (call: FakeMoveCall) => void;
+  /** What `messageMove` resolves to. Defaults to a UIDPLUS-style response
+   *  mapping the moved uid to `movedUid` below. `false` is how imapflow
+   *  reports a MOVE the server refused — it does NOT reject, which is
+   *  exactly why that case needs its own coverage. */
+  moveResult?: unknown;
+  /** When set, `messageMove` rejects with it — a MOVE that failed on the
+   *  wire. */
+  moveError?: Error;
+  /** The destination uid the default UIDPLUS response reports. */
+  movedUid?: number;
+  /** The capability set the fake advertises. Defaults to Gmail's, which
+   *  includes MOVE. A fake WITHOUT it exercises the refusal that keeps
+   *  imapflow's COPY + \\Deleted + EXPUNGE fallback unreachable. */
+  capabilities?: readonly string[];
+  /** Records every `messageDelete` — the call that sets \\Deleted and
+   *  expunges. Every suite here asserts it stayed empty. */
+  onDelete?: (range: unknown) => void;
 }) {
   let openMailbox: string | null = null;
 
@@ -98,6 +135,30 @@ export function makeFakeConnection(options: {
       },
       messageFlagsAdd: applyFlags('add'),
       messageFlagsRemove: applyFlags('remove'),
+      capabilities: new Map(
+        (options.capabilities ?? ['MOVE', 'UIDPLUS', 'IDLE']).map((name) => [name, true]),
+      ),
+      messageMove: async (
+        range: unknown,
+        destination: string,
+        moveOptions?: Record<string, unknown>,
+      ) => {
+        options.onMove?.({ range, destination, options: moveOptions, mailbox: openMailbox });
+        if (options.moveError) throw options.moveError;
+        if (options.moveResult !== undefined) return options.moveResult;
+        return {
+          path: openMailbox,
+          destination,
+          uidValidity: 1n,
+          uidMap: new Map([[Number(range), options.movedUid ?? 900]]),
+        };
+      },
+      // Present so a test can prove nothing reaches it. src/imap/move.ts
+      // must never call this: it is the \\Deleted + EXPUNGE path.
+      messageDelete: async (range: unknown) => {
+        options.onDelete?.(range);
+        return true;
+      },
     }),
   } as never;
 }
@@ -122,6 +183,10 @@ export function makeFakeDb(overrides: Record<string, unknown> = {}) {
     // message the client can see. A suite covering the partial-failure
     // contract overrides it to return false or to throw.
     updateStoredFlag: async () => true,
+    // Same default reasoning as updateStoredFlag above: "a row existed and
+    // was removed", which is the ordinary case for a message the client
+    // can see. The move suite overrides it to record and to fail.
+    deleteStoredMessage: async () => true,
     applySchema: async () => {},
     close: async () => {},
     ...overrides,

@@ -107,8 +107,8 @@ describe('resolveFolderFilter', () => {
     // the test that would catch that.
     const { pool } = makeFakePool({
       discoveredFolders: {
-        a: { inbox: 'INBOX', sent: '[Gmail]/Sent Mail', spam: '[Gmail]/Spam', trash: '[Gmail]/Trash' },
-        b: { inbox: 'INBOX', sent: 'Envoyés', spam: 'Indésirables', trash: 'Corbeille' },
+        a: { inbox: 'INBOX', sent: '[Gmail]/Sent Mail', spam: '[Gmail]/Spam', trash: '[Gmail]/Trash', archive: null },
+        b: { inbox: 'INBOX', sent: 'Envoyés', spam: 'Indésirables', trash: 'Corbeille', archive: null },
       },
     });
     expect(resolveFolderFilter('sent', null, ACCOUNTS, pool)).toEqual({
@@ -123,8 +123,8 @@ describe('resolveFolderFilter', () => {
   it('narrows pairs to just the account named by an account filter', () => {
     const { pool } = makeFakePool({
       discoveredFolders: {
-        a: { inbox: 'INBOX', sent: '[Gmail]/Sent Mail', spam: null, trash: null },
-        b: { inbox: 'INBOX', sent: 'Envoyés', spam: null, trash: null },
+        a: { inbox: 'INBOX', sent: '[Gmail]/Sent Mail', spam: null, trash: null, archive: null },
+        b: { inbox: 'INBOX', sent: 'Envoyés', spam: null, trash: null, archive: null },
       },
     });
     expect(resolveFolderFilter('sent', 'b', ACCOUNTS, pool)).toEqual({
@@ -136,8 +136,8 @@ describe('resolveFolderFilter', () => {
   it('excludes an account whose kind the server flagged as absent (a real null)', () => {
     const { pool } = makeFakePool({
       discoveredFolders: {
-        a: { inbox: 'INBOX', sent: '[Gmail]/Sent Mail', spam: null, trash: null },
-        b: { inbox: 'INBOX', sent: 'Envoyés', spam: null, trash: null },
+        a: { inbox: 'INBOX', sent: '[Gmail]/Sent Mail', spam: null, trash: null, archive: null },
+        b: { inbox: 'INBOX', sent: 'Envoyés', spam: null, trash: null, archive: null },
       },
     });
     // Neither account has a Trash — pairs is empty, not an error.
@@ -147,7 +147,7 @@ describe('resolveFolderFilter', () => {
   it('excludes an account whose discovery has not run at all (undefined, not a DiscoveredFolders)', () => {
     const { pool } = makeFakePool({
       discoveredFolders: {
-        a: { inbox: 'INBOX', sent: '[Gmail]/Sent Mail', spam: null, trash: '[Gmail]/Trash' },
+        a: { inbox: 'INBOX', sent: '[Gmail]/Sent Mail', spam: null, trash: '[Gmail]/Trash', archive: null },
         // "b" has no entry: this process has not completed its first sync
         // cycle for "b" yet (or "b" never connected).
       },
@@ -158,7 +158,7 @@ describe('resolveFolderFilter', () => {
   it('an account filter combined with a folder that account never discovered still yields empty pairs, not an error', () => {
     const { pool } = makeFakePool({
       discoveredFolders: {
-        a: { inbox: 'INBOX', sent: '[Gmail]/Sent Mail', spam: null, trash: null },
+        a: { inbox: 'INBOX', sent: '[Gmail]/Sent Mail', spam: null, trash: null, archive: null },
       },
     });
     expect(resolveFolderFilter('trash', 'a', ACCOUNTS, pool)).toEqual({ kind: 'pairs', pairs: [] });

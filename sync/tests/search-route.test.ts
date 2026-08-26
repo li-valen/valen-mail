@@ -157,8 +157,8 @@ describe('GET /api/search', () => {
   it('scopes to one folder when asked, resolving it exactly the way /api/inbox does', async () => {
     const { router, seen } = routerWith({
       discoveredFolders: {
-        harvard: { inbox: 'INBOX', sent: '[Gmail]/Sent Mail', spam: null, trash: null },
-        personal: { inbox: 'INBOX', sent: 'Envoyés', spam: null, trash: null },
+        harvard: { inbox: 'INBOX', sent: '[Gmail]/Sent Mail', spam: null, trash: null, archive: null },
+        personal: { inbox: 'INBOX', sent: 'Envoyés', spam: null, trash: null, archive: null },
       },
     });
 
@@ -176,8 +176,8 @@ describe('GET /api/search', () => {
   it('composes the query with folder AND account together', async () => {
     const { router, seen } = routerWith({
       discoveredFolders: {
-        harvard: { inbox: 'INBOX', sent: '[Gmail]/Sent Mail', spam: '[Gmail]/Spam', trash: null },
-        personal: { inbox: 'INBOX', sent: 'Envoyés', spam: 'Indésirables', trash: null },
+        harvard: { inbox: 'INBOX', sent: '[Gmail]/Sent Mail', spam: '[Gmail]/Spam', trash: null, archive: null },
+        personal: { inbox: 'INBOX', sent: 'Envoyés', spam: 'Indésirables', trash: null, archive: null },
       },
     });
 

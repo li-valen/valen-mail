@@ -298,12 +298,13 @@ describe('ConnectionPool — getDiscoveredFolders (Plan 5 Task 2)', () => {
 
     expect(pool.getDiscoveredFolders('a')).toEqual({
       inbox: 'INBOX', sent: '[Gmail]/Sent Mail', spam: '[Gmail]/Spam', trash: '[Gmail]/Trash',
+      archive: null,
     });
     // "b" resolves to its OWN native names — not "a"'s, and not undefined —
     // and a real null (discovered-as-absent), not a missing field, for the
     // one kind its server never flagged.
     expect(pool.getDiscoveredFolders('b')).toEqual({
-      inbox: 'INBOX', sent: 'Envoyés', spam: 'Indésirables', trash: null,
+      inbox: 'INBOX', sent: 'Envoyés', spam: 'Indésirables', trash: null, archive: null,
     });
   });
 });

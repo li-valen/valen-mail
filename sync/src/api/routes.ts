@@ -22,6 +22,7 @@ import type { VapidConfig } from '../push/vapid';
 import { handleIdentities } from './identities.ts';
 import { handleMessage } from './message.ts';
 import { handleSetFlag } from './flags.ts';
+import { handleMove } from './move.ts';
 import { MessageCache } from './message-cache.ts';
 import {
   handleSend,
@@ -536,6 +537,25 @@ export function createRouter(
       const [accountId, folder] = decoded;
       return handleSetFlag(
         db, pool, request, accountId!, folder!, flagsMatch[3] ?? '', messageCache,
+      );
+    }
+
+    // Plan 9 Task 5's write, and the SECOND route that changes a live
+    // mailbox. Matched here for the same reason the flags write above is:
+    // it would otherwise fall through to the GET-only 404. Matched on
+    // POST alone, so any other method on this path takes that same 404.
+    //
+    // Everything it does lives in ./move.ts, including the refusal of any
+    // destination outside the closed literal set — a route that took a
+    // folder NAME would be an arbitrary-folder-move primitive against the
+    // user's real mail.
+    const moveMatch = path.match(/^\/api\/message\/([^/]+)\/([^/]+)\/([^/]+)\/move$/);
+    if (moveMatch && request.method === 'POST') {
+      const decoded = decodeSegments([moveMatch[1] ?? '', moveMatch[2] ?? '']);
+      if (decoded instanceof Response) return decoded;
+      const [accountId, folder] = decoded;
+      return handleMove(
+        db, pool, request, accountId!, folder!, moveMatch[3] ?? '', messageCache,
       );
     }
 

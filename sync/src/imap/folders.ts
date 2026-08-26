@@ -35,6 +35,15 @@ export type OptionalFolderKind = 'sent' | 'spam' | 'trash';
 export type FolderKind = 'inbox' | OptionalFolderKind;
 
 /**
+ * Every folder this service can NAME, sync order or not.
+ *
+ * `archive` is the one member that is never synced: see
+ * `DiscoveredFolders.archive` below for why All Mail must stay out of the
+ * cycle, and ../api/move.ts for the only thing that reads it.
+ */
+export type AddressableFolderKind = FolderKind | 'archive';
+
+/**
  * The subset of imapflow's `ListResponse` this module actually reads.
  *
  * Structural, not an import of imapflow's own type, for two reasons: this
@@ -62,6 +71,22 @@ export interface DiscoveredFolders {
   readonly sent: string | null;
   readonly spam: string | null;
   readonly trash: string | null;
+  /**
+   * Where an archived message goes — NOT a folder this service syncs.
+   *
+   * `folderSyncOrder` deliberately omits it and `missingFolderKinds`
+   * deliberately never reports it, because on Gmail this resolves to
+   * `[Gmail]/All Mail`: every message in the account, which for these
+   * mailboxes is 60,000+ rows. Syncing it would duplicate the entire
+   * mailbox under a second folder name on every cycle and spend the daily
+   * byte budget (spec L6) doing it.
+   *
+   * `null` when the server flags neither `\\Archive` nor `\\All`, which is
+   * not an error: ../api/move.ts refuses the archive action for that
+   * account and says which folder was missing, exactly as it does for a
+   * disabled Trash.
+   */
+  readonly archive: string | null;
 }
 
 /** One folder to sync, paired with the slot it fills. */
@@ -84,6 +109,25 @@ const SPECIAL_USE_TO_KIND: Readonly<Record<string, OptionalFolderKind>> = {
   '\\Junk': 'spam',
   '\\Trash': 'trash',
 };
+
+/**
+ * Where an ARCHIVED message lands, in order of preference.
+ *
+ * `\\Archive` first because RFC 6154 gives it exactly this meaning
+ * ("messages that are archived"). Gmail does not publish it: on Gmail,
+ * archiving means removing the INBOX label, and the mailbox that then
+ * holds the message is `[Gmail]/All Mail`, flagged `\\All`. So `\\All` is
+ * the fallback, and on every account this service actually connects to it
+ * is the one that fires.
+ *
+ * DELIBERATELY SEPARATE FROM SPECIAL_USE_TO_KIND. The comment on that map
+ * says `\\All` and `\\Archive` must NOT land in any synced slot, and that
+ * is still true — this is a destination to move INTO, never a folder to
+ * enumerate. Merging the two maps is how All Mail ends up in
+ * `folderSyncOrder` and every message in the account gets synced a second
+ * time under a second folder name.
+ */
+const ARCHIVE_SPECIAL_USE_PREFERENCE: readonly string[] = ['\\Archive', '\\All'];
 
 /** The order a sync cycle visits folders in: INBOX first, then the rest. */
 const OPTIONAL_FOLDER_ORDER: readonly OptionalFolderKind[] = ['sent', 'spam', 'trash'];
@@ -115,8 +159,17 @@ export async function discoverFolders(listMailboxes: ListMailboxesFn): Promise<D
   const listing = await listMailboxes();
 
   const byKind = new Map<OptionalFolderKind, string>();
+  // Kept separate from `byKind` and keyed by ATTRIBUTE rather than by
+  // slot, because the archive slot is resolved by preference across two
+  // attributes rather than by first-entry-wins — see
+  // ARCHIVE_SPECIAL_USE_PREFERENCE.
+  const byArchiveUse = new Map<string, string>();
   for (const entry of listing) {
     if (!isUsableEntry(entry)) continue;
+    if (entry.specialUse && ARCHIVE_SPECIAL_USE_PREFERENCE.includes(entry.specialUse)) {
+      if (!byArchiveUse.has(entry.specialUse)) byArchiveUse.set(entry.specialUse, entry.path);
+      continue;
+    }
     const kind = entry.specialUse ? SPECIAL_USE_TO_KIND[entry.specialUse] : undefined;
     if (!kind) continue;
     // First entry wins. imapflow resolves special-use conflicts itself and
@@ -132,7 +185,54 @@ export async function discoverFolders(listMailboxes: ListMailboxesFn): Promise<D
     sent: byKind.get('sent') ?? null,
     spam: byKind.get('spam') ?? null,
     trash: byKind.get('trash') ?? null,
+    // Preference order, not first-entry-wins: a server publishing both
+    // attributes means the more specific one. See
+    // ARCHIVE_SPECIAL_USE_PREFERENCE.
+    archive: ARCHIVE_SPECIAL_USE_PREFERENCE.map((use) => byArchiveUse.get(use)).find(
+      (path): path is string => path !== undefined,
+    ) ?? null,
   };
+}
+
+/**
+ * The reverse of discovery: which logical kind does this native path
+ * name, if any?
+ *
+ * This exists so ../api/move.ts can tell a client where a message CAME
+ * from as a logical kind ('inbox') rather than as a path, which is what
+ * lets undo move it back without the client ever naming a destination
+ * folder of its own. An unconstrained destination string on that route
+ * would be an arbitrary-folder-move primitive against the user's real
+ * mailbox.
+ *
+ * `null` for anything undiscovered — a user label, a folder from another
+ * account, an empty string. The caller must treat that as "not undoable"
+ * rather than defaulting to INBOX: putting a message into a folder it was
+ * never in is a worse outcome than offering no undo at all.
+ *
+ * INBOX is matched case-insensitively because RFC 3501 makes that name
+ * case-insensitive; every other path is compared verbatim, since a
+ * localised Gmail folder name has no case rule we are entitled to assume.
+ */
+export function folderKindForPath(
+  folders: DiscoveredFolders,
+  path: string,
+): AddressableFolderKind | null {
+  if (path.toUpperCase() === INBOX_FOLDER) return 'inbox';
+  if (path.length === 0) return null;
+
+  const candidates: readonly (readonly [AddressableFolderKind, string | null])[] = [
+    ['sent', folders.sent],
+    ['spam', folders.spam],
+    ['trash', folders.trash],
+    ['archive', folders.archive],
+  ];
+  // `native !== null` is load-bearing rather than defensive: without it an
+  // undiscovered slot would match a caller passing the empty string, and
+  // "we could not discover your Trash" would silently become "this
+  // message came from Trash".
+  const match = candidates.find(([, native]) => native !== null && native === path);
+  return match ? match[0] : null;
 }
 
 /**
