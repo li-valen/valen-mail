@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ParsedMessage } from '../src/api';
 import { MessageCache } from '../src/messageCache';
 import {
+  InFlightRequests,
   loadMessage,
   readCachedMessage,
   refetchMessage,
@@ -115,6 +116,84 @@ describe('loadMessage', () => {
     const outcome = loadMessage(cache, TARGET, vi.fn().mockRejectedValue(new Error('boom')));
     if (outcome.kind !== 'pending') throw new Error('expected a pending load');
     await expect(outcome.parsed).rejects.toThrow('boom');
+  });
+});
+
+describe('InFlightRequests', () => {
+  it('joins a request already running instead of starting a second one', async () => {
+    // Measured against the live dev server: hovering a row started a
+    // prefetch and the click 45ms later started a SECOND fetch of the
+    // same message — both missing the server cache, both taking the
+    // account lock, both charging the daily byte budget, on the most
+    // common interaction in the app.
+    const requests = new InFlightRequests();
+    const message = messageOf('<p>one fetch</p>');
+    const start = vi.fn().mockReturnValue(Promise.resolve(message));
+
+    const first = requests.run(TARGET, start);
+    const second = requests.run(TARGET, start);
+
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(second).toBe(first);
+    await expect(second).resolves.toBe(message);
+  });
+
+  it('keys on the message, so two different ones still run separately', () => {
+    const requests = new InFlightRequests();
+    const start = vi.fn().mockReturnValue(new Promise<ParsedMessage>(() => {}));
+
+    requests.run({ ...TARGET, uid: '1' }, start);
+    requests.run({ ...TARGET, uid: '2' }, start);
+
+    expect(start).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports what is on the wire', async () => {
+    const requests = new InFlightRequests();
+    expect(requests.has(TARGET)).toBe(false);
+    let release: (message: ParsedMessage) => void = () => {};
+    requests.run(TARGET, () => new Promise<ParsedMessage>((resolve) => { release = resolve; }));
+    expect(requests.has(TARGET)).toBe(true);
+
+    release(messageOf(''));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(requests.has(TARGET)).toBe(false);
+  });
+
+  it('releases the slot after a FAILURE too, so the next attempt really runs', async () => {
+    // This registry coalesces concurrent requests; it caches nothing. A
+    // failed entry left behind would hand every later attempt the same
+    // rejection forever.
+    const requests = new InFlightRequests();
+    const failing = requests.run(TARGET, () => Promise.reject(new Error('502')));
+    await expect(failing).rejects.toThrow('502');
+
+    const start = vi.fn().mockResolvedValue(messageOf('<p>fine now</p>'));
+    await requests.run(TARGET, start);
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('loadMessage and in-flight requests', () => {
+  it('adopts a request already running rather than issuing its own', async () => {
+    const cache = new MessageCache();
+    const requests = new InFlightRequests();
+    const message = messageOf('<p>shared</p>');
+    const fetchImpl = vi.fn().mockResolvedValue(message);
+
+    // Stands in for the hover prefetch that started 45ms before the click.
+    const prefetch = requests.run(TARGET, () => fetchImpl(TARGET));
+
+    const outcome = loadMessage(cache, TARGET, fetchImpl, undefined, requests);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    if (outcome.kind !== 'pending') throw new Error('expected a pending load');
+
+    await expect(outcome.parsed).resolves.toBe(message);
+    await prefetch;
+    // And the adopted result is still cached by the open path itself, so
+    // the contract holds no matter who started the request.
+    expect(cache.get(TARGET)).toBe(message);
   });
 });
 

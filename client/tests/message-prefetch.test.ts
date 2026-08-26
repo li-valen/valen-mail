@@ -2,6 +2,7 @@ import { describe, expect, it, vi, afterEach } from 'vitest';
 import type { ParsedMessage } from '../src/api';
 import { MessageCache } from '../src/messageCache';
 import type { MessageTarget } from '../src/messageCache';
+import { InFlightRequests } from '../src/messageLoader';
 import { MAX_IN_FLIGHT, MAX_QUEUED, MessagePrefetcher } from '../src/messagePrefetch';
 
 /**
@@ -55,6 +56,31 @@ function deferredFetch() {
   return { fetchImpl, signals, resolvers, rejecters, targets };
 }
 
+/**
+ * A prefetcher with its own cache AND its own in-flight registry.
+ *
+ * The registry injection matters as much as the cache one: production
+ * shares a single `inFlightRequests` between the reader and the
+ * prefetcher (that sharing is the point — see messageLoader.ts), and a
+ * suite that let every case share the module-level singleton would leave
+ * never-settling deferred requests registered forever, so the third test
+ * would silently skip work the second one "started".
+ */
+function makePrefetcher(options: {
+  cache?: MessageCache;
+  fetchImpl: (target: MessageTarget, signal?: AbortSignal) => Promise<ParsedMessage>;
+  maxInFlight?: number;
+  maxQueued?: number;
+}): MessagePrefetcher {
+  return new MessagePrefetcher({
+    cache: options.cache ?? new MessageCache(),
+    fetchImpl: options.fetchImpl,
+    maxInFlight: options.maxInFlight,
+    maxQueued: options.maxQueued,
+    sharedRequests: new InFlightRequests(),
+  });
+}
+
 /** Lets every already-settled promise's `.then` run. */
 function flush(): Promise<void> {
   return new Promise((resolve) => {
@@ -70,7 +96,7 @@ describe('MessagePrefetcher / warming the cache', () => {
   it('fetches a target and caches what comes back', async () => {
     const cache = new MessageCache();
     const { fetchImpl, resolvers } = deferredFetch();
-    const prefetcher = new MessagePrefetcher({ cache, fetchImpl });
+    const prefetcher = makePrefetcher({ cache, fetchImpl });
 
     prefetcher.prefetch(targetAt(1));
     expect(prefetcher.inFlight).toBe(1);
@@ -88,7 +114,7 @@ describe('MessagePrefetcher / warming the cache', () => {
     cache.set(targetAt(1), messageOf('<p>already</p>'));
     const { fetchImpl } = deferredFetch();
 
-    new MessagePrefetcher({ cache, fetchImpl }).prefetch(targetAt(1));
+    makePrefetcher({ cache, fetchImpl }).prefetch(targetAt(1));
 
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -97,7 +123,7 @@ describe('MessagePrefetcher / warming the cache', () => {
     // A pointer resting on a row fires `pointerenter` more than once in
     // practice; the handler must be safe to call on every one.
     const { fetchImpl } = deferredFetch();
-    const prefetcher = new MessagePrefetcher({ cache: new MessageCache(), fetchImpl });
+    const prefetcher = makePrefetcher({ fetchImpl });
 
     prefetcher.prefetch(targetAt(1));
     prefetcher.prefetch(targetAt(1));
@@ -110,7 +136,7 @@ describe('MessagePrefetcher / warming the cache', () => {
 describe('MessagePrefetcher / bounds', () => {
   it('runs no more than the cap at once', () => {
     const { fetchImpl } = deferredFetch();
-    const prefetcher = new MessagePrefetcher({ cache: new MessageCache(), fetchImpl, maxInFlight: 2 });
+    const prefetcher = makePrefetcher({ fetchImpl, maxInFlight: 2 });
 
     for (let uid = 1; uid <= 6; uid += 1) prefetcher.prefetch(targetAt(uid));
 
@@ -123,7 +149,7 @@ describe('MessagePrefetcher / bounds', () => {
   it('starts the next one only as a slot frees up', async () => {
     const cache = new MessageCache();
     const { fetchImpl, resolvers } = deferredFetch();
-    const prefetcher = new MessagePrefetcher({ cache, fetchImpl, maxInFlight: 1, maxQueued: 4 });
+    const prefetcher = makePrefetcher({ cache, fetchImpl, maxInFlight: 1, maxQueued: 4 });
 
     prefetcher.prefetch(targetAt(1));
     prefetcher.prefetch(targetAt(2));
@@ -140,12 +166,7 @@ describe('MessagePrefetcher / bounds', () => {
     // guesses. And the ones worth keeping are the most recent: the row
     // the pointer is on now, not the one it left three rows ago.
     const { fetchImpl, targets } = deferredFetch();
-    const prefetcher = new MessagePrefetcher({
-      cache: new MessageCache(),
-      fetchImpl,
-      maxInFlight: 1,
-      maxQueued: 2,
-    });
+    const prefetcher = makePrefetcher({ fetchImpl, maxInFlight: 1, maxQueued: 2 });
 
     for (let uid = 1; uid <= 10; uid += 1) prefetcher.prefetch(targetAt(uid));
 
@@ -164,7 +185,7 @@ describe('MessagePrefetcher / bounds', () => {
 describe('MessagePrefetcher / navigation cancels a guess', () => {
   it('aborts every request still on the wire', () => {
     const { fetchImpl, signals } = deferredFetch();
-    const prefetcher = new MessagePrefetcher({ cache: new MessageCache(), fetchImpl, maxInFlight: 2 });
+    const prefetcher = makePrefetcher({ fetchImpl, maxInFlight: 2 });
 
     prefetcher.prefetch(targetAt(1));
     prefetcher.prefetch(targetAt(2));
@@ -179,7 +200,7 @@ describe('MessagePrefetcher / navigation cancels a guess', () => {
 
   it('empties the queue too, so a freed slot does not start a stale guess', async () => {
     const { fetchImpl } = deferredFetch();
-    const prefetcher = new MessagePrefetcher({ cache: new MessageCache(), fetchImpl, maxInFlight: 1 });
+    const prefetcher = makePrefetcher({ fetchImpl, maxInFlight: 1 });
 
     prefetcher.prefetch(targetAt(1));
     prefetcher.prefetch(targetAt(2));
@@ -204,7 +225,7 @@ describe('MessagePrefetcher / navigation cancels a guess', () => {
     // `start`'s success branch and this line fails.
     const cache = new MessageCache();
     const { fetchImpl, resolvers } = deferredFetch();
-    const prefetcher = new MessagePrefetcher({ cache, fetchImpl });
+    const prefetcher = makePrefetcher({ cache, fetchImpl });
 
     prefetcher.prefetch(targetAt(1));
     prefetcher.cancelAll();
@@ -222,7 +243,7 @@ describe('MessagePrefetcher / navigation cancels a guess', () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     const cache = new MessageCache();
     const { fetchImpl, rejecters, resolvers } = deferredFetch();
-    const prefetcher = new MessagePrefetcher({ cache, fetchImpl });
+    const prefetcher = makePrefetcher({ cache, fetchImpl });
 
     prefetcher.prefetch(targetAt(1));
     prefetcher.cancelAll();
@@ -241,7 +262,7 @@ describe('MessagePrefetcher / navigation cancels a guess', () => {
   it('takes new guesses normally after a cancel', async () => {
     const cache = new MessageCache();
     const { fetchImpl, resolvers } = deferredFetch();
-    const prefetcher = new MessagePrefetcher({ cache, fetchImpl });
+    const prefetcher = makePrefetcher({ cache, fetchImpl });
 
     prefetcher.prefetch(targetAt(1));
     prefetcher.cancelAll();
@@ -258,7 +279,7 @@ describe('MessagePrefetcher / failures', () => {
   it('logs a genuine failure and does not re-issue that guess', async () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { fetchImpl, rejecters } = deferredFetch();
-    const prefetcher = new MessagePrefetcher({ cache: new MessageCache(), fetchImpl });
+    const prefetcher = makePrefetcher({ fetchImpl });
 
     prefetcher.prefetch(targetAt(1));
     rejecters[0]!(new Error('429'));
@@ -275,7 +296,7 @@ describe('MessagePrefetcher / failures', () => {
   it('never logs the message itself', async () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { fetchImpl, rejecters } = deferredFetch();
-    const prefetcher = new MessagePrefetcher({ cache: new MessageCache(), fetchImpl });
+    const prefetcher = makePrefetcher({ fetchImpl });
 
     prefetcher.prefetch({ account_id: 'primary', folder: 'INBOX', uid: '42' });
     rejecters[0]!(new Error('failed'));
@@ -299,7 +320,7 @@ describe('MessagePrefetcher / failures', () => {
     // implementation produces when its signal fires — must still be
     // silent, because this class is what fired the signal.
     const { fetchImpl, rejecters } = deferredFetch();
-    const prefetcher = new MessagePrefetcher({ cache, fetchImpl });
+    const prefetcher = makePrefetcher({ cache, fetchImpl });
     prefetcher.prefetch(targetAt(1));
     rejecters[0]!(abort);
     await flush();
@@ -315,11 +336,7 @@ describe('MessagePrefetcher / adjacent messages', () => {
     // People read down a list, and with a queue this short the order is
     // what decides which guess actually gets a slot.
     const { fetchImpl, targets } = deferredFetch();
-    const prefetcher = new MessagePrefetcher({
-      cache: new MessageCache(),
-      fetchImpl,
-      maxInFlight: 1,
-    });
+    const prefetcher = makePrefetcher({ fetchImpl, maxInFlight: 1 });
 
     prefetcher.prefetchAround(list, 2);
 
@@ -329,11 +346,7 @@ describe('MessagePrefetcher / adjacent messages', () => {
 
   it('warms both neighbours when there are slots for both', () => {
     const { fetchImpl, targets } = deferredFetch();
-    const prefetcher = new MessagePrefetcher({
-      cache: new MessageCache(),
-      fetchImpl,
-      maxInFlight: 2,
-    });
+    const prefetcher = makePrefetcher({ fetchImpl, maxInFlight: 2 });
 
     prefetcher.prefetchAround(list, 2);
 
@@ -342,11 +355,7 @@ describe('MessagePrefetcher / adjacent messages', () => {
 
   it('never warms the message that is already open', () => {
     const { fetchImpl, targets } = deferredFetch();
-    const prefetcher = new MessagePrefetcher({
-      cache: new MessageCache(),
-      fetchImpl,
-      maxInFlight: 4,
-    });
+    const prefetcher = makePrefetcher({ fetchImpl, maxInFlight: 4 });
 
     prefetcher.prefetchAround(list, 2);
 
@@ -355,11 +364,7 @@ describe('MessagePrefetcher / adjacent messages', () => {
 
   it('does not run off either end of the list', () => {
     const { fetchImpl, targets } = deferredFetch();
-    const prefetcher = new MessagePrefetcher({
-      cache: new MessageCache(),
-      fetchImpl,
-      maxInFlight: 4,
-    });
+    const prefetcher = makePrefetcher({ fetchImpl, maxInFlight: 4 });
 
     prefetcher.prefetchAround(list, 0);
     prefetcher.prefetchAround(list, list.length - 1);
@@ -372,7 +377,7 @@ describe('MessagePrefetcher / adjacent messages', () => {
     // event, where there is no surrounding list — guessing a neighbour
     // there would be a fetch spent on a row the user cannot see.
     const { fetchImpl } = deferredFetch();
-    const prefetcher = new MessagePrefetcher({ cache: new MessageCache(), fetchImpl });
+    const prefetcher = makePrefetcher({ fetchImpl });
 
     prefetcher.prefetchAround(list, -1);
 

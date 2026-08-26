@@ -1,6 +1,6 @@
 import type { MessageCache, MessageTarget } from './messageCache';
 import { messageCache, messageCacheKey } from './messageCache';
-import { fetchMessage, type FetchMessage } from './messageLoader';
+import { fetchMessage, inFlightRequests, type FetchMessage, type InFlightRequests } from './messageLoader';
 
 /**
  * Speculative message fetching — warming the cache for a message the user
@@ -70,6 +70,10 @@ export interface PrefetcherOptions {
   readonly fetchImpl?: FetchMessage;
   readonly maxInFlight?: number;
   readonly maxQueued?: number;
+  /** Shared with the reader's own open path — see
+   *  ./messageLoader.ts's InFlightRequests for why one registry rather
+   *  than one each. */
+  readonly sharedRequests?: InFlightRequests;
 }
 
 export class MessagePrefetcher {
@@ -77,6 +81,7 @@ export class MessagePrefetcher {
   private readonly fetchImpl: FetchMessage;
   private readonly maxInFlight: number;
   private readonly maxQueued: number;
+  private readonly sharedRequests: InFlightRequests;
 
   /** Waiting for a slot, oldest first. */
   private queue: MessageTarget[] = [];
@@ -103,6 +108,7 @@ export class MessagePrefetcher {
     this.fetchImpl = options.fetchImpl ?? fetchMessage;
     this.maxInFlight = options.maxInFlight ?? MAX_IN_FLIGHT;
     this.maxQueued = options.maxQueued ?? MAX_QUEUED;
+    this.sharedRequests = options.sharedRequests ?? inFlightRequests;
   }
 
   /**
@@ -114,6 +120,10 @@ export class MessagePrefetcher {
   prefetch(target: MessageTarget): void {
     const key = messageCacheKey(target);
     if (this.cache.get(target) !== undefined) return;
+    // Already on the wire — most often because the user has ALREADY
+    // clicked this row and the reader is fetching it. A guess must never
+    // duplicate the request it was guessing about.
+    if (this.sharedRequests.has(target)) return;
     if (this.active.has(key)) return;
     if (this.failed.has(key)) return;
     if (this.queue.some((queued) => messageCacheKey(queued) === key)) return;
@@ -200,7 +210,7 @@ export class MessagePrefetcher {
     const issuedAt = this.generation;
     this.active.set(key, controller);
 
-    this.fetchImpl(target, controller.signal).then(
+    this.sharedRequests.run(target, () => this.fetchImpl(target, controller.signal)).then(
       (message) => {
         this.settle(key, issuedAt);
         // THE GUARD. A response for a superseded view is dropped rather

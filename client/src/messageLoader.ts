@@ -1,6 +1,7 @@
 import { getMessage } from './api';
 import type { ParsedMessage } from './api';
 import type { MessageCache, MessageTarget } from './messageCache';
+import { messageCacheKey } from './messageCache';
 
 /**
  * The one place the reader decides between "I already have this" and "go
@@ -25,6 +26,62 @@ export type FetchMessage = (
 /** The real one: ./api.ts's `getMessage`, adapted to a MessageTarget. */
 export const fetchMessage: FetchMessage = (target, signal) =>
   getMessage(target.account_id, target.folder, target.uid, fetch, signal);
+
+/**
+ * One request per message at a time, however many callers ask for it.
+ *
+ * WHY THIS IS NOT A NICETY. Measured against the live dev server: hovering
+ * a row starts a prefetch, and the click 45ms later found nothing cached
+ * yet and started a SECOND fetch of the same message. Both miss the
+ * server's cache (the first has not returned to populate it), so both take
+ * the account lock, both pull the message off IMAP, and both charge the
+ * daily byte budget — on the single most common interaction in the app.
+ * The prefetch was doubling the cost of the thing it exists to make
+ * cheaper.
+ *
+ * Joining instead of starting fixes three cases with one mechanism:
+ * hover-then-click (the reader adopts the prefetch already running),
+ * click-then-hover (the prefetch sees the open and stays out of the way),
+ * and React StrictMode's development double-invoke of the reader's own
+ * effect, which used to issue two identical requests on every open.
+ *
+ * The entry is dropped as soon as the request settles, success or
+ * failure — this coalesces concurrent requests and caches NOTHING. What
+ * gets remembered is ./messageCache.ts's job, and a failed request must
+ * leave nothing behind for the retry to find.
+ */
+export class InFlightRequests {
+  private readonly byKey = new Map<string, Promise<ParsedMessage>>();
+
+  /** True while a request for this message is on the wire, whoever
+   *  started it. */
+  has(target: MessageTarget): boolean {
+    return this.byKey.has(messageCacheKey(target));
+  }
+
+  /** The in-flight request for this message, or a new one from `start`. */
+  run(target: MessageTarget, start: () => Promise<ParsedMessage>): Promise<ParsedMessage> {
+    const key = messageCacheKey(target);
+    const existing = this.byKey.get(key);
+    if (existing !== undefined) return existing;
+
+    const request = start();
+    this.byKey.set(key, request);
+    // Compared by identity before deleting: a later request for the same
+    // message may already have claimed the slot by the time this one
+    // settles, and clearing it would leave that one uncoalesced.
+    const release = (): void => {
+      if (this.byKey.get(key) === request) this.byKey.delete(key);
+    };
+    request.then(release, release);
+    return request;
+  }
+}
+
+/** The one registry, shared by the reader and the prefetcher — two
+ *  registries would coalesce each side against itself and miss the case
+ *  that actually costs: one of each, for the same message. */
+export const inFlightRequests = new InFlightRequests();
 
 /**
  * What opening a message resolved to.
@@ -77,11 +134,15 @@ export function loadMessage(
   target: MessageTarget,
   fetchImpl: FetchMessage = fetchMessage,
   signal?: AbortSignal,
+  inFlight: InFlightRequests = inFlightRequests,
 ): MessageLoad {
   const cached = cache.get(target);
   if (cached !== undefined) return { kind: 'cached', parsed: cached };
 
-  const parsed = fetchImpl(target, signal).then((message) => {
+  // Joins a request already running for this message rather than starting
+  // a second one — most often the hover prefetch that has not landed yet.
+  // See InFlightRequests.
+  const parsed = inFlight.run(target, () => fetchImpl(target, signal)).then((message) => {
     cache.set(target, message);
     return message;
   });
@@ -104,6 +165,8 @@ export function refetchMessage(
   fetchImpl: FetchMessage = fetchMessage,
   signal?: AbortSignal,
 ): Promise<ParsedMessage> {
+  // Deliberately NOT coalesced either: joining an in-flight request would
+  // hand the retry the very attempt it is retrying past.
   return fetchImpl(target, signal).then((message) => {
     cache.set(target, message);
     return message;
