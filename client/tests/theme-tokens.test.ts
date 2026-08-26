@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import buttonSource from '../src/ui/Button.tsx?raw';
+import alertSource from '../src/ui/Alert.tsx?raw';
 // Vite's `?raw` suffix (declared in vite/client.d.ts) imports the file's
 // contents as a plain string, at both test-run and typecheck time — no
 // node:fs/node:url needed, keeping this file within the project's fixed
@@ -448,5 +450,30 @@ describe('the message ground and the palette agree', () => {
     expect(hslTripletToHex('0 0% 0%')).toBe('#000000');
     expect(hslTripletToHex('224 71% 4%')).toBe('#030711');
     expect(hslTripletToHex('not a triplet')).toBeNull();
+  });
+});
+
+
+describe('surfaces a control can be placed ON, not just the page ground', () => {
+  it('gives the outline button no ground of its own', () => {
+    // `bg-card` is a PAGE-ground colour. An outline button carrying it can
+    // never blend with a tinted surface, and inside a destructive Alert it
+    // rendered as a solid white block in light mode and a near-black one in
+    // dark. Measured after the fix: the button resolves to the alert's own
+    // rgb(254,242,242) light / rgb(37,8,13) dark in both themes.
+    expect(buttonSource).toMatch(/outline:\s*\n?\s*'border border-neutral-200 bg-transparent/);
+    expect(buttonSource).not.toMatch(/outline:\s*\n?\s*'[^']*\bbg-card\b/);
+  });
+
+  it('gives every tinted alert a dark half', () => {
+    // These three were explicitly deferred out of an earlier neutral audit
+    // ("left exactly as shipped"), whose guard only looked at
+    // bg-white/bg-neutral-*/text-neutral-*/border-neutral-*. What that left
+    // behind was a pale panel glowing in a dark app with dark text on it.
+    for (const tone of ['red', 'amber', 'green']) {
+      expect(alertSource).toMatch(new RegExp(`dark:bg-${tone}-950`));
+      expect(alertSource).toMatch(new RegExp(`dark:text-${tone}-100`));
+      expect(alertSource).toMatch(new RegExp(`dark:border-${tone}-900`));
+    }
   });
 });

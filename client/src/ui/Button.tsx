@@ -56,8 +56,22 @@ const buttonVariants = cva(
         // subtle destructive variant), and reads fine as-is against a
         // dark page. Left unchanged deliberately, not an oversight.
         destructive: 'bg-red-600 text-white hover:bg-red-600/90',
+        // `bg-transparent`, NOT `bg-card`. An outline button has to sit on
+        // whatever surface it is placed on, and `bg-card` is a PAGE-GROUND
+        // colour that never blends with a tinted one. Inside a destructive
+        // Alert it read as a solid white block in light mode — *"The retry
+        // buttons backgrounds ... is solid white and not transparent"* —
+        // and in dark it painted the button near-black (#030711) while
+        // inheriting the alert's dark-red text, which is a contrast
+        // failure on top of a cosmetic one.
+        //
+        // Nothing else moves: `--card` and `--background` are the same
+        // value in BOTH themes (styles.css), so on the app's own ground
+        // transparent and `bg-card` render identically. The only places
+        // this changes anything are the tinted surfaces where it was
+        // already wrong.
         outline:
-          'border border-neutral-200 bg-card hover:bg-neutral-100 hover:text-neutral-900 dark:border-border dark:hover:bg-accent dark:hover:text-accent-foreground',
+          'border border-neutral-200 bg-transparent hover:bg-neutral-100 hover:text-neutral-900 dark:border-border dark:hover:bg-accent dark:hover:text-accent-foreground',
         secondary: 'bg-neutral-100 text-neutral-900 hover:bg-neutral-100/80 dark:bg-secondary dark:text-secondary-foreground dark:hover:bg-secondary/80',
         ghost: 'hover:bg-neutral-100 hover:text-neutral-900 dark:hover:bg-accent dark:hover:text-accent-foreground',
         destructiveGhost: 'text-red-600 hover:text-red-700 hover:bg-red-50',

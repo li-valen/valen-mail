@@ -27,9 +27,22 @@ const alertVariants = cva(
         // `destructive` is the only one of the three actually reachable
         // today (InboxList.tsx, App.tsx's SessionError) — see the task
         // report for the full reasoning.
-        destructive: 'border-red-200 bg-red-50 text-red-900 [&>svg]:text-red-600',
-        warning: 'border-amber-200 bg-amber-50 text-amber-900 [&>svg]:text-amber-600',
-        success: 'border-green-200 bg-green-50 text-green-900 [&>svg]:text-green-600',
+        //
+        // THE DARK HALVES ARE NOT DECORATION — THEY CLOSE THAT GAP. The
+        // note above says these three were left "exactly as shipped" and
+        // out of that audit's scope. What that deferred, in practice, was
+        // a pale-red panel glowing in a dark app with DARK red text on it,
+        // and — once an outline button was placed inside — a near-black
+        // button carrying that same dark red. Measured, not guessed: the
+        // reader's failed-body alert rendered bg oklch(0.971 …) against an
+        // app ground of rgb(3, 7, 17). Deferred is not decided; the light
+        // rendering the note was protecting is untouched.
+        destructive:
+          'border-red-200 bg-red-50 text-red-900 [&>svg]:text-red-600 dark:border-red-900/60 dark:bg-red-950/50 dark:text-red-100 dark:[&>svg]:text-red-400',
+        warning:
+          'border-amber-200 bg-amber-50 text-amber-900 [&>svg]:text-amber-600 dark:border-amber-900/60 dark:bg-amber-950/50 dark:text-amber-100 dark:[&>svg]:text-amber-400',
+        success:
+          'border-green-200 bg-green-50 text-green-900 [&>svg]:text-green-600 dark:border-green-900/60 dark:bg-green-950/50 dark:text-green-100 dark:[&>svg]:text-green-400',
       },
     },
     defaultVariants: {
