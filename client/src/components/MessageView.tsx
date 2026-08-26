@@ -1,17 +1,23 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { Ref, RefObject } from 'react';
 import { ArrowLeft, FileText } from 'lucide-react';
 import { ApiError, getMessage } from '../api';
 import type { InboxMessage, ParsedMessage } from '../api';
 import { Alert, AlertDescription } from '../ui/Alert';
 import { Button } from '../ui/Button';
-import { Card } from '../ui/Card';
 import { EmptyState } from '../ui/EmptyState';
 import { Skeleton } from '../ui/Skeleton';
 import { Panel } from '../motion';
 import AttachmentList from './MessageAttachments';
 import ThreadContext from './ThreadContext';
 import { formatReceived } from './inboxDates';
-import { IFRAME_SANDBOX, bodyKind, srcDocFor } from './messageBody';
+import {
+  BODY_HEIGHT_BOUNDS_PX,
+  IFRAME_SANDBOX,
+  bodyKind,
+  estimatedBodyHeightPx,
+  srcDocFor,
+} from './messageBody';
 
 /**
  * The reading view: the thing an email client must do, and the one the
@@ -68,6 +74,10 @@ type LoadState =
 
 interface MessageHeaderProps {
   readonly message: InboxMessage;
+  /** Where the reader's opening focus lands. Passed down rather than
+   *  found with a `querySelector` from above, now that there is no card
+   *  wrapping the header to hang a ref on. */
+  readonly headingRef: Ref<HTMLHeadingElement>;
 }
 
 /**
@@ -82,18 +92,30 @@ interface MessageHeaderProps {
  * The parsed response is used for exactly what the row cannot supply: the
  * body and the attachment list.
  */
-function MessageHeader({ message }: MessageHeaderProps) {
+function MessageHeader({ message, headingRef }: MessageHeaderProps) {
   const sender = message.from_name || message.from_email || 'Unknown sender';
   const recipients = (message.to_emails ?? []).join(', ');
   const copies = (message.cc_emails ?? []).join(', ');
 
+  // NO CARD AND NO RULE UNDER IT any more — *"Try to remove the outline
+  // borders where possible makes it look janky."* The header used to be
+  // the top half of a bordered `Card` whose bottom half was the message,
+  // separated by a hairline. Both are gone: the header is now plain
+  // chrome on the app's own ground, and the message below it is a raised
+  // sheet of its own (see BodyFrame). Whitespace and type hierarchy carry
+  // the separation, which is the same thing the borderless mobile inbox
+  // list already does.
+  //
+  // This is ALSO where the phishing boundary moved to, and it did not
+  // weaken: see BodyFrame's note.
   return (
-    <header className="border-b border-neutral-200 dark:border-border px-4 py-3 sm:px-6 sm:py-4">
+    <header className="px-1">
       {/* tabIndex -1 so focus can be moved here when the reader opens:
           the reader replaces the list in place, so without this a screen
           reader would be left announcing from wherever the vanished row
           used to be. */}
       <h2
+        ref={headingRef}
         tabIndex={-1}
         className="text-base font-semibold text-neutral-900 dark:text-foreground sm:text-lg"
       >
@@ -137,30 +159,108 @@ interface BodyFrameProps {
  * directive that now permits remote hosts, by the user's decision — see
  * components/messageBody.ts.
  *
- * **FIXED HEIGHT, ON PURPOSE.** An iframe cannot size itself to its
- * content without script inside it measuring and reporting the height —
- * which would mean `allow-scripts`, i.e. giving up the boundary to avoid
- * a scrollbar. (`allow-same-origin` alone would also let the parent
- * measure it, and is likewise refused: it is one careless edit away from
- * being paired with `allow-scripts`, which is the documented way to
- * remove a sandbox entirely.) So the frame gets a tall viewport-relative
- * box and scrolls internally. A short message leaving white space below
- * it is the visible cost of a boundary that holds.
+ * **THE HEIGHT IS ESTIMATED, BECAUSE THE PARENT REALLY CANNOT MEASURE IT.**
+ * The obvious fix for "the frame scrolls inside the page" is to size the
+ * frame to `contentDocument.documentElement.scrollHeight` on load. That
+ * was tried against the running app and it is not available here: with a
+ * sandbox that omits `allow-same-origin` the frame gets an opaque origin,
+ * so `iframe.contentDocument` is `null` and `iframe.contentWindow.document`
+ * throws `SecurityError: Blocked a frame with origin "…" from accessing a
+ * cross-origin frame`. The usual `postMessage` workaround needs
+ * `allow-scripts` inside the frame. Both attributes are refused — they
+ * are the XSS boundary, not a styling knob, and components/messageBody.ts
+ * plus its guard test exist to keep them refused. There is no third
+ * channel: `window.length`, `focus` and `postMessage` are all a
+ * cross-origin frame exposes, and none of them is a height.
+ *
+ * So the height is a BOUNDED ESTIMATE, computed from the message's own
+ * html by `estimatedBodyHeightPx` — see that function for the measured
+ * constants, the clamp, and why it is biased to over-estimate. The short
+ * version: one generous fixed height was tried first and rejected on
+ * sight, because a Gmail reply whose whole body is `<div><br></div>`
+ * became ~1786px of blank white. **The cost, stated plainly: the estimate
+ * is an estimate. When it runs high the message is followed by white
+ * space; when it runs low the frame scrolls internally, which is exactly
+ * what shipped before, so the worst case is the old behaviour and not a
+ * new one.** Both are worse than a frame that measured itself; neither is
+ * worth `allow-scripts`.
+ *
+ * **THE PHISHING BOUNDARY, AND WHERE IT WENT.** The user asked for the
+ * outline borders to go, and the header's card and its hairline went with
+ * them. The boundary those provided did NOT go: this frame is a white
+ * sheet with its own rounded corners, its own shadow, and a gap of app
+ * ground above it. Attacker-authored HTML therefore still announces
+ * itself as a separate object — in dark mode by a full white-on-near-black
+ * inversion, in light mode by elevation and the gap. What a message
+ * cannot do is paint something that reads as Postbox's own chrome, which
+ * is the property the old border was actually buying. A shadow and a gap
+ * buy it without a hairline; a borderless sheet flush against the header
+ * would not, which is why the gap is not negotiable decoration.
  *
  * The white ground is deliberate in BOTH themes — see BODY_STYLE in
  * components/messageBody.ts for why forcing dark inside here breaks real
  * mail rather than theming it.
  */
+/**
+ * The frame's OWN width, which the parent is free to read — it is our
+ * element; the opaque origin only hides what is INSIDE it.
+ *
+ * `useLayoutEffect` for the first read so the height is right on the
+ * first paint rather than after a visible reflow, and a `ResizeObserver`
+ * after it so rotating a phone or dragging a window re-estimates. Only
+ * the WIDTH is read, and state is only set when it actually changes —
+ * which is what keeps setting the frame's HEIGHT from feeding this
+ * observer back into itself.
+ */
+function useFrameWidth(ref: RefObject<HTMLIFrameElement | null>): number {
+  const [width, setWidth] = useState<number>(BODY_HEIGHT_BOUNDS_PX.referenceWidth);
+
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (element === null) return;
+
+    const read = (next: number) => {
+      if (next > 0) setWidth((current) => (Math.abs(current - next) < 1 ? current : next));
+    };
+
+    read(element.clientWidth);
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry !== undefined) read(entry.contentRect.width);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [ref]);
+
+  return width;
+}
+
 function BodyFrame({ html, subject }: BodyFrameProps) {
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
+  const width = useFrameWidth(frameRef);
+
+  // Memoised: the estimate walks a string that is routinely 60–90KB, and
+  // it must not be redone on every unrelated re-render of the reader.
+  // `srcDocFor` is memoised beside it for a different and sharper reason —
+  // handing React a fresh `srcDoc` string reloads the frame, so a new
+  // string on a width change would restart the message.
+  const height = useMemo(() => estimatedBodyHeightPx(html, width), [html, width]);
+  const doc = useMemo(() => srcDocFor(html), [html]);
+
   return (
     <iframe
+      ref={frameRef}
       // Named for what it contains: a screen reader user tabbing into an
       // unlabelled frame is told only "frame".
       title={`Message body: ${subject}`}
       sandbox={IFRAME_SANDBOX}
-      srcDoc={srcDocFor(html)}
+      srcDoc={doc}
       referrerPolicy="no-referrer"
-      className="block h-[70vh] min-h-96 w-full border-0 bg-white dark:bg-white"
+      // The height is a computed pixel value, so it is an inline style
+      // rather than a class — Tailwind cannot emit a utility for a number
+      // that only exists at runtime. Everything else stays in classes.
+      style={{ height: `${height}px` }}
+      className="block w-full rounded-lg border-0 bg-white shadow-sm dark:bg-white"
     />
   );
 }
@@ -193,7 +293,12 @@ function TextBody({ text }: TextBodyProps) {
   // has settled on. HTML mail is untouched: it renders in its own iframe
   // under the sender's own layout.
   return (
-    <pre className="max-w-[68ch] overflow-x-auto whitespace-pre-wrap break-words px-4 py-4 font-sans text-sm leading-relaxed text-neutral-800 dark:text-foreground sm:px-6">
+    // `px-1` rather than the old `px-4 sm:px-6`: that padding was the
+    // inside of a card that no longer exists, and kept here it would set
+    // plain-text mail on a different left edge from the subject above it.
+    // `overflow-x-auto` stays — it is what keeps a 400-character URL
+    // scrolling in this block instead of moving the page.
+    <pre className="max-w-[68ch] overflow-x-auto whitespace-pre-wrap break-words px-1 font-sans text-sm leading-relaxed text-neutral-800 dark:text-foreground">
       {text}
     </pre>
   );
@@ -252,10 +357,10 @@ export interface MessageViewProps {
 export default function MessageView({ message, now, onBack, onOpen }: MessageViewProps) {
   const [load, setLoad] = useState<LoadState>({ status: 'loading' });
   const [attempt, setAttempt] = useState(0);
-  // The Card, used only to find the <h2> inside it — see the focus
-  // effect below. Card forwards `ref` to its own <div>, so this needs no
-  // extra wrapper element.
-  const cardRef = useRef<HTMLDivElement | null>(null);
+  // The subject heading, for the focus effect below. A direct ref now
+  // that the card that used to wrap it (and that the old code reached
+  // through with a `querySelector`) is gone.
+  const headingRef = useRef<HTMLHeadingElement | null>(null);
 
   const accountId = message.account_id;
   const folder = message.folder;
@@ -289,7 +394,7 @@ export default function MessageView({ message, now, onBack, onOpen }: MessageVie
   // because App.tsx has already positioned the column for this view and
   // this must not fight it.
   useEffect(() => {
-    cardRef.current?.querySelector<HTMLElement>('h2')?.focus({ preventScroll: true });
+    headingRef.current?.focus({ preventScroll: true });
   }, [accountId, folder, uid]);
 
   const retry = useCallback(() => setAttempt((previous) => previous + 1), []);
@@ -306,37 +411,39 @@ export default function MessageView({ message, now, onBack, onOpen }: MessageVie
         Back to inbox
       </Button>
 
-      <Card ref={cardRef}>
-        <MessageHeader message={message} />
+      {/* NO CARD AROUND THE HEADER AND BODY any more. They were one
+          bordered box split by a hairline; they are now two things
+          separated by the `space-y-4` above — quiet chrome, then the
+          message as its own raised sheet. See MessageHeader and BodyFrame
+          for what replaced the border in each case, including why the
+          gap under the header is load-bearing rather than decorative. */}
+      <MessageHeader message={message} headingRef={headingRef} />
 
-        {load.status === 'loading' && (
-          <div className="space-y-3 px-4 py-4 sm:px-6" aria-busy="true">
-            <p className="sr-only" role="status">
-              Loading this message…
-            </p>
-            {Array.from({ length: SKELETON_LINE_COUNT }, (_, index) => (
-              <Skeleton key={index} className={index === 0 ? 'h-3 w-2/3' : 'h-3 w-full'} />
-            ))}
-          </div>
-        )}
+      {load.status === 'loading' && (
+        <div className="space-y-3 px-1" aria-busy="true">
+          <p className="sr-only" role="status">
+            Loading this message…
+          </p>
+          {Array.from({ length: SKELETON_LINE_COUNT }, (_, index) => (
+            <Skeleton key={index} className={index === 0 ? 'h-3 w-2/3' : 'h-3 w-full'} />
+          ))}
+        </div>
+      )}
 
-        {load.status === 'error' && (
-          <div className="px-4 py-4 sm:px-6">
-            <Alert variant="destructive">
-              <AlertDescription className="flex flex-wrap items-center gap-3">
-                <span>{load.message}</span>
-                <Button variant="outline" size="sm" onClick={retry}>
-                  Try again
-                </Button>
-              </AlertDescription>
-            </Alert>
-          </div>
-        )}
+      {load.status === 'error' && (
+        <Alert variant="destructive">
+          <AlertDescription className="flex flex-wrap items-center gap-3">
+            <span>{load.message}</span>
+            <Button variant="outline" size="sm" onClick={retry}>
+              Try again
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
 
-        {load.status === 'ready' && (
-          <MessageBody parsed={load.parsed} subject={message.subject || '(no subject)'} />
-        )}
-      </Card>
+      {load.status === 'ready' && (
+        <MessageBody parsed={load.parsed} subject={message.subject || '(no subject)'} />
+      )}
 
       {load.status === 'ready' && (
         <AttachmentList message={message} attachments={load.parsed.attachments} />

@@ -117,19 +117,64 @@ export function contentSecurityPolicyFor(): string {
  * dark mode; the message itself sits on a light card inside it, the way a
  * sheet of paper does. MessageView.tsx frames it as one.
  *
- * Everything else here is the minimum that keeps a real email from
- * overflowing its column, and no more: images bounded to the frame width,
- * long unbroken URLs allowed to wrap. Fixed-width (600px) table layouts
- * are deliberately NOT overridden — squashing them mangles the message,
- * so the frame scrolls horizontally instead.
+ * **THE REST OF THIS FILE IS THE NO-SIDEWAYS-PAN RULE SET, AND IT
+ * REVERSES A PREVIOUS DECISION.** This comment used to end: *"Fixed-width
+ * (600px) table layouts are deliberately NOT overridden — squashing them
+ * mangles the message, so the frame scrolls horizontally instead."* The
+ * user read mail on a phone and overruled it: *"should have no overflow
+ * and stuff for some reason i can move left to right on the emails fix
+ * that."* Measured against this user's own inbox at a 341px frame, two
+ * distinct causes were producing that pan, and each rule below answers
+ * one of them:
+ *
+ *  - **Long unbreakable tokens.** A GitHub notification carrying a code
+ *    diff measured 707px wide in a 341px frame with no element wider than
+ *    the frame — the overflow was inline content inside `<pre>`, where
+ *    `white-space: pre` disables wrapping outright and `overflow-wrap`
+ *    never gets a chance. `pre{white-space:pre-wrap}` plus
+ *    `overflow-wrap:anywhere` (which, unlike `break-word`, also shrinks
+ *    an element's min-content width) takes that message to exactly 341.
+ *
+ *  - **Fixed-width marketing layouts.** A `<table width="640">` whose
+ *    cells hold `<img width="640">`. `max-width:100%` cannot shrink
+ *    either: a percentage max-width is treated as `none` while the
+ *    browser computes min-content width, which is the very step that
+ *    sizes the table. The image cap is therefore expressed as a VIEWPORT
+ *    length, which does participate, and that alone dropped one real
+ *    message from 4382px to 3617px tall with every image legible.
+ *
+ * **WHERE A TABLE GENUINELY CANNOT REFLOW, IT SCROLLS IN ITS OWN BOX.**
+ * One measured message pins its width at 640 through a single `<tr>` of
+ * five `<td>`s (210+140+94+87+109) — a real five-across layout that no
+ * stylesheet can stack without destroying it. `body>table` therefore
+ * becomes a block-level scroll container: the tbody/tr/td inside keep
+ * table layout under an anonymous table box, so the design is untouched,
+ * but the overflow is confined to that one element and the DOCUMENT never
+ * pans. This is the standard wide-table treatment, and it is applied only
+ * to top-level tables — nested ones stay tables, or every multi-column
+ * email would collapse into a single column.
  */
 const BODY_STYLE = [
   'html{color-scheme:light;background:#ffffff}',
-  'body{margin:0;padding:16px;background:#ffffff;color:#111827;',
+  // Named so the image cap below can be derived from the padding instead
+  // of repeating it as a literal, and so the scrollbar allowance is a
+  // stated quantity rather than a mystery constant. `--scrollbar` exists
+  // because `100vw` includes the frame's own vertical scrollbar: without
+  // it, a message long enough to scroll pans sideways by exactly that
+  // width. Mobile overlay scrollbars are 0, so the allowance only ever
+  // makes an image marginally narrower than it could have been.
+  ':root{--pad:16px;--scrollbar:16px}',
+  'body{margin:0;padding:var(--pad);background:#ffffff;color:#111827;',
   "font:14px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;",
-  'overflow-wrap:break-word}',
-  'img{max-width:100%;height:auto}',
+  // `anywhere`, not `break-word`: the two wrap identically, but only
+  // `anywhere` also lowers min-content width, which is what lets a table
+  // cell holding a 400-character URL stop forcing the table wide.
+  'overflow-wrap:anywhere}',
+  'img{max-width:min(100%,calc(100vw - 2 * var(--pad) - var(--scrollbar)));height:auto}',
   'a{color:#1d4ed8}',
+  'table{max-width:100%}',
+  'pre{white-space:pre-wrap;overflow-wrap:anywhere}',
+  'body>table{display:block;max-width:100%;overflow-x:auto}',
 ].join('');
 
 /**
@@ -177,6 +222,143 @@ export function srcDocFor(html: string): string {
     '</body></html>'
   );
 }
+
+/**
+ * THE BODY FRAME'S HEIGHT, ESTIMATED FROM THE MESSAGE ITSELF.
+ *
+ * **WHY AN ESTIMATE AND NOT A MEASUREMENT.** A sandboxed iframe that
+ * omits `allow-same-origin` has an opaque origin: from the parent,
+ * `iframe.contentDocument` is `null` and `iframe.contentWindow.document`
+ * throws `SecurityError`. Verified against the running app, not assumed.
+ * The `postMessage` workaround needs `allow-scripts` inside the frame.
+ * Both attributes are the XSS boundary (see `IFRAME_SANDBOX`) and neither
+ * is on the table, so the frame's height has to be decided from the
+ * OUTSIDE, from the one thing the parent does hold: the html string.
+ *
+ * **WHY NOT JUST ONE GENEROUS FIXED HEIGHT.** That was the first answer,
+ * and looking at it in the browser killed it. Every html message in this
+ * user's inbox was rendered at a 341px width and measured: heights run
+ * from 40px to 8762px — a 200x spread. At the tall end of that spread a
+ * fixed frame still scrolls internally; at the short end it is far worse,
+ * because a Gmail reply whose entire body is `<div><br></div>` was
+ * rendering as **1786px of blank white** — roughly two phone screens of
+ * nothing between the message and its attachments. That is not a
+ * tradeoff, it is a bug with a tidy explanation.
+ *
+ * **THE SHAPE OF THE ANSWER.** A cheap structural estimate, CLAMPED at
+ * both ends. It is deliberately biased to over-estimate, because the two
+ * failure directions are not symmetric:
+ *
+ *  - Over-estimate → white space below the message. Ugly, bounded by
+ *    `MAX_BODY_HEIGHT_PX`.
+ *  - Under-estimate → the frame scrolls internally, which is exactly the
+ *    behaviour this whole change replaces. Bad, but never WORSE than what
+ *    shipped before, so the safety valve is the old bug and not a new one.
+ *
+ * **THE CONSTANTS ARE MEASURED, NOT INVENTED.** Each was checked against
+ * the rendered heights above, at a 341px frame — `REFERENCE_FRAME_WIDTH_PX`.
+ *
+ * **AND THE WIDTH MATTERS, WHICH IS WHY IT IS A PARAMETER.** The same mail
+ * measured at a 960px frame (the desktop reader column) renders 25–50%
+ * shorter, because prose reflows into fewer lines. A phone-tuned constant
+ * applied at desktop width put ~1000px of white under a 1025px message —
+ * the same bug this function exists to kill, just at the other breakpoint.
+ * Only the TEXT term is scaled: prose reflows with the column, whereas an
+ * image bounded by `img{max-width:…}` and a table row do not shrink in any
+ * way worth modelling. The frame's own width is something the parent may
+ * read freely — it is our element, not the sandboxed document inside it.
+ */
+
+/** The body's own 32px of padding plus a first/last block margin, and the
+ *  floor under a message that is structurally empty but not textually so. */
+const BASE_BODY_HEIGHT_PX = 160;
+
+/** Roughly 45 characters fit a 22px line at a phone-width column, so a
+ *  character costs ~0.5px of column height; real mail adds block margins
+ *  between paragraphs, and the measured figure lands near 0.7. */
+const PX_PER_TEXT_CHAR = 0.7;
+
+/** A typical email image once `img{max-width:…}` has bounded it. */
+const PX_PER_IMAGE = 90;
+
+/** One row of the table layout email HTML is still built out of. */
+const PX_PER_TABLE_ROW = 16;
+
+/** The frame width the constants above were measured at: a 375px phone
+ *  minus the reader column's gutters. The text term is scaled by
+ *  `REFERENCE_FRAME_WIDTH_PX / actualWidth`, so this is the width at which
+ *  that scaling is a no-op. */
+const REFERENCE_FRAME_WIDTH_PX = 341;
+
+/** Never shorter than this: a one-line message still wants to look like a
+ *  sheet rather than a strip, and the estimate is least reliable here. */
+const MIN_BODY_HEIGHT_PX = 240;
+
+/** Never taller than this. Past ~2200px the estimate has stopped being
+ *  informative and the frame is simply a long one; the remaining ~30% of
+ *  mail scrolls internally from here, which is the documented last
+ *  resort. */
+const MAX_BODY_HEIGHT_PX = 2200;
+
+/** Tags whose content never contributes rendered text. Stripped before
+ *  counting so a 40KB `<style>` block does not read as 40KB of prose. */
+const NON_RENDERING_TAGS = /<(script|style|head|title)[\s\S]*?<\/\1>/gi;
+
+/** Counts non-overlapping matches without allocating the match array. */
+function countMatches(html: string, pattern: RegExp): number {
+  let count = 0;
+  // `pattern` carries /g, so `exec` walks it; a fresh lastIndex keeps this
+  // function pure with respect to a shared literal.
+  pattern.lastIndex = 0;
+  while (pattern.exec(html) !== null) count += 1;
+  pattern.lastIndex = 0;
+  return count;
+}
+
+const IMG_TAG = /<img\b/gi;
+const ROW_TAG = /<tr\b/gi;
+
+/**
+ * The height, in CSS pixels, to give the body iframe for this message.
+ *
+ * Pure and framework-free so the suite can actually assert on it —
+ * client/CLAUDE.md's standing constraint is that no test here renders a
+ * component, which is precisely why the reader's one piece of arithmetic
+ * lives in this file rather than inside MessageView.tsx.
+ */
+export function estimatedBodyHeightPx(html: string, frameWidthPx: number): number {
+  // A zero or nonsense width (an unmounted frame, a display:none column)
+  // falls back to the reference rather than dividing by it — the estimate
+  // is then simply the phone-width one, which is the safe direction.
+  const width = Number.isFinite(frameWidthPx) && frameWidthPx > 0
+    ? frameWidthPx
+    : REFERENCE_FRAME_WIDTH_PX;
+  const rendering = html.replace(NON_RENDERING_TAGS, ' ');
+  // Tag-stripping rather than parsing: this only needs an order of
+  // magnitude, and DOMParser on attacker HTML for a layout hint would be
+  // a parser this feature does not otherwise need.
+  const textLength = rendering
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&[a-z#0-9]+;/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim().length;
+
+  const estimate =
+    BASE_BODY_HEIGHT_PX +
+    (textLength * PX_PER_TEXT_CHAR * REFERENCE_FRAME_WIDTH_PX) / width +
+    countMatches(rendering, IMG_TAG) * PX_PER_IMAGE +
+    countMatches(rendering, ROW_TAG) * PX_PER_TABLE_ROW;
+
+  return Math.round(Math.min(MAX_BODY_HEIGHT_PX, Math.max(MIN_BODY_HEIGHT_PX, estimate)));
+}
+
+/** The bounds `estimatedBodyHeightPx` clamps to, exported so the guard
+ *  test asserts the shipped numbers rather than a copy of them. */
+export const BODY_HEIGHT_BOUNDS_PX = {
+  min: MIN_BODY_HEIGHT_PX,
+  max: MAX_BODY_HEIGHT_PX,
+  referenceWidth: REFERENCE_FRAME_WIDTH_PX,
+} as const;
 
 /** Which of the three body surfaces the reader should render. */
 export type BodyKind = 'html' | 'text' | 'empty';

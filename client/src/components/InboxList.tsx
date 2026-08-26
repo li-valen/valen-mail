@@ -15,6 +15,7 @@ import { Skeleton } from '../ui/Skeleton';
 import { Settle, SettleGroup } from '../motion';
 import MessageRow from './MessageRow';
 import { groupByDay } from './inboxDates';
+import { LIST_DIVIDERS, LIST_SURFACE } from './listSurface';
 import { isCurrentSelection, resolveLoadMorePage } from './inboxPaging';
 import { messageKey } from './messageBody';
 
@@ -30,26 +31,9 @@ export type { DayGroup } from './inboxDates';
 const PAGE_SIZE = 50;
 const SKELETON_ROW_COUNT = 6;
 
-/**
- * The list surface, at two breakpoints.
- *
- * Above `lg:` it is the bordered, shadowed `Card` this list has always
- * been — the desktop treatment the user looked at and said *"it looks
- * pretty decent on mac"*, so it is deliberately unchanged. Below `lg:`
- * there is no card at all: no border, no shadow, no ground of its own,
- * because the user's Gmail-mobile reference separates rows with
- * whitespace and nothing else — *"dont do the outlined rectangles for the
- * inbox, have it be fluid, no lines and rounded"*.
- *
- * Applied as overrides on the `Card` atom rather than as a hand-rolled
- * `<div>` so there is still exactly one place the desktop card's values
- * are written down.
- */
-const LIST_SURFACE =
-  'rounded-none border-0 bg-transparent shadow-none lg:rounded-lg lg:border lg:bg-card lg:shadow-sm';
-
-/** The hairlines between rows, desktop only, for the same reason. */
-const LIST_DIVIDERS = 'lg:divide-y lg:divide-neutral-100 dark:lg:divide-border';
+/* `LIST_SURFACE` and `LIST_DIVIDERS` moved to ./listSurface.ts when the
+   reader's attachment and thread lists adopted the same treatment — see
+   that file for the reasoning, which is unchanged. */
 
 type LoadState =
   | { readonly status: 'loading' }

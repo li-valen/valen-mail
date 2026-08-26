@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BODY_HEIGHT_BOUNDS_PX,
   IFRAME_SANDBOX,
   attachmentUrl,
   bodyKind,
   contentSecurityPolicyFor,
+  estimatedBodyHeightPx,
   formatSize,
   isDownloadable,
   messageKey,
@@ -124,6 +126,81 @@ describe('srcDocFor — the sandboxed body document', () => {
   });
 });
 
+/**
+ * THE NO-SIDEWAYS-PAN RULE SET.
+ *
+ * The user read mail on a phone and reported the page moving left to
+ * right — *"should have no overflow and stuff for some reason i can move
+ * left to right on the emails fix that."* Each rule below was chosen
+ * against a MEASURED cause in this user's own inbox (see BODY_STYLE's
+ * comment for the numbers), so each is pinned individually: a future edit
+ * that drops one silently brings back one specific class of broken
+ * message, and "the CSS is still there somewhere" is not the assertion
+ * that catches it.
+ */
+describe('srcDocFor — the stylesheet that keeps a message inside its frame', () => {
+  const style = (): string => {
+    const match = /<style>([\s\S]*?)<\/style>/.exec(srcDocFor('<p>x</p>'));
+    expect(match).not.toBeNull();
+    return match![1]!;
+  };
+
+  it('breaks long unbreakable tokens with `anywhere`, not `break-word`', () => {
+    // Not interchangeable, and the difference is the whole fix: both wrap
+    // a long URL, but only `anywhere` also lowers min-content width,
+    // which is what stops a table cell holding one from forcing the
+    // table — and the document — wider than the frame.
+    expect(style()).toContain('overflow-wrap:anywhere');
+    expect(style()).not.toContain('overflow-wrap:break-word');
+  });
+
+  it('wraps <pre>, where white-space:pre otherwise defeats every wrap rule', () => {
+    // A GitHub notification carrying a code diff measured 707px wide in a
+    // 341px frame with no ELEMENT wider than the frame — the overflow was
+    // inline content inside <pre>. This rule took it to exactly 341.
+    expect(style()).toContain('pre{white-space:pre-wrap;overflow-wrap:anywhere}');
+  });
+
+  it('caps images with a viewport length, because a percentage cannot shrink a table', () => {
+    // The load-bearing detail. A percentage max-width is treated as
+    // `none` while the browser computes min-content width — the very step
+    // that sizes a <table width="640"> around an <img width="640"> — so
+    // `max-width:100%` alone leaves both at 640. A vw length participates.
+    const declaration = /img\{([^}]*)\}/.exec(style())?.[1] ?? '';
+    expect(declaration).toContain('100vw');
+    expect(declaration).toContain('height:auto');
+  });
+
+  it('bounds tables, and gives a top-level one its own horizontal scroll', () => {
+    // One measured message pins its width at 640 through a single <tr> of
+    // five <td>s — a real five-across layout no stylesheet can stack
+    // without destroying it. The top-level table becomes a block-level
+    // scroll container so that overflow is confined to that element and
+    // the DOCUMENT never pans.
+    expect(style()).toContain('table{max-width:100%}');
+    expect(style()).toContain('body>table{display:block;max-width:100%;overflow-x:auto}');
+  });
+
+  it('scopes the block-scroll treatment to TOP-LEVEL tables only', () => {
+    // `table{display:block}` unscoped would collapse every multi-column
+    // email into one column, because email layout IS nested tables.
+    // Anchored to the START of a rule, so it cannot be satisfied (or
+    // defeated) by the `body>table{...}` rule the previous test requires:
+    // what must not exist is a rule whose whole selector is `table`.
+    expect(style()).not.toMatch(/(?:^|[;}])table\{[^}]*display:block/);
+    expect(style()).toMatch(/body>table\{[^}]*display:block/);
+  });
+
+  it('leaves the sandbox and the policy untouched — this was a layout fix', () => {
+    // The pan was fixed inside the srcdoc's own stylesheet. Nothing about
+    // it needed, or got, a loosened frame.
+    const doc = srcDocFor('<p>x</p>');
+    expect(doc).not.toContain('allow-scripts');
+    expect(doc).not.toContain('allow-same-origin');
+    expect(IFRAME_SANDBOX).toBe('allow-popups allow-popups-to-escape-sandbox');
+  });
+});
+
 describe('contentSecurityPolicyFor', () => {
   it('emits one fixed policy, with img-src as the only permissive fetch directive', () => {
     const directives = contentSecurityPolicyFor().split('; ');
@@ -204,6 +281,121 @@ describe('the iframe sandbox, as actually emitted by client/src', () => {
     const buggy = '<iframe sandbox="allow-scripts allow-same-origin" srcDoc={doc} />';
     expect(sandboxAttributes(buggy)).toEqual(['allow-scripts allow-same-origin']);
     expect(sandboxAttributes(buggy).some((value) => value.includes('allow-scripts'))).toBe(true);
+  });
+});
+
+/**
+ * THE BODY FRAME'S HEIGHT.
+ *
+ * The parent cannot measure a frame it has deliberately given an opaque
+ * origin (`iframe.contentDocument` is `null`; `contentWindow.document`
+ * throws), and neither `allow-same-origin` nor `allow-scripts` is on the
+ * table — so this estimate is what decides how tall the message sits.
+ *
+ * These tests assert PROPERTIES rather than a table of numbers copied out
+ * of the implementation. A test that restated the formula would pass for
+ * any formula; what actually matters is the clamp, the direction of the
+ * bias, and the one case that made this function necessary — a body that
+ * is structurally present and visually empty.
+ */
+describe('estimatedBodyHeightPx — how tall the sandboxed body frame gets', () => {
+  const { min, max, referenceWidth } = BODY_HEIGHT_BOUNDS_PX;
+
+  /** At the reference width the text term scales by 1, so these read as
+   *  the phone-width estimate the constants were measured against. */
+  const heightOf = (html: string, width: number = referenceWidth): number =>
+    estimatedBodyHeightPx(html, width);
+
+  it('gives an empty Gmail body a short frame, not two screens of white', () => {
+    // THE CASE THIS FUNCTION EXISTS FOR. One generous fixed height was
+    // tried first, and this real message — the entire body of a "Pitch
+    // Deck" mail whose content is its attachment — rendered as ~1786px of
+    // blank white above its own attachment list.
+    const empty = '<div dir="ltr"><div class="gmail_default"><br></div></div>';
+    expect(heightOf(empty)).toBe(min);
+    expect(heightOf('')).toBe(min);
+  });
+
+  it('keeps a two-line reply near the floor rather than near the ceiling', () => {
+    const reply = '<p>Sounds good — merged and deployed. Thanks for the review!</p>';
+    expect(heightOf(reply)).toBeLessThan(600);
+  });
+
+  it('takes a long marketing mail to the ceiling', () => {
+    const long = '<tr><td>' + 'Summer savings, ends tonight. '.repeat(400) + '</td></tr>';
+    expect(heightOf(long)).toBe(max);
+  });
+
+  it('never escapes its bounds, whatever it is handed', () => {
+    for (const html of ['', '<br>', '<img>'.repeat(500), 'x'.repeat(200_000)]) {
+      const height = heightOf(html);
+      expect(height).toBeGreaterThanOrEqual(min);
+      expect(height).toBeLessThanOrEqual(max);
+    }
+  });
+
+  it('grows with text, with images and with table rows', () => {
+    // Monotonic in each input, which is the property that makes an
+    // over-estimate a WHITE-SPACE bug rather than a scrolling one.
+    const base = '<p>' + 'word '.repeat(120) + '</p>';
+    expect(heightOf(base + 'word '.repeat(120))).toBeGreaterThan(
+      heightOf(base),
+    );
+    expect(heightOf(base + '<img src="a.png">')).toBeGreaterThan(
+      heightOf(base),
+    );
+    expect(heightOf(base + '<tr><td>a</td></tr>')).toBeGreaterThan(
+      heightOf(base),
+    );
+  });
+
+  it('does not count a stylesheet or a script as prose', () => {
+    // Marketing mail routinely carries tens of KB of <style>. Counting it
+    // as text would push every such message to the ceiling and put the
+    // white space back.
+    const styled =
+      '<style>' + '.a{color:#fff;background:#000;padding:4px}'.repeat(400) + '</style><p>Hi</p>';
+    expect(heightOf(styled)).toBe(min);
+  });
+
+  it('is pure — the same html gives the same height every time', () => {
+    // The regexes it counts with are module-level and carry /g, so a
+    // leaked `lastIndex` would make the SECOND call on a message shorter
+    // than the first. That would show up as a frame that changes height
+    // when the reader re-renders.
+    const html = '<p>hello</p><img src="a.png"><tr><td>x</td></tr>';
+    expect(heightOf(html)).toBe(heightOf(html));
+    expect(heightOf(html)).toBe(heightOf(html));
+  });
+
+  it('shortens the same message in a wider column, because prose reflows', () => {
+    // The desktop half of the same bug. A phone-tuned constant applied at
+    // the 960px reader column put ~1000px of white under a 1025px message.
+    const prose = '<p>' + 'The quick brown fox jumps over the lazy dog. '.repeat(60) + '</p>';
+    expect(heightOf(prose, 960)).toBeLessThan(heightOf(prose, referenceWidth));
+  });
+
+  it('leaves images and table rows unscaled — those do not reflow with the column', () => {
+    // No text nodes at all: the text term is the only one that scales, so
+    // a stray character in a cell would make this assertion about prose.
+    const media = '<img src="a.png">'.repeat(6) + '<tr><td></td></tr>'.repeat(6);
+    expect(heightOf(media, 960)).toBe(heightOf(media, referenceWidth));
+  });
+
+  it('falls back to the reference width rather than dividing by a bad one', () => {
+    // An unmounted frame or a display:none column reports 0. Dividing by
+    // it would produce Infinity and, after the clamp, silently pin every
+    // message to the ceiling.
+    const prose = '<p>' + 'word '.repeat(80) + '</p>';
+    const expected = heightOf(prose, referenceWidth);
+    expect(heightOf(prose, 0)).toBe(expected);
+    expect(heightOf(prose, -50)).toBe(expected);
+    expect(heightOf(prose, Number.NaN)).toBe(expected);
+  });
+
+  it('returns whole pixels, and bounds that are sane relative to each other', () => {
+    expect(Number.isInteger(heightOf('<p>x</p>'))).toBe(true);
+    expect(min).toBeLessThan(max);
   });
 });
 

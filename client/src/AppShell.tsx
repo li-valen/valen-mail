@@ -540,7 +540,20 @@ export default function AppShell({
           </div>
         </header>
 
-        <main ref={contentRef} className="flex-1 overflow-y-auto" aria-busy={isBusy}>
+        {/* `overflow-x-hidden` alongside the vertical scroll: this is the
+            app's ONE scrolling element, and without it the pair computes to
+            `overflow: auto auto` — so anything that overflows the column
+            (a wide reader surface, a long unbroken string) lets the whole
+            app pan sideways. The user hit exactly that: *"should have no
+            overflow and stuff for some reason i can move left to right."*
+            Content that is legitimately wider than the column scrolls
+            inside its own box instead (the reader's `<pre>`, a message's
+            top-level table) — see components/messageBody.ts. */}
+        <main
+          ref={contentRef}
+          className="flex-1 overflow-y-auto overflow-x-hidden"
+          aria-busy={isBusy}
+        >
           {/* `lg:py-6`, down from `lg:py-8`: there is a 64px bar above
               this now, and 32px of column padding under it put the first
               day rule almost a hundred pixels from the top of the

@@ -4,6 +4,7 @@ import { getThread } from '../api';
 import type { InboxMessage } from '../api';
 import { Card } from '../ui/Card';
 import MessageRow from './MessageRow';
+import { LIST_DIVIDERS, LIST_SURFACE } from './listSurface';
 import { messageKey } from './messageBody';
 
 interface ThreadContextProps {
@@ -64,8 +65,12 @@ export default function ThreadContext({ message, now, onOpen }: ThreadContextPro
         <MessagesSquare className="h-3.5 w-3.5" aria-hidden="true" />
         Also in this thread ({others.length})
       </h3>
-      <Card>
-        <ul className="divide-y divide-neutral-100 dark:divide-border">
+      {/* Borderless below `lg:`, exactly as the inbox list these rows
+          come from — see ./listSurface.ts. Without this the thread was
+          the one place a `MessageRow` still sat inside an outlined box on
+          a phone. */}
+      <Card className={LIST_SURFACE}>
+        <ul className={LIST_DIVIDERS}>
           {others.map((other) => (
             <MessageRow key={messageKey(other)} message={other} now={now} onOpen={onOpen} />
           ))}

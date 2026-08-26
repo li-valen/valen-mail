@@ -2,6 +2,7 @@ import { Paperclip } from 'lucide-react';
 import type { InboxMessage, MessageAttachment } from '../api';
 import { Badge } from '../ui/Badge';
 import { Card } from '../ui/Card';
+import { LIST_DIVIDERS, LIST_SURFACE } from './listSurface';
 import { attachmentUrl, formatSize, isDownloadable } from './messageBody';
 
 /**
@@ -36,7 +37,7 @@ function AttachmentEntry({ message, attachment }: AttachmentEntryProps) {
   const name = attachment.filename ?? '(unnamed attachment)';
 
   return (
-    <li className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-sm">
+    <li className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm lg:px-4">
       <Paperclip className="h-4 w-4 shrink-0 text-neutral-400 dark:text-muted-foreground" aria-hidden="true" />
       <span className="min-w-0 flex-1 truncate text-neutral-900 dark:text-foreground">{name}</span>
       {attachment.isInline && (
@@ -92,8 +93,13 @@ export default function AttachmentList({ message, attachments }: AttachmentListP
           Items marked embedded are referenced from inside the message body and are not displayed there.
         </p>
       )}
-      <Card>
-        <ul className="divide-y divide-neutral-100 dark:divide-border">
+      {/* Same borderless-on-mobile surface as the inbox list and the
+          thread rows below — *"Try to remove the outline borders where
+          possible makes it look janky."* Below `lg:` the attachments are
+          rows on the app's own ground with no card and no hairlines; the
+          desktop card is unchanged. */}
+      <Card className={LIST_SURFACE}>
+        <ul className={LIST_DIVIDERS}>
           {attachments.map((attachment, index) => (
             <AttachmentEntry
               // Part ids are unique when present, but the "not
