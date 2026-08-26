@@ -672,3 +672,97 @@ describe('getting mail out of the inbox', () => {
     expect(result.chord).toBeNull();
   });
 });
+
+describe('x ticks the row under the cursor', () => {
+  it('resolves to toggle-selection from the list', () => {
+    const result = resolveShortcut(press('x'), state({ isReaderOpen: false, selectedIndex: 2 }));
+    expect(result.action).toEqual({ kind: 'toggle-selection' });
+    expect(result.preventDefault).toBe(true);
+  });
+
+  it('carries no index — the cursor already names the row', () => {
+    // THE SELECTION IS NOT THE CURSOR. An action that carried an index
+    // would invite a caller to keep the two in step, which is the one
+    // thing they must never be: `j`/`k` move the cursor and must leave
+    // every tick exactly where it was.
+    const result = resolveShortcut(press('x'), state({ isReaderOpen: false, selectedIndex: 7 }));
+    expect(Object.keys(result.action)).toEqual(['kind']);
+  });
+
+  it('is refused from inside the reader', () => {
+    // The list is `hidden` behind the reader, so a tick made there would
+    // change a checkbox and a count that are both off screen — worse than
+    // a key that does nothing, because something DID happen.
+    const result = resolveShortcut(press('x'), state({ isReaderOpen: true, selectedIndex: 2 }));
+    expect(result.action).toEqual({ kind: 'none' });
+    expect(result.preventDefault).toBe(false);
+  });
+
+  it('does nothing before the cursor exists', () => {
+    const result = resolveShortcut(
+      press('x'),
+      state({ isReaderOpen: false, listLength: 10, selectedIndex: -1 }),
+    );
+    expect(result.action).toEqual({ kind: 'none' });
+    expect(result.preventDefault).toBe(false);
+  });
+
+  it('does nothing on an empty list', () => {
+    const result = resolveShortcut(
+      press('x'),
+      state({ isReaderOpen: false, listLength: 0, selectedIndex: 0 }),
+    );
+    expect(result.action).toEqual({ kind: 'none' });
+  });
+
+  it('never fires from behind the help overlay', () => {
+    const result = resolveShortcut(press('x'), state({ isHelpOpen: true }));
+    expect(result.action).toEqual({ kind: 'none' });
+  });
+
+  it('never fires while the composer is open', () => {
+    const result = resolveShortcut(press('x'), state({ isComposerOpen: true }));
+    expect(result.action).toEqual({ kind: 'none' });
+  });
+
+  it('never fires while the user is typing', () => {
+    // `x` is a very common letter. A search for "linux" must not tick
+    // five rows on the way through.
+    const result = resolveShortcut(press('x', { isTyping: true }), state());
+    expect(result.action).toEqual({ kind: 'none' });
+  });
+
+  it('leaves ⌘X and Ctrl-X to the platform', () => {
+    for (const modifier of ['metaKey', 'ctrlKey', 'altKey'] as const) {
+      const result = resolveShortcut(press('x', { [modifier]: true }), state());
+      expect(result.action).toEqual({ kind: 'none' });
+      expect(result.preventDefault).toBe(false);
+    }
+  });
+
+  it('leaves Shift-X alone, like every other letter here', () => {
+    const result = resolveShortcut(press('x', { shiftKey: true }), state());
+    expect(result.action).toEqual({ kind: 'none' });
+  });
+
+  it('cancels a stray g and still ticks — the chord falls through', () => {
+    const result = resolveShortcut(
+      press('x'),
+      state({ chord: chordAt(NOW - 100), isReaderOpen: false, selectedIndex: 2 }),
+    );
+    expect(result.action).toEqual({ kind: 'toggle-selection' });
+    expect(result.chord).toBeNull();
+  });
+});
+
+describe('moving the cursor never disturbs the selection', () => {
+  it('j and k emit a cursor move and nothing about selection', () => {
+    // The guarantee stated as a test rather than only as a comment: the
+    // resolver has no way to express "and also change the ticks", so
+    // there is no arrangement of j/k that can.
+    for (const key of ['j', 'k', 'ArrowDown', 'ArrowUp']) {
+      const result = resolveShortcut(press(key), state({ selectedIndex: 3 }));
+      expect(result.action.kind).toBe('select');
+    }
+  });
+});

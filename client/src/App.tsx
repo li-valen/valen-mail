@@ -24,7 +24,10 @@ import {
   type MoveDestination,
   type PendingUndo,
 } from './mailboxActions';
-import UndoNotice from './components/UndoNotice';
+import UndoNotice, { UndoBar } from './components/UndoNotice';
+import BulkActionBar from './components/BulkActionBar';
+import { moveTargetsFor } from './bulkActions';
+import { useBulkSelection } from './useBulkSelection';
 import { replyKey } from './replyDraft';
 import type { ReplyMode, ReplySource } from './replyDraft';
 import Compose, { DISCARD_DRAFT_PROMPT } from './components/Compose';
@@ -33,7 +36,13 @@ import InboxList from './components/InboxList';
 import MessageView from './components/MessageView';
 import SentNotice from './components/SentNotice';
 import { messageKey } from './components/messageBody';
-import { resolveStar, withStar, withoutStar } from './components/messageFlags';
+import {
+  resolveStar,
+  withFlagOverrides,
+  withoutFlagOverrides,
+  withStar,
+  withoutStar,
+} from './components/messageFlags';
 import ShortcutHelp from './components/ShortcutHelp';
 import { NO_SELECTION, reconcileSelection, snapshotSelection } from './keyboard/selection';
 import type { SelectionResult } from './keyboard/selection';
@@ -304,6 +313,19 @@ export default function App() {
    *  available for a write path. */
   const [starError, setStarError] = useState<string | null>(null);
   /**
+   * Read-state this session has changed, keyed by `messageKey` and drawn
+   * over whatever `flags` says (components/messageFlags.ts's
+   * `resolveUnread`).
+   *
+   * The `starOverrides` contract exactly, for `\Seen` instead of
+   * `\Flagged`, including the revert rule: a failed write DELETES the
+   * entry rather than inverting it, so the row falls back to the truth.
+   * Written today only by the bulk bar's mark read/unread — there is no
+   * single-message read control yet, and this is deliberately the same
+   * mechanism one would use.
+   */
+  const [seenOverrides, setSeenOverrides] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+  /**
    * Rows this session has archived, trashed or reported, keyed by
    * `messageKey` and drawn over the list by filtering
    * (components/InboxList.tsx's `visible`).
@@ -364,6 +386,17 @@ export default function App() {
   /** Which reply attempt is current — see `startReply` on why a token
    *  rather than an abort. */
   const replyAttemptRef = useRef(0);
+  /**
+   * The bulk bar's "dismiss the undo offer", read by `performMove`.
+   *
+   * A REF because of declaration order and stability, not laziness:
+   * `performMove` is defined above `useBulkSelection` (it is what the
+   * reader's buttons and the single-message keyboard path call) and is
+   * deliberately dependency-free, so it cannot close over the hook's
+   * handler. The ref is written on every render, immediately after the
+   * hook returns.
+   */
+  const dismissBulkUndoRef = useRef<() => void>(() => {});
 
   // Stable identity: InboxList lists this in an effect's dependency array.
   //
@@ -758,8 +791,11 @@ export default function App() {
 
       const key = messageKey(target);
       // A second move supersedes the first undo offer rather than queuing
-      // behind it — see `pendingUndo`.
+      // behind it — see `pendingUndo`. The BULK bar is dismissed for the
+      // same reason and in the same breath: two undo bars would leave the
+      // user pressing "Undo" without knowing which one it applies to.
       setPendingUndo(null);
+      dismissBulkUndoRef.current();
       setHiddenKeys((hidden) => hideMessage(hidden, key));
 
       moveMessage(target.account_id, target.folder, target.uid, { to: destination }).then(
@@ -847,16 +883,84 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [pendingUndo]);
 
-  /** `e`/`#`: the same "which message is in hand" rule `s` and the reply
-   *  trio use, and the same belt-and-braces early return —
-   *  keyboard/shortcuts.ts has already guaranteed one exists. */
+  /**
+   * BULK SELECTION — which rows are ticked, and what a batch does to
+   * them.
+   *
+   * Every decision lives in the pure modules the hook calls
+   * (bulkSelection.ts, bulkRunner.ts, bulkActions.ts); the hook holds the
+   * state and the async, and App.tsx holds only the four overlays a batch
+   * has to write through, because InboxList and the reader both draw from
+   * them and neither can own state the other renders.
+   *
+   * The two `useCallback`s below take ARRAYS of keys rather than being
+   * called per row: forty separate `setHiddenKeys` updates would be forty
+   * new `Set` identities and forty passes over a fifty-row list.
+   */
+  const hideKeys = useCallback((keys: readonly string[]) => {
+    if (keys.length === 0) return;
+    setHiddenKeys((hidden) => {
+      const next = new Set(hidden);
+      for (const key of keys) next.add(key);
+      return next;
+    });
+  }, []);
+
+  const revealKeys = useCallback((keys: readonly string[]) => {
+    if (keys.length === 0) return;
+    setHiddenKeys((hidden) => {
+      const next = new Set(hidden);
+      for (const key of keys) next.delete(key);
+      return next;
+    });
+  }, []);
+
+  const applySeen = useCallback((keys: readonly string[], seen: boolean) => {
+    setSeenOverrides((overrides) => withFlagOverrides(overrides, keys, seen));
+  }, []);
+
+  const revertSeen = useCallback((keys: readonly string[]) => {
+    setSeenOverrides((overrides) => withoutFlagOverrides(overrides, keys));
+  }, []);
+
+  const clearSingleUndo = useCallback(() => setPendingUndo(null), []);
+
+  const bulk = useBulkSelection({
+    messages: visibleMessages,
+    cursorMessage: visibleMessages[cursor.index] ?? null,
+    hideKeys,
+    revealKeys,
+    setSeen: applySeen,
+    revertSeen,
+    clearSingleUndo,
+  });
+  dismissBulkUndoRef.current = bulk.dismissUndo;
+
+  /**
+   * `e`/`#`: the same "which message is in hand" rule `s` and the reply
+   * trio use, WIDENED so that a selection wins over the cursor.
+   *
+   * The three cases and the reasoning behind them live in
+   * bulkActions.ts's `moveTargetsFor`, which is where they are tested;
+   * this is the switch over its answer and nothing else. Note that a
+   * SELECTION of one still takes the batch path — otherwise the tick and
+   * the bar would be left on screen over a row that has already gone.
+   */
   const moveMessageInHand = useCallback(
     (destination: MoveDestination) => {
-      const target = selected ?? visibleMessages[cursor.index];
-      if (target === undefined) return;
-      performMove(target, destination);
+      const targets = moveTargetsFor({
+        inHand: selected ?? visibleMessages[cursor.index] ?? null,
+        isReaderOpen: selected !== null,
+        selection: bulk.selection,
+      });
+      if (targets.kind === 'none') return;
+      if (targets.kind === 'one') {
+        performMove(targets.message, destination);
+        return;
+      }
+      bulk.move(destination);
     },
-    [selected, visibleMessages, cursor.index, performMove],
+    [selected, visibleMessages, cursor.index, performMove, bulk],
   );
 
   /** The reader's two buttons, bound to the message the reader is
@@ -1005,6 +1109,7 @@ export default function App() {
       onToggleStar: toggleStar,
       onReply: replyToMessageInHand,
       onMailboxMove: moveMessageInHand,
+      onToggleSelection: bulk.toggleCursorRow,
       onGoFolder: changeFolder,
       onOpenHelp: () => setIsHelpOpen(true),
       onCloseHelp: () => setIsHelpOpen(false),
@@ -1174,6 +1279,50 @@ export default function App() {
           hidden row so a SECOND archive re-plays the entrance rather than
           silently swapping the text under an animation that already ran —
           same reasoning, same shape, as `sentNotice` above. */}
+      {/* THE BATCH RECEIPT. Same banner shape and same slot as the
+          single-message one below, because they are the same statement at
+          two sizes — and never both at once: starting either dismisses
+          the other, so the user is never asked to guess which "Undo"
+          they are looking at.
+
+          The Undo button is ABSENT rather than disabled when a batch
+          produced no tickets at all (every message was already gone from
+          the mailbox): the rows are correctly hidden and there is
+          genuinely nothing to put back. Keyed on the batch so a second
+          one replays the entrance rather than swapping the text under an
+          animation that already ran. */}
+      {isAuthorized && bulk.undo !== null && bulk.undoNotice !== null && (
+        <Settle key={`bulk-undo-${bulk.undo.id}`}>
+          <UndoBar
+            notice={bulk.undoNotice}
+            undoLabel={bulk.undoLabel ?? 'Undo'}
+            isUndoable={bulk.isUndoable}
+            onUndo={bulk.runUndo}
+            onDismiss={bulk.dismissUndo}
+          />
+        </Settle>
+      )}
+
+      {/* **THE PARTIAL BATCH, SAID OUT LOUD.** The one banner in this app
+          whose absence would be a data-integrity bug rather than a
+          usability one: thirty-seven of forty archived and three not,
+          with the three silently still in the inbox, is a state the user
+          cannot detect by looking. The rows have ALREADY come back by the
+          time this renders, so this explains rows that are visibly there
+          rather than announcing something invisible. */}
+      {isAuthorized && bulk.error !== null && (
+        <Settle>
+          <Alert variant="destructive" className="mb-6">
+            <AlertDescription className="flex flex-wrap items-center gap-3">
+              <span className="flex-1 min-w-[12rem]">{bulk.error}</span>
+              <Button variant="ghost" size="sm" onClick={bulk.dismissError}>
+                Dismiss
+              </Button>
+            </AlertDescription>
+          </Alert>
+        </Settle>
+      )}
+
       {isAuthorized && pendingUndo !== null && (
         <Settle key={`undo-${pendingUndo.key}`}>
           <UndoNotice
@@ -1288,6 +1437,23 @@ export default function App() {
                 tab order and the accessibility tree too. */}
             <div className={cn('flex gap-6', selected !== null && 'hidden')}>
               <div className="min-w-0 flex-1">
+                {/* ONLY WHEN SOMETHING IS TICKED — see BulkActionBar's
+                    header on why it is absent rather than disabled. It
+                    sits INSIDE the list column rather than up with the
+                    banners so that its sticky top edge is the list's own
+                    scroll context and its select-all box lines up with
+                    the checkbox column of the rows beneath it. */}
+                {bulk.count > 0 && (
+                  <BulkActionBar
+                    count={bulk.count}
+                    countLabel={bulk.countLabel}
+                    isEverythingSelected={bulk.isEverythingSelected}
+                    onSelectAll={bulk.selectAllVisible}
+                    onClear={bulk.clear}
+                    onMove={bulk.move}
+                    onMarkSeen={bulk.markSeen}
+                  />
+                )}
                 <InboxList
                   filter={filter}
                   onAccountsChange={handleAccountsChange}
@@ -1300,6 +1466,9 @@ export default function App() {
                   starOverrides={starOverrides}
                   hiddenKeys={hiddenKeys}
                   onMailboxMove={moveFromRow}
+                  seenOverrides={seenOverrides}
+                  selectedKeys={bulk.selectedKeys}
+                  onToggleSelect={bulk.toggle}
                 />
               </div>
               <OpensRail feed={feed} onOpenEvent={handleOpenEvent} />

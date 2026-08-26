@@ -53,8 +53,23 @@ export const SHORTCUT_HELP: readonly ShortcutHelpGroup[] = [
       // shrink. "Archive" rather than "Remove from Inbox" because that
       // is the word the user already knows — and it is accurate: the
       // message stays in All Mail, it is not deleted.
-      { keys: ['e'], description: 'Archive' },
-      { keys: ['#'], description: 'Move to Trash' },
+      //
+      // The parenthetical is not decoration: from the list these keys act
+      // on the WHOLE SELECTION when there is one (../bulkActions.ts's
+      // `moveTargetsFor`), and a user who has ticked forty rows needs to
+      // know that `e` is about to take all forty rather than the one
+      // under the cursor.
+      { keys: ['e'], description: 'Archive (or archive the selection)' },
+      { keys: ['#'], description: 'Move to Trash (or move the selection)' },
+    ],
+  },
+  {
+    title: 'Selecting several',
+    entries: [
+      // Gmail's own binding. Deliberately absent from the reader — see
+      // ./shortcuts.ts's `x` case for why a tick made behind the reader
+      // would be worse than no tick at all.
+      { keys: ['x'], description: 'Select or deselect this message' },
     ],
   },
   {

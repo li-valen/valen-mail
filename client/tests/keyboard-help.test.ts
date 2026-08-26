@@ -33,6 +33,7 @@ const DISPLAY_TO_EVENT_KEY: Readonly<Record<string, string>> = {
   s: 's',
   e: 'e',
   '#': '#',
+  x: 'x',
   g: 'g',
   i: 'i',
   t: 't',
@@ -180,6 +181,7 @@ describe('the help table advertises every shortcut that exists', () => {
         's',
         't',
         'u',
+        'x',
       ].sort(),
     );
   });

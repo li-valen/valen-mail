@@ -374,26 +374,50 @@ describe('which messages a keystroke acts on', () => {
   const selection = [ROWS[1]!, ROWS[2]!];
 
   it('acts on the whole selection from the list', () => {
-    expect(moveTargetsFor({ inHand, isReaderOpen: false, selection })).toEqual(selection);
+    expect(moveTargetsFor({ inHand, isReaderOpen: false, selection })).toEqual({
+      kind: 'selection',
+      messages: selection,
+    });
   });
 
   it('acts on the message in hand when nothing is selected', () => {
-    expect(moveTargetsFor({ inHand, isReaderOpen: false, selection: [] })).toEqual([inHand]);
+    expect(moveTargetsFor({ inHand, isReaderOpen: false, selection: [] })).toEqual({
+      kind: 'one',
+      message: inHand,
+    });
   });
 
   it('acts on the OPEN message from the reader, even with rows ticked behind it', () => {
     // The reader has replaced the list, so the ticks are not on screen.
     // Archiving forty invisible rows because the user pressed `e` while
     // reading one message is the opposite of what they asked for.
-    expect(moveTargetsFor({ inHand, isReaderOpen: true, selection })).toEqual([inHand]);
+    expect(moveTargetsFor({ inHand, isReaderOpen: true, selection })).toEqual({
+      kind: 'one',
+      message: inHand,
+    });
   });
 
   it('acts on nothing when there is nothing in hand and nothing ticked', () => {
-    expect(moveTargetsFor({ inHand: null, isReaderOpen: false, selection: [] })).toEqual([]);
+    expect(moveTargetsFor({ inHand: null, isReaderOpen: false, selection: [] })).toEqual({
+      kind: 'none',
+    });
   });
 
   it('still acts on the selection when the cursor has never moved', () => {
-    expect(moveTargetsFor({ inHand: null, isReaderOpen: false, selection })).toEqual(selection);
+    expect(moveTargetsFor({ inHand: null, isReaderOpen: false, selection })).toEqual({
+      kind: 'selection',
+      messages: selection,
+    });
+  });
+
+  it('names the SELECTION path even for a selection of exactly one', () => {
+    // The bug the `kind` exists to prevent: a one-row selection sent down
+    // the single-message path would leave the tick and the bar on screen
+    // over a row that has already gone.
+    expect(moveTargetsFor({ inHand, isReaderOpen: false, selection: [ROWS[1]!] })).toEqual({
+      kind: 'selection',
+      messages: [ROWS[1]!],
+    });
   });
 });
 

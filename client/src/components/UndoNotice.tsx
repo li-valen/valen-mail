@@ -39,6 +39,46 @@ interface UndoNoticeProps {
 
 export default function UndoNotice({ undo, onUndo, onDismiss }: UndoNoticeProps) {
   return (
+    <UndoBar
+      notice={moveNoticeFor(undo.destination)}
+      undoLabel={undoLabelFor(undo.destination)}
+      onUndo={() => onUndo(undo)}
+      onDismiss={onDismiss}
+    />
+  );
+}
+
+export interface UndoBarProps {
+  /** What happened, past tense. */
+  readonly notice: string;
+  /** The Undo button's ACCESSIBLE NAME — "Undo" alone is fine beside a
+   *  notice that names the action, and is not fine when read on its own
+   *  by a screen reader that has moved past the text. */
+  readonly undoLabel: string;
+  readonly onUndo: () => void;
+  readonly onDismiss: () => void;
+  /**
+   * False when there is nothing the server could put back.
+   *
+   * The button is then ABSENT rather than disabled: a bulk archive of
+   * messages that were all already gone really did change the inbox (the
+   * rows are correctly hidden) and really has no way back, and a greyed
+   * "Undo" would read as a temporary state the user could wait out.
+   */
+  readonly isUndoable?: boolean;
+}
+
+/**
+ * The banner shape both undo notices share — the single-message one above
+ * and components/BulkUndoNotice.tsx's batch form.
+ *
+ * Extracted rather than copied because the two differ in exactly two
+ * strings and one boolean, and a pasted second copy is how the batch bar
+ * ends up with a different focus ring, a different wrap behaviour at
+ * 375px, or the `role="status"` override quietly missing.
+ */
+export function UndoBar({ notice, undoLabel, onUndo, onDismiss, isUndoable = true }: UndoBarProps) {
+  return (
     <Alert role="status" className="mb-6">
       <AlertDescription className="flex flex-wrap items-center gap-3">
         {/* `min-w-0`, NOT the `min-w-[12rem]` the other banners use.
@@ -46,23 +86,17 @@ export default function UndoNotice({ undo, onUndo, onDismiss }: UndoNoticeProps)
             three-word receipt and TWO controls, and at 375px a 12rem
             floor pushed "Dismiss" onto a line of its own. The text here
             is never long enough to need a floor. */}
-        <span className="min-w-0 flex-1">{moveNoticeFor(undo.destination)}</span>
+        <span className="min-w-0 flex-1">{notice}</span>
         {/* `outline`, not `ghost`: this is the one control on the banner
             the user is meant to find in a hurry, and a ghost button
             beside a "Dismiss" ghost button reads as two equal options
-            rather than an action and a way out. The accessible name says
-            what will be undone — "Undo" alone is fine beside a notice
-            that names the action, and is not fine when read on its own by
-            a screen reader that has moved past the text. */}
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => onUndo(undo)}
-          aria-label={undoLabelFor(undo.destination)}
-        >
-          <Undo2 aria-hidden="true" />
-          Undo
-        </Button>
+            rather than an action and a way out. */}
+        {isUndoable && (
+          <Button variant="outline" size="sm" onClick={onUndo} aria-label={undoLabel}>
+            <Undo2 aria-hidden="true" />
+            Undo
+          </Button>
+        )}
         <Button variant="ghost" size="sm" onClick={onDismiss}>
           Dismiss
         </Button>

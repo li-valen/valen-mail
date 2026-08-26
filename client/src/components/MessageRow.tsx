@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Archive, Paperclip, Star, Trash2 } from 'lucide-react';
+import { Archive, Check, Paperclip, Star, Trash2 } from 'lucide-react';
 import type { InboxMessage } from '../api';
 import type { MoveDestination } from '../mailboxActions';
 import { Badge } from '../ui/Badge';
@@ -8,6 +8,7 @@ import { formatWhen } from './inboxDates';
 import { messageKey } from './messageBody';
 import { rowLayoutFor } from './messageRowLayout';
 import { isUnread } from './messageFlags';
+import { SELECT_BOX, SelectBox } from './SelectBox';
 
 export interface MessageRowProps {
   readonly message: InboxMessage;
@@ -72,6 +73,42 @@ export interface MessageRowProps {
    * surface does not support the action.
    */
   readonly onMailboxMove?: (message: InboxMessage, destination: MoveDestination) => void;
+  /**
+   * Whether this row is READ — resolved by the caller through
+   * ./messageFlags.ts's `resolveUnread`, so a bulk mark-read that the
+   * mailbox has not confirmed yet draws the same as a real one.
+   *
+   * A PROP RATHER THAN A LOCAL `isUnread(message)` call, and the change
+   * is the same one the star made earlier: the row's `flags` are whatever
+   * sync/ last wrote, and an optimistic override lives in App.tsx where
+   * three different surfaces can read it. A row that derived this itself
+   * would ignore the override and stay bold after the user marked it
+   * read.
+   *
+   * **UNSET FALLS BACK TO `flags`, NOT TO "READ".** `isStarred` may
+   * default to `false` because an absent star is the ordinary case; an
+   * absent READ-state is not — defaulting it would silently un-bold every
+   * unread row in ThreadContext.tsx, which renders this component without
+   * an overrides map and would have no way to notice.
+   */
+  readonly isUnread?: boolean;
+  /**
+   * Tick or untick this row for a bulk action, or `undefined` where bulk
+   * selection is not offered.
+   *
+   * ABSENT, NOT INERT, outside the inbox — the same treatment
+   * `onMailboxMove` gets and for the same reason: archiving from Sent
+   * removes the SENT label on Gmail (../mailboxActions.ts's
+   * `canMoveFrom`), so a tick there would arm an action the bar must
+   * refuse. Decided per ROW, because the Starred view merges folders.
+   */
+  readonly onToggleSelect?: (message: InboxMessage) => void;
+  /** True when this row is ticked. */
+  readonly isBulkSelected?: boolean;
+  /** True when ANY row is ticked. Keeps every box visible for the length
+   *  of a selection, so the user can see what they are adding to instead
+   *  of hunting for boxes that only exist under the pointer. */
+  readonly isSelecting?: boolean;
 }
 
 /**
@@ -295,10 +332,18 @@ export default function MessageRow({
   tabIndex,
   onSelect,
   onMailboxMove,
+  isUnread: isUnreadOverride,
+  onToggleSelect,
+  isBulkSelected = false,
+  isSelecting = false,
 }: MessageRowProps) {
   const { sender, subject, preview, initial, tone } = rowLayoutFor(message);
-  const unread = isUnread(message);
+  const unread = isUnreadOverride ?? isUnread(message);
   const when = formatWhen(message.date, now);
+  const isSelectable = onToggleSelect !== undefined;
+  // One string for the box and for the avatar's own hit target, so the
+  // two ways into the same action cannot announce themselves differently.
+  const selectLabel = `${isBulkSelected ? 'Deselect' : 'Select'}: ${subject}`;
 
   return (
     // `group` and `relative` exist ONLY for the hover actions below: the
@@ -378,15 +423,23 @@ export default function MessageRow({
           {/* `aria-hidden`: the circle is a recognition aid for the eye,
               and its letter is the first letter of the sender name the
               next line already announces. Reading "K, Kate Bell" is
-              noise. */}
+              noise. When the row is ticked it becomes a filled check —
+              GMAIL'S OWN MOBILE PATTERN, and the reason there is no
+              permanent checkbox column on a phone: the user asked for the
+              mobile list to stay borderless and free of chrome, and a
+              circle that is already there costs nothing to reuse. The
+              TAP TARGET is a transparent sibling below, because a
+              <button> cannot live inside the row's own <button>. */}
           <span
             aria-hidden="true"
             className={cn(
               'flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-semibold',
-              AVATAR_TONES[tone] ?? AVATAR_TONES[0],
+              isBulkSelected
+                ? 'bg-primary text-primary-foreground'
+                : (AVATAR_TONES[tone] ?? AVATAR_TONES[0]),
             )}
           >
-            {initial}
+            {isBulkSelected ? <Check className="h-4 w-4" strokeWidth={3} /> : initial}
           </span>
 
           <span className="min-w-0 flex-1">
@@ -467,8 +520,30 @@ export default function MessageRow({
           </span>
         </span>
 
-        {/* ── lg and up: the desktop row, unchanged ────────────────── */}
+        {/* ── lg and up: the desktop row ───────────────────────────── */}
         <span className="hidden h-11 w-full items-center gap-3 px-4 lg:flex">
+          {/* THE CHECKBOX COLUMN, and it is RESERVED RATHER THAN
+              CONDITIONAL.
+
+              A 16px slot plus the existing `gap-3` puts the sender name
+              at 48px from the row's edge, and it stays there whether or
+              not a box is currently drawn — because the box fades in on
+              `opacity`, never on `display`. A column that appeared on
+              hover would slide every sender name 28px sideways the moment
+              a pointer entered the list, which is the layout-shift
+              failure this file already avoids for the selection ring (an
+              inset shadow, not a border) and for the hover actions
+              (`invisible`, not `hidden`).
+
+              InboxList's day heading carries the matching `lg:pl-12` so
+              the label still sits on the sender's own vertical line — the
+              alignment a89b71..a187527 fixed, kept.
+
+              The box itself is a SIBLING of the row button in the DOM
+              (see below), for the same reason the hover actions are: a
+              <button> inside a <button> is invalid and browsers un-nest
+              it. This span is the placeholder that reserves its space. */}
+          {isSelectable && <span aria-hidden="true" className="h-4 w-4 shrink-0" />}
           <span
             className={
               unread
@@ -531,6 +606,60 @@ export default function MessageRow({
           </span>
         </span>
       </button>
+
+      {isSelectable && (
+        <>
+          {/* THE MOBILE TAP TARGET — a transparent button laid exactly
+              over the avatar circle, below `lg:` only.
+
+              44 x 44, not 36 x 36: the circle it covers is 36px, and the
+              extra 8px reach into the row's own left padding and the gap
+              above and below it, which are empty. That buys a real
+              thumb-sized target without putting anything over the sender
+              name or the subject. Gmail's mobile inbox does exactly this
+              — the avatar IS the checkbox — which is why the row gains no
+              permanent chrome on a phone.
+
+              It carries the whole accessible name and the checkbox
+              semantics; the circle underneath is `aria-hidden`. */}
+          <button
+            type="button"
+            role="checkbox"
+            aria-checked={isBulkSelected}
+            aria-label={selectLabel}
+            /* Not a tab stop, for the roving-tabindex reason RowAction
+               gives: the list is ONE tab stop and `x` is the keyboard's
+               path to this. */
+            tabIndex={-1}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleSelect(message);
+            }}
+            className={cn(
+              'absolute left-[2px] top-1.5 h-11 w-11 rounded-full lg:hidden',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            )}
+          />
+
+          {/* THE DESKTOP BOX, sitting in the column reserved above.
+              Absolutely positioned rather than rendered inside the row
+              button, for the nested-button reason; `left-4` matches the
+              desktop row's own `px-4`. */}
+          <SelectBox
+            checked={isBulkSelected}
+            label={selectLabel}
+            onToggle={() => onToggleSelect(message)}
+            tabIndex={-1}
+            className={cn(
+              'absolute left-4 top-1/2 hidden -translate-y-1/2 lg:inline-flex',
+              // Always on while ANY row is ticked, so the user can see
+              // what they are adding to rather than hunting for boxes
+              // that only exist under the pointer.
+              isSelecting ? SELECT_BOX.always : SELECT_BOX.onHover,
+            )}
+          />
+        </>
+      )}
 
       {onMailboxMove !== undefined && (
         /* THE HOVER ACTIONS. They REPLACE the right-hand cluster rather

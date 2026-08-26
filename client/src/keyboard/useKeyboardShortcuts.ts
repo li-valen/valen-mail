@@ -49,6 +49,10 @@ export interface ShortcutHandlers {
    *  side (an IMAP round trip), which is why nothing here awaits it — the
    *  row is removed optimistically and put back if the move fails. */
   readonly onMailboxMove: (destination: MoveDestination) => void;
+  /** Ticks or unticks the row under the cursor. Takes no argument for
+   *  ./shortcuts.ts's reason: the cursor already names the row, and the
+   *  selection is deliberately NOT derived from it. */
+  readonly onToggleSelection: () => void;
   readonly onGoFolder: (folder: FolderId) => void;
   readonly onOpenHelp: () => void;
   readonly onCloseHelp: () => void;
@@ -163,6 +167,9 @@ export function useKeyboardShortcuts(
           return;
         case 'mailbox-move':
           current.onMailboxMove(action.destination);
+          return;
+        case 'toggle-selection':
+          current.onToggleSelection();
           return;
         case 'go-folder':
           current.onGoFolder(action.folder);

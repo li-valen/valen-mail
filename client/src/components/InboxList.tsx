@@ -9,6 +9,7 @@ import { headingFor } from '../inboxFilters';
 import type { FolderId, InboxFilter } from '../inboxFilters';
 import { canMoveFrom, visibleMessages } from '../mailboxActions';
 import type { MoveDestination } from '../mailboxActions';
+import { NOTHING_SELECTED } from '../bulkSelection';
 import { Alert, AlertDescription } from '../ui/Alert';
 import { Button } from '../ui/Button';
 import { Card } from '../ui/Card';
@@ -22,7 +23,7 @@ import { groupByDay } from './inboxDates';
 import { LIST_DIVIDERS, LIST_SURFACE } from './listSurface';
 import { isCurrentSelection, resolveLoadMorePage } from './inboxPaging';
 import { messageKey } from './messageBody';
-import { resolveStar } from './messageFlags';
+import { resolveStar, resolveUnread } from './messageFlags';
 
 // Re-exported so `InboxList.tsx` stays the one public entry point for both
 // the component and the pure logic it renders with — tests import
@@ -147,6 +148,19 @@ export interface InboxListProps {
   /** Archive / Move to Trash from a row's own hover controls, `lg:` and
    *  above only — see MessageRow's `onMailboxMove`. */
   readonly onMailboxMove?: (message: InboxMessage, destination: MoveDestination) => void;
+  /**
+   * Read-state this session has changed, keyed by `messageKey` — the same
+   * overlay shape as `starOverrides` above, holding `\Seen` rather than
+   * `\Flagged`. See ./messageFlags.ts's `resolveUnread`.
+   */
+  readonly seenOverrides?: ReadonlyMap<string, boolean>;
+  /** Rows ticked for a bulk action, keyed by `messageKey` — the SAME key
+   *  `hiddenKeys` uses, which is what lets App.tsx compare the two sets
+   *  directly (../bulkSelection.ts). */
+  readonly selectedKeys?: ReadonlySet<string>;
+  /** Ticks or unticks one row. Absent where bulk selection is not
+   *  offered — see MessageRow's `onToggleSelect`. */
+  readonly onToggleSelect?: (message: InboxMessage) => void;
 }
 
 /**
@@ -180,6 +194,10 @@ const NO_STAR_OVERRIDES: ReadonlyMap<string, boolean> = new Map();
  *  time and re-run the filter over fifty rows for nothing. Same reason
  *  NO_STAR_OVERRIDES above is hoisted. */
 const NO_HIDDEN_KEYS: ReadonlySet<string> = new Set();
+/** Hoisted for the same stable-identity reason. A separate constant from
+ *  NO_STAR_OVERRIDES despite being the same empty shape: sharing one
+ *  would read as though the two overlays were the same map. */
+const NO_SEEN_OVERRIDES: ReadonlyMap<string, boolean> = new Map();
 
 export default function InboxList({
   filter,
@@ -193,6 +211,9 @@ export default function InboxList({
   starOverrides = NO_STAR_OVERRIDES,
   hiddenKeys = NO_HIDDEN_KEYS,
   onMailboxMove,
+  seenOverrides = NO_SEEN_OVERRIDES,
+  selectedKeys = NOTHING_SELECTED,
+  onToggleSelect,
 }: InboxListProps) {
   const { folder, account } = filter;
   const isSearching = search !== '';
@@ -579,7 +600,15 @@ export default function InboxList({
                 breakpoints — it used to sit at `px-1`, hanging twelve
                 pixels to the left of every sender name in the card below
                 it. One alignment line down the column. */}
-            <h2 className="mb-2 px-3 text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-muted-foreground lg:px-4">
+            {/* `lg:pl-12` = the desktop row's own `px-4` (16px) plus the
+                reserved 16px checkbox column plus its `gap-3` (12px), so
+                the day label still sits on the same vertical line as
+                every sender name beneath it. Below `lg:` there is no
+                checkbox column (the avatar is the target), so `px-3`
+                stands unchanged. Change one of these two and the other
+                has to move with it — tests/bulk-wiring-static-guards.ts
+                holds them together. */}
+            <h2 className="mb-2 px-3 text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-muted-foreground lg:pl-12 lg:pr-4">
               {group.day}
             </h2>
             <Card className={LIST_SURFACE}>
@@ -596,7 +625,16 @@ export default function InboxList({
                       onSelect={onSelectMessage}
                       isSelected={key === selectedKey}
                       isStarred={resolveStar(message, starOverrides, key)}
+                      isUnread={resolveUnread(message, seenOverrides, key)}
                       tabIndex={key === tabStopKey ? 0 : -1}
+                      /* Ticking is offered exactly where MOVING is —
+                         ../bulkActions.ts's `canBulkSelect` is
+                         `canMoveFrom` — so a selection is never partly
+                         un-archivable. Per row, because Starred merges
+                         folders. */
+                      onToggleSelect={canMoveFrom(message.folder) ? onToggleSelect : undefined}
+                      isBulkSelected={selectedKeys.has(key)}
+                      isSelecting={selectedKeys.size > 0}
                       /* Absent outside the inbox rather than present and
                          refusing — see ../mailboxActions.ts's
                          `canMoveFrom`, and note that the Starred folder

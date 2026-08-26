@@ -14,7 +14,7 @@ import type { ReplyMode } from '../replyDraft';
  * call this, run the action.
  *
  * **THE CONVENTIONS ARE GMAIL'S, NOT OURS.** `j`/`k`, `o`, `u`, `s`,
- * `g` then a letter, `?`. The user asked for the app to replace Gmail;
+ * `x`, `g` then a letter, `?`. The user asked for the app to replace Gmail;
  * inventing a better mnemonic would mean their fingers are wrong on day
  * one, which is the opposite of the goal.
  *
@@ -151,6 +151,20 @@ export type ShortcutAction =
    * ../mailboxActions.ts owns what each destination means.
    */
   | { readonly kind: 'mailbox-move'; readonly destination: MoveDestination }
+  /**
+   * Tick or untick the row under the CURSOR — Gmail's `x`.
+   *
+   * **IT CARRIES NO INDEX, AND THAT IS THE POINT.** The action names no
+   * row because the cursor already does, and the SELECTION is not the
+   * cursor: `j`/`k` move the cursor and must leave every tick exactly
+   * where it was. Two pieces of state, one of which happens to be where
+   * the other one points when `x` is pressed. Threading an index through
+   * here would invite a caller to "keep them in sync", which is the one
+   * thing they must never be.
+   *
+   * LIST ONLY — see `resolveBareKey`.
+   */
+  | { readonly kind: 'toggle-selection' }
   | { readonly kind: 'go-folder'; readonly folder: FolderId }
   | { readonly kind: 'open-help' }
   | { readonly kind: 'close-help' };
@@ -392,6 +406,27 @@ function resolveBareKey(event: ShortcutEvent, state: ShortcutState): ShortcutRes
       return hasMessageInHand(state)
         ? act({ kind: 'mailbox-move', destination: 'archive' })
         : IGNORED;
+
+    // Gmail's "tick this row", and the key that makes a bulk action
+    // reachable without a mouse.
+    //
+    // **LIST ONLY, UNLIKE EVERY OTHER ACTION KEY HERE.** `s`, `r`, `e`
+    // and `#` are all live from inside the reader, because each one has
+    // something visible to act ON there — the message being read. A tick
+    // has nowhere to appear from inside the reader: the list is `hidden`
+    // behind it (App.tsx keeps it mounted so Back is instant), so `x`
+    // would change a count and a checkbox that are both off screen. That
+    // is the dead-interaction failure this codebase refuses everywhere,
+    // in its most confusing form — not "nothing happened" but "something
+    // happened where you cannot see it". Refused here, and the reader's
+    // own Archive/Trash buttons remain the way to act on what is open.
+    //
+    // Needs a cursor for the same reason `s` does: a session that has
+    // not pressed `j` yet has none, and `-1` is a real state.
+    case 'x':
+      if (state.isReaderOpen) return IGNORED;
+      if (state.selectedIndex < 0 || state.selectedIndex >= state.listLength) return IGNORED;
+      return act({ kind: 'toggle-selection' });
 
     // Opens a chord. The ONE resolution in this file that pairs a `none`
     // action with `preventDefault: true`, and the pairing is deliberate:

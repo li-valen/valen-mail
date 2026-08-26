@@ -274,15 +274,33 @@ export async function runBulkFlag(
  *  3. **Nothing ticked.** Whatever is under the cursor, exactly as
  *     before this feature existed.
  */
+/**
+ * WHICH PATH, as well as which messages.
+ *
+ * The `kind` is not decoration on top of an array: `one` and `selection`
+ * take genuinely different routes through App.tsx — `one` is the
+ * single-message `performMove` that shipped before this feature and is
+ * deliberately untouched by it, `selection` is the batch. A caller that
+ * had to infer the route from `messages.length === 1` would send a
+ * one-row SELECTION down the single path, leaving the tick and the bar on
+ * screen over a row that has already gone.
+ */
+export type MoveTargets =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'one'; readonly message: InboxMessage }
+  | { readonly kind: 'selection'; readonly messages: readonly InboxMessage[] };
+
+const NO_TARGETS: MoveTargets = { kind: 'none' };
+
 export function moveTargetsFor(options: {
   readonly inHand: InboxMessage | null;
   readonly isReaderOpen: boolean;
   readonly selection: readonly InboxMessage[];
-}): readonly InboxMessage[] {
+}): MoveTargets {
   const { inHand, isReaderOpen, selection } = options;
-  if (isReaderOpen) return inHand === null ? [] : [inHand];
-  if (selection.length > 0) return selection;
-  return inHand === null ? [] : [inHand];
+  if (isReaderOpen) return inHand === null ? NO_TARGETS : { kind: 'one', message: inHand };
+  if (selection.length > 0) return { kind: 'selection', messages: selection };
+  return inHand === null ? NO_TARGETS : { kind: 'one', message: inHand };
 }
 
 /**

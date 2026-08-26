@@ -105,10 +105,36 @@ export function resolveStar(
   return overrides.get(key) ?? isStarred(message);
 }
 
+/**
+ * The same optimistic overlay, for `\Seen`.
+ *
+ * **THE MAP STORES `seen`, AND THIS RETURNS `unread`.** The inversion is
+ * here, once, on purpose: the wire field is `seen` (src/api.ts's
+ * `FlagField`, sync/src/api/flags.ts's body), so an override written as
+ * anything else would need translating at every write site instead of at
+ * the one read site. A `true` entry means "this app marked it read and
+ * the server agreed", so the row is not unread.
+ *
+ * ABSENT means "no opinion", which falls through to `isUnread` above —
+ * NOT to "read". That is what makes the revert path safe: a bulk
+ * mark-read whose PATCH failed DELETES the entry rather than flipping it,
+ * so the row falls back to what the mailbox actually says rather than to
+ * the opposite of what was asked for.
+ */
+export function resolveUnread(
+  message: InboxMessage,
+  seenOverrides: ReadonlyMap<string, boolean>,
+  key: string,
+): boolean {
+  const override = seenOverrides.get(key);
+  if (override === undefined) return isUnread(message);
+  return !override;
+}
+
 /** A NEW map with one entry set. Never mutates its input — the whole
  *  point of holding this in React state is that a changed map is a new
  *  identity a render can key on. */
-export function withStar(
+export function withFlagOverride(
   overrides: ReadonlyMap<string, boolean>,
   key: string,
   value: boolean,
@@ -119,11 +145,61 @@ export function withStar(
 /** A NEW map with one entry removed — the revert path when the PATCH
  *  fails, which drops back to whatever `flags` actually says rather than
  *  asserting the opposite. */
-export function withoutStar(
+export function withoutFlagOverride(
   overrides: ReadonlyMap<string, boolean>,
   key: string,
 ): ReadonlyMap<string, boolean> {
   const next = new Map(overrides);
   next.delete(key);
   return next;
+}
+
+/**
+ * The same two operations over MANY keys, in ONE new map.
+ *
+ * Not a fold of the singular forms, and the difference is not
+ * micro-optimisation: `keys.reduce(withFlagOverride, map)` allocates a
+ * fresh `Map` per key, so a bulk mark-read over forty rows would build
+ * forty maps and hand React thirty-nine identities it must not render
+ * against. One copy, one state update, one render.
+ */
+export function withFlagOverrides(
+  overrides: ReadonlyMap<string, boolean>,
+  keys: readonly string[],
+  value: boolean,
+): ReadonlyMap<string, boolean> {
+  if (keys.length === 0) return overrides;
+  const next = new Map(overrides);
+  for (const key of keys) next.set(key, value);
+  return next;
+}
+
+/** The bulk revert. Returns the SAME map when nothing was dropped, so a
+ *  batch in which every write took causes no render at all. */
+export function withoutFlagOverrides(
+  overrides: ReadonlyMap<string, boolean>,
+  keys: readonly string[],
+): ReadonlyMap<string, boolean> {
+  if (keys.length === 0) return overrides;
+  const next = new Map(overrides);
+  for (const key of keys) next.delete(key);
+  return next;
+}
+
+/** Star-named aliases, kept because that is what the star's call sites
+ *  mean and a generically-named call there would read as though it could
+ *  set any flag. One implementation, two honest names. */
+export function withStar(
+  overrides: ReadonlyMap<string, boolean>,
+  key: string,
+  value: boolean,
+): ReadonlyMap<string, boolean> {
+  return withFlagOverride(overrides, key, value);
+}
+
+export function withoutStar(
+  overrides: ReadonlyMap<string, boolean>,
+  key: string,
+): ReadonlyMap<string, boolean> {
+  return withoutFlagOverride(overrides, key);
 }
