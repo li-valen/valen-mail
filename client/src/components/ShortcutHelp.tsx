@@ -116,7 +116,12 @@ export default function ShortcutHelp({ onClose }: ShortcutHelpProps) {
             closeRef.current?.focus();
           }}
           className={cn(
-            'max-h-full overflow-y-auto rounded-lg border border-neutral-200 bg-card p-6 shadow-lg',
+            // `overscroll-contain`: this panel is an overlay over a
+            // scrolling list. Without it, reaching the end of a long
+            // shortcut table keeps scrolling - the mail behind the
+            // dialog moves instead, under a scrim the user cannot see
+            // through.
+            'max-h-full overflow-y-auto overscroll-contain rounded-lg border border-neutral-200 bg-card p-6 shadow-lg',
             'dark:border-border dark:text-card-foreground',
           )}
           style={{ transitionDuration: `${DURATION_MS.panel}ms` }}
@@ -129,7 +134,7 @@ export default function ShortcutHelp({ onClose }: ShortcutHelpProps) {
               ref={closeRef}
               type="button"
               onClick={onClose}
-              className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="flex h-7 w-7 shrink-0 cursor-pointer touch-manipulation items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <X className="h-4 w-4" aria-hidden="true" />
               <span className="sr-only">Close shortcuts</span>

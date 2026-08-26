@@ -102,6 +102,28 @@ function extractCustomProperties(body: string): ReadonlySet<string> {
   return names;
 }
 
+/**
+ * Custom-property prefixes that live in `:root` but are NOT part of the
+ * palette, and so are exempt from the light/dark set-equality rule below.
+ *
+ * The rule exists for one failure: a COLOUR defined in only one of the
+ * two blocks renders one theme's text on the other theme's ground. A
+ * value that is not a colour cannot cause it. `--safe-*` (the
+ * `env(safe-area-inset-*)` layer added by the interface audit) is the
+ * first such value: four lengths describing where the display cutout and
+ * the home indicator are, which are the same numbers in both themes and
+ * would have to be kept manually in sync if duplicated into `.dark`.
+ *
+ * An allowlist of PREFIXES rather than of names, so the four sides do not
+ * each need an entry; deliberately narrow, so a future `--brand-blue`
+ * gets no free pass.
+ */
+const NON_PALETTE_PREFIXES = ['--safe-'] as const;
+
+function isPaletteToken(name: string): boolean {
+  return !NON_PALETTE_PREFIXES.some((prefix) => name.startsWith(prefix));
+}
+
 interface PaletteBlocks {
   /** Union of every custom property declared in a bare, unqualified
    *  `:root { … }` rule, at the top level or inside an `@layer`. */
@@ -128,11 +150,15 @@ function parsePaletteBlocks(css: string): PaletteBlocks {
     for (const rule of parseTopLevelRules(source)) {
       const selector = normalizeSelector(rule.selector);
       if (selector === ':root') {
-        for (const name of extractCustomProperties(rule.body)) light.add(name);
+        for (const name of extractCustomProperties(rule.body)) {
+          if (isPaletteToken(name)) light.add(name);
+        }
         continue;
       }
       if (selector === '.dark') {
-        for (const name of extractCustomProperties(rule.body)) dark.add(name);
+        for (const name of extractCustomProperties(rule.body)) {
+          if (isPaletteToken(name)) dark.add(name);
+        }
         continue;
       }
       if (selector.startsWith('@layer') || selector.startsWith('@media')) {

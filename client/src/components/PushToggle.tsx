@@ -151,7 +151,7 @@ export default function PushToggle() {
       <div className="flex items-center justify-between gap-3 px-3 py-2">
         <Label
           htmlFor={switchId}
-          className="flex cursor-pointer items-center gap-3 text-neutral-600 dark:text-muted-foreground select-none"
+          className="flex cursor-pointer touch-manipulation items-center gap-3 text-neutral-600 dark:text-muted-foreground select-none"
         >
           {/* Decorative: the visible label beside it carries the meaning, so
               the icon must not be announced twice. */}

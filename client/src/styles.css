@@ -162,6 +162,41 @@
         --ring: 215.4 16.3% 46.9%;
 
         --radius: 0.5rem;
+
+        /* THE DISPLAY CUTOUT AND THE HOME INDICATOR, named once.
+           index.html sets `viewport-fit=cover`, which is an explicit
+           opt-in to drawing the app edge to edge - under the notch and
+           under the home indicator - on an iPhone with Postbox installed
+           to the home screen. Nothing was reading `env(safe-area-inset-*)`
+           back, so the top bar sat under the status bar and the last row
+           of mail sat under the home indicator.
+
+           WHY A VARIABLE LAYER RATHER THAN `env()` AT EACH CALL SITE.
+           Two reasons, one practical and one verification-shaped.
+           Practically, four names beat fifteen copies of a function call
+           when the next edge-touching surface is added. More importantly:
+           `env()` resolves to 0 in every desktop browser and there is no
+           way to override it, so a notched layout written directly
+           against `env()` cannot be looked at anywhere but a real phone.
+           Read through a custom property, the SAME declaration that takes
+           iOS's real inset in production takes an override in a browser -
+           `document.documentElement.style.setProperty('--safe-top','59px')`
+           - so the notched rendering is inspectable. The production path
+           is unchanged either way: with no override, these are exactly
+           `env(safe-area-inset-*)`.
+
+           `0px`, not `0`, as the fallback: these are substituted into
+           `calc()` and bare padding, both of which need a length.
+
+           NOT part of the palette, and tests/theme-tokens.test.ts knows
+           it: they are the same four numbers in both themes, so the
+           light/dark set-equality rule that governs every COLOUR here
+           does not apply and duplicating them into `.dark` would only
+           create two places to keep in sync. */
+        --safe-top: env(safe-area-inset-top, 0px);
+        --safe-right: env(safe-area-inset-right, 0px);
+        --safe-bottom: env(safe-area-inset-bottom, 0px);
+        --safe-left: env(safe-area-inset-left, 0px);
     }
 
     .dark {

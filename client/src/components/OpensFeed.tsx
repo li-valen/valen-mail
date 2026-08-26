@@ -474,7 +474,7 @@ function OpenEntry({ event, now, onOpen, variants, isNew }: OpenEntryProps) {
         /* Pressed feedback matches MessageRow.tsx's exactly — a tint, not
            a scale, for the same reason: these are full-bleed rows in a
            divided list. See that file's note. */
-        className={`group flex w-full items-start gap-3 px-4 py-2 text-left transition-colors hover:bg-neutral-50 active:bg-neutral-100 dark:hover:bg-accent dark:active:bg-accent ${ROW_FOCUS}`}
+        className={`group flex w-full touch-manipulation items-start gap-3 px-4 py-2 text-left transition-colors hover:bg-neutral-50 active:bg-neutral-100 dark:hover:bg-accent dark:active:bg-accent ${ROW_FOCUS}`}
       >
         <span className="pt-0.5">
           <ReadState classification={event.classification} />

@@ -103,7 +103,7 @@ export default function FollowupRow({ row, now, onOpen }: FollowupRowProps) {
         type="button"
         onClick={() => onOpen(row)}
         className={cn(
-          'block w-full cursor-pointer text-left text-sm transition-colors',
+          'block w-full cursor-pointer touch-manipulation text-left text-sm transition-colors',
           'rounded-xl hover:bg-neutral-50 active:bg-neutral-100 dark:hover:bg-accent dark:active:bg-accent',
           'lg:rounded-none',
           ROW_FOCUS,

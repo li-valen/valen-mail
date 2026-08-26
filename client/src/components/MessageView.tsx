@@ -301,7 +301,7 @@ function BodyFrame({ html, subject }: BodyFrameProps) {
         <button
           type="button"
           onClick={() => setShowOriginal((previous) => !previous)}
-          className="cursor-pointer self-start rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="cursor-pointer touch-manipulation self-start rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           {showOriginal ? 'Use dark colours' : 'Show original colours'}
         </button>
@@ -343,7 +343,7 @@ function TextBody({ text }: TextBodyProps) {
     // plain-text mail on a different left edge from the subject above it.
     // `overflow-x-auto` stays — it is what keeps a 400-character URL
     // scrolling in this block instead of moving the page.
-    <pre className="max-w-[68ch] overflow-x-auto whitespace-pre-wrap break-words px-1 font-sans text-sm leading-relaxed text-neutral-800 dark:text-foreground">
+    <pre className="max-w-[68ch] overflow-x-auto overscroll-x-contain whitespace-pre-wrap break-words px-1 font-sans text-sm leading-relaxed text-neutral-800 dark:text-foreground">
       {text}
     </pre>
   );

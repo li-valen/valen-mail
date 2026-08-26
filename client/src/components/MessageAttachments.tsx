@@ -52,7 +52,7 @@ function AttachmentEntry({ message, attachment }: AttachmentEntryProps) {
         <a
           href={attachmentUrl(message.account_id, message.folder, message.uid, attachment.partId)}
           download={attachment.filename ?? undefined}
-          className="shrink-0 rounded-md text-xs font-medium text-neutral-900 underline underline-offset-4 hover:no-underline dark:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          className="shrink-0 touch-manipulation rounded-md text-xs font-medium text-neutral-900 underline underline-offset-4 hover:no-underline dark:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
         >
           Download<span className="sr-only"> {name}</span>
         </a>

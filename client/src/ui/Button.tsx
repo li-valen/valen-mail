@@ -27,6 +27,17 @@ import { cn } from './cn';
  * DURATION_MS.press's band (src/motion/tokens.ts), and Tailwind's
  * default, so `transition-colors` elsewhere already agrees with it.
  *
+ * **`touch-manipulation`.** Every tap on a phone otherwise carries the
+ * browser's ~300ms wait to see whether a second tap is coming (double-tap
+ * to zoom). `touch-action: manipulation` opts this element out of that
+ * one gesture - pan and pinch-zoom still work, so nothing about scrolling
+ * or accessibility zoom changes - and the tap fires on touchend instead.
+ * It is stated on the CONTROLS rather than on `html`/`body`, because a
+ * document-wide `touch-action` would also disable double-tap zoom on the
+ * message body, which is the one place a reader may genuinely want it.
+ * tests/mobile-viewport-guards.test.ts pairs it with `cursor-pointer` so
+ * a new control cannot be added without it.
+ *
  * `motion-safe:` rather than relying on styles.css's global reduced-motion
  * floor: the floor would leave the scale in place and merely make it
  * instant, and this project's contract is that reduced motion REMOVES
@@ -35,7 +46,7 @@ import { cn } from './cn';
  * `@media (hover: hover)`, so the hover tints need no equivalent.)
  */
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-[color,background-color,border-color,box-shadow,transform] duration-150 ease-out-strong motion-safe:active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 cursor-pointer',
+  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-[color,background-color,border-color,box-shadow,transform] duration-150 ease-out-strong motion-safe:active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 cursor-pointer touch-manipulation',
   {
     variants: {
       variant: {

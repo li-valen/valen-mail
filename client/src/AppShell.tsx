@@ -146,7 +146,7 @@ const ACTIVITY_VIEWS: readonly { readonly id: ActivityViewId; readonly icon: Luc
  *  letting it interleave with anything else in the sidebar. */
 function navItemClass(isActive: boolean): string {
   return cn(
-    'relative isolate w-full flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+    'relative isolate w-full flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
     isActive
       ? 'text-neutral-900 dark:text-accent-foreground'
       : 'text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900 dark:text-muted-foreground dark:hover:bg-accent dark:hover:text-accent-foreground',
@@ -395,7 +395,7 @@ export default function AppShell({
         <button
           type="button"
           onClick={() => setMobileMenuOpen(false)}
-          className="lg:hidden p-1 rounded-md text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:text-muted-foreground dark:hover:bg-accent dark:hover:text-accent-foreground transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          className="lg:hidden p-1 rounded-md text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:text-muted-foreground dark:hover:bg-accent dark:hover:text-accent-foreground transition-colors cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
         >
           <X className="h-5 w-5" aria-hidden="true" />
           <span className="sr-only">Close menu</span>
@@ -425,7 +425,15 @@ export default function AppShell({
           rather than three landmarks, which keeps landmark navigation
           short — the groups are already announced by their own headings
           and list semantics. */}
-      <nav className="flex-1 px-3 py-4 overflow-y-auto" aria-label="Mailboxes">
+      {/* `overscroll-contain`: this nav is the scrolling body of the
+          MOBILE DRAWER as well as of the desktop rail, and a drawer that
+          hands its leftover scroll to the list underneath it means
+          flicking through the folders quietly scrolls the mail behind
+          the panel - so closing the drawer lands the user somewhere they
+          never chose to be. `contain` stops the chain at this box while
+          leaving the drawer's own scroll and the page's rubber-band
+          intact. */}
+      <nav className="flex-1 px-3 py-4 overflow-y-auto overscroll-contain" aria-label="Mailboxes">
         <FolderNav
           folder={folder}
           isActive={isInbox}
@@ -465,7 +473,14 @@ export default function AppShell({
 
   return (
     <div className="flex h-dvh bg-neutral-50 dark:bg-background">
-      <div className="hidden lg:flex w-64 bg-card border-r border-neutral-200 dark:border-border flex-col">
+      {/* The safe-area padding here is 0px on every desktop (`--safe-*`
+          resolve to `env(safe-area-inset-*)`, which is 0 without a
+          cutout), so the rail the user called "pretty decent on mac" is
+          pixel-identical there. It earns its place on an iPad in
+          landscape, where the rail IS the left edge of the display. The
+          `w-` calc widens the box by the inset rather than letting the
+          padding eat into the 256px of content. */}
+      <div className="hidden lg:flex w-[calc(16rem+var(--safe-left))] pl-[var(--safe-left)] pt-[var(--safe-top)] pb-[var(--safe-bottom)] bg-card border-r border-neutral-200 dark:border-border flex-col">
         {renderSidebar('desktop', composeRef)}
       </div>
 
@@ -510,7 +525,15 @@ export default function AppShell({
           // is looking hardest. 260ms replaces 300ms for the same reason
           // every other duration in this system sits where it does — see
           // DURATION_MS.
-          'fixed inset-y-0 left-0 z-50 w-64 bg-card transform transition-transform ease-drawer motion-reduce:transition-none lg:hidden',
+          // `inset-y-0` puts this panel's own top and bottom edges ON
+          // the display's edges - under the notch and under the home
+          // indicator - which is what `viewport-fit=cover` asked for and
+          // what the padding below corrects. The `bg-card` still paints
+          // the full box (padding is inside the background), so the
+          // drawer reaches the physical edge while its CONTENT does not.
+          // The `w-` calc widens rather than narrows: the drawer keeps
+          // 256px of usable width when a landscape notch pushes it in.
+          'fixed inset-y-0 left-0 z-50 w-[calc(16rem+var(--safe-left))] pl-[var(--safe-left)] pt-[var(--safe-top)] pb-[var(--safe-bottom)] bg-card transform transition-transform ease-drawer motion-reduce:transition-none lg:hidden',
           isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full',
         )}
         style={{ transitionDuration: `${DURATION_MS.drawer}ms` }}
@@ -531,12 +554,21 @@ export default function AppShell({
             `max-w-5xl … px-4 sm:px-6 lg:px-8` gutters, which is what puts
             the search field's left edge on the same vertical line as the
             first row of mail below it. */}
-        <header className="h-16 shrink-0 border-b border-neutral-200 bg-card dark:border-border">
+        {/* `h-[calc(4rem+var(--safe-top))]` with a matching `pt-`, not a
+            bare `h-16` with padding: `box-sizing: border-box` would have
+            the inset eat the bar's own 64px, leaving a 5px strip of
+            search field under a 59px notch. Growing the box by exactly
+            the inset keeps the CONTENT box at 64px at every viewport, so
+            `h-full` on the row inside still means 64px and the desktop
+            bar is unchanged (the inset is 0 there). The horizontal pair
+            is for landscape, where the cutout is on the left or right
+            edge and would otherwise clip the menu button. */}
+        <header className="h-[calc(4rem+var(--safe-top))] shrink-0 border-b border-neutral-200 bg-card pt-[var(--safe-top)] pl-[var(--safe-left)] pr-[var(--safe-right)] dark:border-border">
           <div className="mx-auto flex h-full max-w-5xl items-center gap-3 px-4 sm:px-6 lg:px-8">
             <button
               type="button"
               onClick={() => setMobileMenuOpen(true)}
-              className="shrink-0 p-2 rounded-lg lg:hidden hover:bg-neutral-100 dark:hover:bg-accent transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+              className="shrink-0 p-2 rounded-lg lg:hidden hover:bg-neutral-100 dark:hover:bg-accent transition-colors cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
               <Menu className="h-6 w-6 text-neutral-900 dark:text-foreground" aria-hidden="true" />
               <span className="sr-only">Open menu</span>
@@ -570,9 +602,25 @@ export default function AppShell({
             Content that is legitimately wider than the column scrolls
             inside its own box instead (the reader's `<pre>`, a message's
             top-level table) — see components/messageBody.ts. */}
+        {/* THE BOTTOM INSET GOES HERE, on the scrolling element, and
+            not on the column inside it. This is the one box whose bottom
+            edge is the bottom of the display, so it is the one that can
+            put the last row of mail - or the composer's Send button, or
+            the "load more" control - above the home indicator rather
+            than under it. Padding on a scroll container is part of its
+            scrollable area, so the extra space appears at the END of the
+            scroll rather than as a permanent gap. The horizontal pair is
+            the landscape cutout, same as the header's.
+
+            A bare `var(--safe-bottom)` rather than a
+            `max(var(--safe-bottom),0.5rem)` floor: this column already
+            carries `py-4 sm:py-5 lg:py-6` of its own, so a floor would
+            only add 8px of dead space on every desktop for no reason.
+            The floor idiom belongs on elements that have no padding of
+            their own. */}
         <main
           ref={contentRef}
-          className="flex-1 overflow-y-auto overflow-x-hidden"
+          className="flex-1 overflow-y-auto overflow-x-hidden pb-[var(--safe-bottom)] pl-[var(--safe-left)] pr-[var(--safe-right)]"
           aria-busy={isBusy}
         >
           {/* `lg:py-6`, down from `lg:py-8`: there is a 64px bar above

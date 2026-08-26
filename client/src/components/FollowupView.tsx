@@ -174,7 +174,7 @@ export default function FollowupView({ account, onOpenMessage }: FollowupViewPro
             onClick={() => setScope(id)}
             aria-pressed={isActive}
             className={cn(
-              'cursor-pointer rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
+              'cursor-pointer touch-manipulation rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
               isActive
                 ? 'bg-neutral-100 text-neutral-900 dark:bg-accent dark:text-accent-foreground'

@@ -74,7 +74,7 @@ export function SelectBox({ checked, label, onToggle, className, tabIndex }: Sel
         onToggle();
       }}
       className={cn(
-        'inline-flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded-[4px] border',
+        'inline-flex h-4 w-4 shrink-0 cursor-pointer touch-manipulation items-center justify-center rounded-[4px] border',
         'transition-colors duration-150',
         // `neutral-500` and not `neutral-400`: a 1px box outline is
         // non-text content, so WCAG 1.4.11 wants 3:1 against the ground

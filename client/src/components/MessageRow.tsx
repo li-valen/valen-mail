@@ -351,7 +351,7 @@ function RowAction({ label, onClick, children }: RowActionProps) {
          this behaviour is `e` and `#`. */
       tabIndex={-1}
       className={cn(
-        'inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-md',
+        'inline-flex h-7 w-7 cursor-pointer touch-manipulation items-center justify-center rounded-md',
         'text-neutral-500 transition-colors duration-150 dark:text-muted-foreground',
         'hover:bg-neutral-200 hover:text-neutral-900 dark:hover:bg-secondary dark:hover:text-foreground',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
@@ -465,7 +465,7 @@ export default function MessageRow({
            card and the user asked for soft edges, and square above it,
            where the row is a full-bleed slice of a divided card. */
         className={cn(
-          'block w-full cursor-pointer text-left text-sm transition-colors',
+          'block w-full cursor-pointer touch-manipulation text-left text-sm transition-colors',
           'rounded-xl hover:bg-neutral-50 active:bg-neutral-100 dark:hover:bg-accent dark:active:bg-accent',
           'lg:rounded-none',
           ROW_FOCUS,
@@ -724,7 +724,7 @@ export default function MessageRow({
               onToggleSelect(message);
             }}
             className={cn(
-              'absolute left-[2px] top-1.5 h-11 w-11 rounded-full lg:hidden',
+              'absolute left-[2px] top-1.5 h-11 w-11 touch-manipulation rounded-full lg:hidden',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             )}
           />

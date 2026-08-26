@@ -46,7 +46,7 @@ export default function OpensRail({ feed, onOpenEvent }: OpensRailProps) {
   return (
     <aside
       aria-label="Opens"
-      className="hidden w-80 shrink-0 border-l border-neutral-200 dark:border-border pl-6 lg:block lg:sticky lg:top-6 lg:max-h-[calc(100dvh-7rem)] lg:overflow-y-auto"
+      className="hidden w-80 shrink-0 border-l border-neutral-200 dark:border-border pl-6 lg:block lg:sticky lg:top-6 lg:max-h-[calc(100dvh-7rem)] lg:overflow-y-auto lg:overscroll-contain"
     >
       <OpensFeed
         load={feed.load}

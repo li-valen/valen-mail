@@ -197,7 +197,7 @@ export default function SearchBar({ value, onChange, scopeLabel }: SearchBarProp
           <button
             type="button"
             onClick={clear}
-            className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex h-7 w-7 shrink-0 cursor-pointer touch-manipulation items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <X className="h-4 w-4" aria-hidden="true" />
             <span className="sr-only">Clear search</span>

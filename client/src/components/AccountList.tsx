@@ -37,7 +37,7 @@ import { cn } from '../ui/cn';
  *  otherwise would mean one class string with two sets of overrides. */
 function accountRowClass(isSelected: boolean): string {
   return cn(
-    'w-full flex items-center gap-3 px-3 py-1.5 text-sm rounded-lg transition-colors cursor-pointer text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+    'w-full flex items-center gap-3 px-3 py-1.5 text-sm rounded-lg transition-colors cursor-pointer touch-manipulation text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
     isSelected
       ? 'bg-neutral-100 dark:bg-accent'
       : 'hover:bg-neutral-50 dark:hover:bg-accent',

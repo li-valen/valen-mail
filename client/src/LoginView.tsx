@@ -75,8 +75,13 @@ export default function LoginView({ onSubmit }: LoginViewProps) {
     }
   }
 
+  // `min-h-dvh` makes this full-bleed under `viewport-fit=cover`, so the
+  // card can be centred into the notch on a short viewport. The four
+  // insets fold into the padding that was already here (1rem / 3rem)
+  // rather than being added beside it, so this is a no-op on every
+  // display without a cutout.
   return (
-    <main className="flex min-h-dvh items-center justify-center bg-neutral-50 dark:bg-background px-4 py-12">
+    <main className="flex min-h-dvh items-center justify-center bg-neutral-50 dark:bg-background pl-[calc(1rem+var(--safe-left))] pr-[calc(1rem+var(--safe-right))] pt-[calc(3rem+var(--safe-top))] pb-[calc(3rem+var(--safe-bottom))]">
       <div className="w-full max-w-sm">
         <div className="mb-6 flex items-center justify-center gap-2">
           <div className="flex h-8 w-8 items-center justify-center rounded-md bg-neutral-900 text-white dark:bg-primary dark:text-primary-foreground">
