@@ -404,21 +404,95 @@ describe('participantsOf and participantsLabel', () => {
   });
 
   it('counts one person once across the display names a long thread accrues', () => {
-    // Same address, three spellings — one participant, so the label stays
-    // the single-sender full name rather than "Ann, …, Ann".
+    // Three spellings of one person. They ARE three identities — the
+    // dedupe that matters happens on the short names about to be printed,
+    // where "Ann, …, Ann" would be the visible nonsense — so the label
+    // falls back to the single-sender full name from the newest message.
     const conversation = conversationOf(
       message({ uid: '3', date: '2026-08-20T00:00:00.000Z', from_name: 'Ann Lei (Docs)', from_email: 'ann@x.com' }),
       message({ uid: '2', date: '2026-08-10T00:00:00.000Z', from_name: 'Ann Lei', from_email: 'ANN@x.com' }),
       message({ uid: '1', date: '2026-08-01T00:00:00.000Z', from_name: 'Ann', from_email: 'ann@X.com' }),
     );
-    expect(participantsOf(conversation)).toEqual(['Ann Lei (Docs)']);
     expect(participantsLabel(conversation)).toBe('Ann Lei (Docs)');
   });
 
+  it('counts one person once when only the CASE of the name differs', () => {
+    const conversation = conversationOf(
+      message({ uid: '2', date: '2026-08-10T00:00:00.000Z', from_name: 'ANN LEI', from_email: 'a@x.com' }),
+      message({ uid: '1', date: '2026-08-01T00:00:00.000Z', from_name: 'Ann Lei', from_email: 'b@x.com' }),
+    );
+    // The name kept is the NEWEST message's, so a sender who changed how
+    // they capitalise it renders as whatever they call themselves now.
+    expect(participantsOf(conversation)).toEqual(['ANN LEI']);
+    expect(participantsLabel(conversation)).toBe('ANN LEI');
+  });
+
+  it('names each human in a thread that RELAYS them all through one address', () => {
+    /*
+     * THE CASE LIVE VERIFICATION CAUGHT, and it is not an edge case: of
+     * the 578 multi-message conversations in this user's real inbox, 169
+     * — 29% — have more distinct display names than addresses, because
+     * GitHub, Google Docs and every mailing list send as one relay
+     * address on behalf of many people. Keyed on the address, this
+     * fifteen-message Google Docs thread between four people renders as
+     * ONE participant, which is the whole point of the label deleted.
+     *
+     * Shaped after masterman/1843246705920591126, "Questbridge Stuff".
+     */
+    const relay = 'comments-noreply@docs.google.com';
+    const conversation = conversationOf(
+      message({ uid: '4', date: '2026-08-20T00:00:00.000Z', from_name: 'Vivina Dong (Google Docs)', from_email: relay }),
+      message({ uid: '3', date: '2026-08-15T00:00:00.000Z', from_name: 'Mrdeadmemes (Google Docs)', from_email: relay }),
+      message({ uid: '2', date: '2026-08-10T00:00:00.000Z', from_name: 'Jack Zhou (Google Docs)', from_email: relay }),
+      message({ uid: '1', date: '2026-08-01T00:00:00.000Z', from_name: 'Helen Li (Google Docs)', from_email: relay }),
+    );
+    expect(participantsOf(conversation)).toHaveLength(4);
+    expect(participantsLabel(conversation)).toBe('Helen, …, Vivina');
+  });
+
+  it('names the last JOINER, which need not be the newest message’s sender', () => {
+    /*
+     * Shaped after personal/1873522533146683018, the real 23-message
+     * thread: Arav Kumar starts it, two bots join, and every one of the
+     * nineteen newest messages is Arav's again. So the newest message is
+     * from the FIRST participant, and the last name in the label is the
+     * bot that joined last.
+     *
+     * That is the intended answer, not a slip: this column says who is in
+     * the conversation, and the subject, preview and timestamp beside it
+     * already say what the latest message is.
+     */
+    const relay = 'notifications@github.com';
+    const conversation = conversationOf(
+      message({ uid: '5', date: '2026-08-26T08:16:00.000Z', from_name: 'Arav Kumar', from_email: relay }),
+      message({ uid: '4', date: '2026-08-14T18:03:00.000Z', from_name: 'chatgpt-codex-connector[bot]', from_email: relay }),
+      message({ uid: '3', date: '2026-08-14T17:58:00.000Z', from_name: 'cursor[bot]', from_email: relay }),
+      message({ uid: '2', date: '2026-08-14T17:57:00.000Z', from_name: 'Arav Kumar', from_email: relay }),
+    );
+    expect(participantsOf(conversation)).toEqual([
+      'Arav Kumar',
+      'cursor[bot]',
+      'chatgpt-codex-connector[bot]',
+    ]);
+    expect(participantsLabel(conversation)).toBe('Arav, …, chatgpt-codex-connector[bot]');
+    expect(conversation.representative.from_name).toBe('Arav Kumar');
+  });
+
+  it('names both humans in a two-person bot thread', () => {
+    // personal/1872639775144644505: coderabbitai[bot] and Zijun Zhou,
+    // both arriving as notifications@github.com.
+    const relay = 'notifications@github.com';
+    const conversation = conversationOf(
+      message({ uid: '2', date: '2026-08-10T00:00:00.000Z', from_name: 'coderabbitai[bot]', from_email: relay }),
+      message({ uid: '1', date: '2026-08-01T00:00:00.000Z', from_name: 'Zijun Zhou', from_email: relay }),
+    );
+    expect(participantsLabel(conversation)).toBe('Zijun, coderabbitai[bot]');
+  });
+
   it('elides the MIDDLE at three or more, keeping the first and the last', () => {
-    // The newest speaker is the one the row's timestamp, subject and
-    // preview all belong to; a trailing "…" would drop exactly the person
-    // the rest of the row refers to.
+    // First appearance, oldest to newest: who started the conversation
+    // and who joined it most recently. A trailing "…" would print only
+    // the beginning of a thread and never who is in it now.
     const conversation = conversationOf(
       message({ uid: '4', date: '2026-08-20T00:00:00.000Z', from_name: 'Zed Ryerson', from_email: 'zed@x.com' }),
       message({ uid: '3', date: '2026-08-15T00:00:00.000Z', from_name: 'Carl Gilken', from_email: 'carl@x.com' }),

@@ -30,6 +30,7 @@ import {
   isConversationStarred,
   isConversationUnread,
   participantsLabel,
+  representativesOf,
 } from '../conversations';
 import type { Conversation } from '../conversations';
 import { LIST_DIVIDERS, LIST_SURFACE } from './listSurface';
@@ -69,7 +70,8 @@ function messageFor(error: unknown): string {
 }
 
 /**
- * How many messages each account contributes to what is currently loaded.
+ * How many ROWS each account contributes to what is currently loaded —
+ * conversations, since Plan 12, which is what the caller passes in.
  * Feeds the shell's sidebar account list. Derived from the pages already
  * fetched rather than from a new endpoint — `src/api.ts` is plumbing this
  * task does not change, and "how many of the loaded messages are yours" is
@@ -77,10 +79,10 @@ function messageFor(error: unknown): string {
  *
  * Sorted by id so the sidebar does not reorder itself as pages arrive.
  */
-function summarizeAccounts(messages: readonly InboxMessage[]): readonly AccountSummary[] {
+function summarizeAccounts(rows: readonly InboxMessage[]): readonly AccountSummary[] {
   const counts = new Map<string, number>();
-  for (const message of messages) {
-    counts.set(message.account_id, (counts.get(message.account_id) ?? 0) + 1);
+  for (const row of rows) {
+    counts.set(row.account_id, (counts.get(row.account_id) ?? 0) + 1);
   }
   return [...counts.entries()]
     .map(([id, count]) => ({ id, count }))
@@ -384,10 +386,23 @@ export default function InboxList({
    */
   const conversations = useMemo(() => groupIntoConversations(visible), [visible]);
 
-  // Still counted in MESSAGES, deliberately: the sidebar answers "how
-  // much of the loaded mail is yours", and collapsing rows does not
-  // change how much mail there is.
-  const accounts = useMemo(() => summarizeAccounts(visible), [visible]);
+  /*
+   * COUNTED IN CONVERSATIONS, not messages — changed with the collapse,
+   * and caught by looking at it: over one real page the sidebar read
+   * "All accounts 83" beside a list of fifty rows. The number is a label
+   * on a filter the user is about to click, so it has to be a number they
+   * can check by looking; a message count next to a conversation list
+   * corresponds to nothing on screen.
+   *
+   * Well defined because a conversation belongs to exactly ONE account —
+   * the account is half of its key (../conversations.ts) — so counting
+   * representatives is counting conversations per account, and the
+   * per-account figures still sum to the number of rows.
+   */
+  const accounts = useMemo(
+    () => summarizeAccounts(representativesOf(conversations)),
+    [conversations],
+  );
 
   useEffect(() => {
     onAccountsChange?.(accounts);
