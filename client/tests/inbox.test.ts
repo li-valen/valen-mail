@@ -18,6 +18,19 @@ import type { InboxMessage } from '../src/api';
  * at UTC+3 and eastward, which is exactly the kind of failure that is
  * green on one machine and red on another for no visible reason.
  *
+ * `EN_US` is passed EXPLICITLY to every assertion below whose expected
+ * value has a shape rather than just a value. As of the interface-audit
+ * task these formatters follow the reader's own locale by default
+ * (src/displayLocale.ts), which is right for the app and wrong for a
+ * test: `/^[A-Z][a-z]{2}$/` describes `Thu`, not `Do.` or 木, and
+ * `Aug 17` is `17 Aug` in en-GB. Pinning the locale here is the same
+ * move, for the same reason, as client/vite.config.ts pinning `TZ=UTC` -
+ * a suite that is green on this machine and red on a colleague's, for a
+ * reason nobody would think to look for, is the failure mode both pins
+ * exist to prevent. Assertions that do NOT depend on the locale (the em
+ * dash, `Today`/`Yesterday`/`No date`, bucketing and ordering) leave it
+ * off deliberately, so they also cover the default-argument path.
+ *
  * `groupByDay` takes `NOW` explicitly as of client/DESIGN.md's "Amendment
  * 1: density & ergonomics" — day-rule labels are now relative ("Today" /
  * "Yesterday"), so the function needs a reference point the same way
@@ -26,6 +39,7 @@ import type { InboxMessage } from '../src/api';
  */
 
 const NOW = new Date('2026-08-24T23:30:00Z');
+const EN_US = 'en-US';
 
 function buildMessage(overrides: Partial<InboxMessage> & { readonly uid: string }): InboxMessage {
   return {
@@ -51,23 +65,23 @@ function buildMessage(overrides: Partial<InboxMessage> & { readonly uid: string 
 
 describe('formatWhen', () => {
   it('shows a clock time for today', () => {
-    expect(formatWhen('2026-08-24T21:05:00Z', NOW)).toMatch(/^\d{1,2}:\d{2}/);
+    expect(formatWhen('2026-08-24T21:05:00Z', NOW, EN_US)).toMatch(/^\d{1,2}:\d{2}/);
   });
 
   it('shows a weekday within the last week', () => {
-    expect(formatWhen('2026-08-21T10:00:00Z', NOW)).toMatch(/^[A-Z][a-z]{2}$/);
+    expect(formatWhen('2026-08-21T10:00:00Z', NOW, EN_US)).toMatch(/^[A-Z][a-z]{2}$/);
   });
 
   it('still shows a weekday at the 6-day boundary (inside the window)', () => {
-    expect(formatWhen('2026-08-18T10:00:00Z', NOW)).toMatch(/^[A-Z][a-z]{2}$/);
+    expect(formatWhen('2026-08-18T10:00:00Z', NOW, EN_US)).toMatch(/^[A-Z][a-z]{2}$/);
   });
 
   it('switches to a date at the 7-day boundary (outside the window)', () => {
-    expect(formatWhen('2026-08-17T10:00:00Z', NOW)).toMatch(/^[A-Z][a-z]{2} \d{1,2}$/);
+    expect(formatWhen('2026-08-17T10:00:00Z', NOW, EN_US)).toMatch(/^[A-Z][a-z]{2} \d{1,2}$/);
   });
 
   it('shows a date beyond a week', () => {
-    expect(formatWhen('2026-06-01T10:00:00Z', NOW)).toMatch(/Jun/);
+    expect(formatWhen('2026-06-01T10:00:00Z', NOW, EN_US)).toMatch(/Jun/);
   });
 
   it('never throws on a null or malformed date', () => {
@@ -194,7 +208,7 @@ describe('groupByDay — day-rule label format (Amendment 1)', () => {
   });
 
   it('labels a group two or more days back as "Weekday, Month Day" — never a bare weekday', () => {
-    const out = groupByDay([buildMessage({ uid: '1', date: '2026-08-20T10:00:00Z' })], NOW);
+    const out = groupByDay([buildMessage({ uid: '1', date: '2026-08-20T10:00:00Z' })], NOW, EN_US);
     expect(out[0]?.day).toBe('Thu, Aug 20');
   });
 

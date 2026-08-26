@@ -503,11 +503,14 @@ describe('messageKey', () => {
 });
 
 describe('formatReceived — the reader header timestamp', () => {
-  // The vitest config pins TZ=UTC and this formatter pins the locale, so
-  // the parts asserted here are stable; the exact separators are left
+  // The vitest config pins TZ=UTC and this call pins the locale, so the
+  // parts asserted here are stable; the exact separators are left
   // unasserted because ICU has changed them between Node versions before.
+  // The locale is now an ARGUMENT rather than baked into the formatter
+  // (src/displayLocale.ts) — without pinning it, `2:32` would be `14:32`
+  // on any machine whose browser or OS reports a 24-hour locale.
   it('gives a full date and time, not the list row abbreviation', () => {
-    const formatted = formatReceived('2026-08-24T14:32:00Z');
+    const formatted = formatReceived('2026-08-24T14:32:00Z', 'en-US');
     expect(formatted).toContain('Aug');
     expect(formatted).toContain('24');
     expect(formatted).toContain('2026');

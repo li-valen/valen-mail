@@ -1,4 +1,5 @@
 import type { InboxMessage } from '../api';
+import { DISPLAY_LOCALE, cachedDateTimeFormat } from '../displayLocale';
 
 /**
  * Pure date-grouping and timestamp-formatting logic for the chronological
@@ -6,6 +7,16 @@ import type { InboxMessage } from '../api';
  * this file never imports React — client/CLAUDE.md's standing constraint
  * is that no test in this plan renders a component, so keeping this logic
  * framework-free is what makes it testable at all.
+ *
+ * LOCALE. Every formatter here takes an explicit `locale`, defaulting to
+ * ../displayLocale.ts's `DISPLAY_LOCALE` - the reader's own, resolved
+ * once from the browser. It used to be a hardcoded `'en-US'` in five
+ * places. The parameter exists so the tests can pin `'en-US'` where they
+ * assert an exact string: the suite already pins `TZ=UTC` for exactly
+ * this reason (client/vite.config.ts), and a formatter that silently
+ * followed whatever locale the machine happened to have would put the
+ * suite straight back into the class of failure that pin exists to
+ * prevent. Production call sites pass nothing and get the reader's.
  *
  * Every function here is total. A null, empty, or unparseable `date` is
  * expected input — the API genuinely returns `null` for a message with no
@@ -19,6 +30,31 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
  *  today itself (handled separately) — 7 days' worth of rows total. */
 const RECENT_WEEKDAY_WINDOW_DAYS = 6;
 const NO_DATE_GROUP_LABEL = 'No date';
+
+/**
+ * THE FIVE OPTION SETS, named, so a cached formatter can be looked up by
+ * a short key instead of by serialising an object on every row.
+ *
+ * `cachedDateTimeFormat`'s contract is that one key describes exactly one
+ * option set; writing them here, once, beside the key they are cached
+ * under is what makes that true rather than merely intended.
+ */
+const CLOCK_OPTIONS: Intl.DateTimeFormatOptions = { hour: 'numeric', minute: '2-digit' };
+const WEEKDAY_OPTIONS: Intl.DateTimeFormatOptions = { weekday: 'short' };
+const MONTH_DAY_OPTIONS: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' };
+const DAY_LABEL_OPTIONS: Intl.DateTimeFormatOptions = {
+  weekday: 'short',
+  month: 'short',
+  day: 'numeric',
+};
+const RECEIVED_OPTIONS: Intl.DateTimeFormatOptions = {
+  weekday: 'short',
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+};
 
 /** Parses `iso` into a Date, or null for anything that is not a valid,
  *  parseable timestamp: `null`, `undefined`, empty string, or a string
@@ -53,24 +89,25 @@ function localDayKey(date: Date): string {
 /**
  * Formats one message's timestamp for its row (task-4-brief.md, Step 3):
  * a clock time for today, a weekday inside the last 7 days, and a
- * `MMM D` date beyond that. Returns an em dash for null, empty, or
+ * `MMM D` date beyond that, all in `locale` (the reader's own by
+ * default). Returns an em dash for null, empty, or
  * unparseable input rather than throwing (Amendment 3) — a message with
  * an unparseable `Date:` header is exactly the case that must not break
  * the list, so the whole body is defensive, not just the parse step.
  */
-export function formatWhen(iso: string | null, now: Date): string {
+export function formatWhen(iso: string | null, now: Date, locale: string = DISPLAY_LOCALE): string {
   try {
     const date = parseDate(iso);
     if (!date) return EM_DASH;
 
     const daysAgo = calendarDaysBefore(now, date);
     if (daysAgo === 0) {
-      return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+      return cachedDateTimeFormat('clock', locale, CLOCK_OPTIONS).format(date);
     }
     if (daysAgo >= 1 && daysAgo <= RECENT_WEEKDAY_WINDOW_DAYS) {
-      return date.toLocaleDateString('en-US', { weekday: 'short' });
+      return cachedDateTimeFormat('weekday', locale, WEEKDAY_OPTIONS).format(date);
     }
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return cachedDateTimeFormat('monthDay', locale, MONTH_DAY_OPTIONS).format(date);
   } catch {
     // Belt-and-braces: no known input reaches this, but a formatter that
     // is allowed to throw is a formatter that can take the inbox down
@@ -88,11 +125,16 @@ export interface DayGroup {
  * The day-rule label (client/DESIGN.md's "Amendment 1: density &
  * ergonomics" — supersedes §3.1/§4.2's original "weekday, month, day,
  * year, always, never relative" rule). `Today` / `Yesterday`, else a
- * short `Mon, Aug 24` — every glyph in all three forms (letters, digits,
- * comma, space) is inside the Bricolage Grotesque `&text=` subset
- * `index.html` requests; a period or any other punctuation here would
- * silently fall back to the UI face instead of erroring, so nothing here
- * introduces one.
+ * short `Mon, Aug 24`, in the reader's own locale.
+ *
+ * The original version of this comment argued that every glyph in all
+ * three forms had to sit inside the Bricolage Grotesque `&text=` subset
+ * `index.html` requested. That constraint died with Direction pivot 2:
+ * index.html now loads Inter with no subset parameter, so there is no
+ * character this can produce that the face lacks. Which matters as of
+ * this task, because the label is no longer `'en-US'`-only — a French
+ * reader's `jeu. 20 août` carries punctuation and accents the old
+ * subset would have dropped.
  *
  * Reads `now` explicitly rather than `new Date()` — the same reason
  * `formatWhen` takes it: every group label in one render agrees on what
@@ -102,11 +144,11 @@ export interface DayGroup {
  * reason restated here; Amendment 1 judged relative labels worth the
  * `now` parameter this needs to stay pure while having them.
  */
-function formatDayLabel(date: Date, now: Date): string {
+function formatDayLabel(date: Date, now: Date, locale: string): string {
   const daysAgo = calendarDaysBefore(now, date);
   if (daysAgo === 0) return 'Today';
   if (daysAgo === 1) return 'Yesterday';
-  return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  return cachedDateTimeFormat('dayLabel', locale, DAY_LABEL_OPTIONS).format(date);
 }
 
 /**
@@ -126,8 +168,12 @@ function formatDayLabel(date: Date, now: Date): string {
  * bucketing/ordering/dateless-handling logic below, which is unchanged
  * from the original version.
  */
-export function groupByDay(messages: readonly InboxMessage[], now: Date): readonly DayGroup[] {
-  return groupByDayOf(messages, (message) => message.date, now).map((group) => ({
+export function groupByDay(
+  messages: readonly InboxMessage[],
+  now: Date,
+  locale: string = DISPLAY_LOCALE,
+): readonly DayGroup[] {
+  return groupByDayOf(messages, (message) => message.date, now, locale).map((group) => ({
     day: group.day,
     messages: group.items,
   }));
@@ -161,6 +207,7 @@ export function groupByDayOf<T>(
   items: readonly T[],
   dateOf: (item: T) => string | null,
   now: Date,
+  locale: string = DISPLAY_LOCALE,
 ): readonly DayGroupOf<T>[] {
   const buckets = new Map<string, { readonly date: Date; readonly items: T[] }>();
   const dateless: T[] = [];
@@ -182,7 +229,7 @@ export function groupByDayOf<T>(
 
   const dayGroups: DayGroupOf<T>[] = [...buckets.values()]
     .sort((a, b) => b.date.getTime() - a.date.getTime())
-    .map((bucket) => ({ day: formatDayLabel(bucket.date, now), items: bucket.items }));
+    .map((bucket) => ({ day: formatDayLabel(bucket.date, now, locale), items: bucket.items }));
 
   if (dateless.length === 0) return dayGroups;
   return [...dayGroups, { day: NO_DATE_GROUP_LABEL, items: dateless }];
@@ -200,22 +247,15 @@ export function groupByDayOf<T>(
  *
  * Same defensive contract as every other function in this file: a null,
  * empty, or unparseable timestamp is expected input and returns an em
- * dash. The explicit `'en-US'` locale matches `formatWhen`/
- * `formatDayLabel` and keeps the output independent of the machine's own
- * locale, which is what makes it testable at all.
+ * dash. `locale` defaults to the reader's, exactly as `formatWhen` and
+ * `formatDayLabel` do, so the row abbreviation and the header long form
+ * can never disagree about which calendar they are written in.
  */
-export function formatReceived(iso: string | null): string {
+export function formatReceived(iso: string | null, locale: string = DISPLAY_LOCALE): string {
   try {
     const date = parseDate(iso);
     if (!date) return EM_DASH;
-    return date.toLocaleString('en-US', {
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-    });
+    return cachedDateTimeFormat('received', locale, RECEIVED_OPTIONS).format(date);
   } catch {
     return EM_DASH;
   }

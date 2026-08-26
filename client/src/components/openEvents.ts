@@ -1,3 +1,4 @@
+import { cachedDateTimeFormat } from '../displayLocale';
 import type { InboxMessage, OpenEvent, OpensResponse } from '../api';
 import { boundedToken, isDisplayable, readStateFor } from './ReadState';
 
@@ -36,14 +37,28 @@ const MS_PER_DAY = 24 * MS_PER_HOUR;
  * and §9's assumption that a single-user client never needs one.
  * `'en-GB'` is a formatting-locale choice only, not a claim about the
  * user's own locale: it is the shortest reliable way to get zero-padded
- * 24-hour digits out of `toLocaleTimeString` without a hand-rolled pad.
+ * 24-hour digits without a hand-rolled pad. This is the ONE date in the
+ * app that deliberately does NOT follow ../displayLocale.ts's
+ * `DISPLAY_LOCALE`, and the reason is that DESIGN.md fixes the SHAPE
+ * here rather than leaving it to preference: these times sit in a
+ * narrow rail column beside a lag figure, where a variable-width
+ * `2:06 PM` would ragged-edge a column of `14:06`s. A reader whose
+ * locale is 12-hour still gets 24-hour digits here, on purpose.
+ *
+ * Cached rather than built per call for the reason ../displayLocale.ts's
+ * `cachedDateTimeFormat` gives: the rail draws one of these per row.
  */
+const CLOCK_24H_LOCALE = 'en-GB';
+const CLOCK_24H_OPTIONS: Intl.DateTimeFormatOptions = {
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+};
+
 export function formatClockTime(epochMs: number): string {
-  return new Date(epochMs).toLocaleTimeString('en-GB', {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
+  return cachedDateTimeFormat('clock24', CLOCK_24H_LOCALE, CLOCK_24H_OPTIONS).format(
+    new Date(epochMs),
+  );
 }
 
 /**
