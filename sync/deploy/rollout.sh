@@ -45,11 +45,57 @@ find "$STAGE/sync" -name '*.test.ts' -delete
 rsync -a --delete client/../sync/public/ "$STAGE/sync/public/"
 tar -C "$STAGE" -czf "$STAGE/sync.tgz" sync
 
+# TWO WAYS IN, BECAUSE ONE OF THEM STOPPED WORKING FOR HALF A DAY.
+#
+# `gcloud compute scp --tunnel-through-iap` failed eight times running with
+# `ConnectionCreationError: [Errno 60] Operation timed out` inside the IAP
+# websocket, while the VM was RUNNING, the compute API answered, auth was
+# valid, and a raw TLS handshake to tunnel.cloudproxy.app completed in 20ms.
+# The tunnel reached "Testing if tunnel connection works." and hung there
+# indefinitely. Nothing about the machine or the project explained it.
+#
+# So: try IAP first, because it is the better path and needs no public SSH,
+# and fall back to the instance's external IP, which is reachable because
+# `default-allow-ssh` permits tcp:22 from 0.0.0.0/0. If that rule is ever
+# tightened to IAP's own range (35.235.240.0/20, which is what it SHOULD be),
+# this fallback stops working and the IAP path has to be fixed instead. That
+# is the correct trade, and this comment is where to start.
+#
+# The host key is verified either way: `HostKeyAlias` reuses the entry gcloud
+# already wrote into google_compute_known_hosts, so the fallback is a
+# different route to the same host, not a weaker check.
+KEY=~/.ssh/google_compute_engine
+KNOWN=~/.ssh/google_compute_known_hosts
+HOST_ALIAS=$(grep -oE "compute\.[0-9]+" "$KNOWN" 2>/dev/null | head -1)
+SSH_USER=$(whoami)
+DIRECT_OPTS=(-i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
+  -o CheckHostIP=no -o HashKnownHosts=no -o "HostKeyAlias=$HOST_ALIAS"
+  -o "UserKnownHostsFile=$KNOWN" -o ConnectTimeout=20)
+
 echo "== 3. ship =="
-gcloud compute scp "$STAGE/sync.tgz" postbox:/tmp/sync.tgz --zone=us-central1-a --tunnel-through-iap
+if gcloud compute scp "$STAGE/sync.tgz" postbox:/tmp/sync.tgz --zone=us-central1-a --tunnel-through-iap 2>/dev/null; then
+  VIA=iap
+  echo "   via IAP"
+else
+  echo "   IAP tunnel unavailable - falling back to the external IP"
+  IP=$(gcloud compute instances describe postbox --zone=us-central1-a \
+        --format="value(networkInterfaces[0].accessConfigs[0].natIP)")
+  [ -n "$IP" ] || { echo "   no external IP either - cannot reach the VM"; exit 1; }
+  VIA=direct
+  scp "${DIRECT_OPTS[@]}" "$STAGE/sync.tgz" "$SSH_USER@$IP:/tmp/sync.tgz"
+  echo "   via $IP"
+fi
+
+run_remote() {
+  if [ "$VIA" = iap ]; then
+    gcloud compute ssh postbox --zone=us-central1-a --tunnel-through-iap --command="$1"
+  else
+    ssh "${DIRECT_OPTS[@]}" "$SSH_USER@$IP" "$1"
+  fi
+}
 
 echo "== 4. install on VM =="
-gcloud compute ssh postbox --zone=us-central1-a --tunnel-through-iap --command='
+run_remote '
   set -e
   sudo systemctl stop postbox-sync
   sudo tar -C /tmp -xzf /tmp/sync.tgz
