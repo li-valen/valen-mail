@@ -152,9 +152,55 @@ function pixelUrl(pixelBase: string, token: string): string {
 }
 
 /**
+ * THE SIGNATURE, ON EVERY MESSAGE THIS APP SENDS.
+ *
+ * Asked for directly: *"add a signature to all my emails sent using it to
+ * say sent with Valen Mail that is hyper linked"*. Unconditional — replies,
+ * forwards and new mail alike — so there is no setting here to get out of
+ * step with itself.
+ *
+ * **THE LINK TARGET IS A CONSTANT SO IT IS ONE EDIT.** It points at the
+ * public repository because that is the only page this product actually
+ * has; the moment there is a real one, this is the line to change.
+ */
+export const SIGNATURE_URL = 'https://github.com/li-valen/valen-mail';
+
+/**
+ * `-- ` on its own line, with the trailing space, is the RFC 3676 §4.3
+ * signature delimiter. It is not decoration: mail clients recognise it and
+ * collapse or strip everything after it, and — the part that matters here —
+ * a REPLY to this message quotes the body without the signature. Without
+ * the delimiter, every round trip in a thread accumulates another copy.
+ */
+export const SIGNATURE_TEXT = `\n\n-- \nSent with Valen Mail \u2014 ${SIGNATURE_URL}`;
+
+/**
+ * Inline styles only, because every mail client strips `<style>` blocks and
+ * most strip `class`. Deliberately quiet: 12px, grey, and a link that does
+ * not shout — a signature that competes with the message is worse than none.
+ *
+ * The colour is stated on the `<a>` as well as the wrapper. A link with no
+ * explicit colour renders as the client's default blue, which is the one
+ * thing guaranteed to draw the eye away from what was written.
+ */
+export const SIGNATURE_HTML =
+  '<div style="margin-top:16px;font-family:-apple-system,BlinkMacSystemFont,' +
+  "'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:12px;line-height:1.5;" +
+  'color:#8a8a8a">Sent with <a href="' +
+  SIGNATURE_URL +
+  '" style="color:#8a8a8a;text-decoration:underline">Valen Mail</a></div>';
+
+/**
  * Renders the text and html alternatives for one recipient's copy.
  *
- * **text** is `textBody` verbatim — not escaped, and carrying no pixel.
+ * **The signature** goes after the body and BEFORE both the pixel and the
+ * quote. Before the quote because a signature under the quoted original
+ * reads as part of the thing being quoted; before the pixel because the
+ * pixel must stay immediately adjacent to the quote boundary the placement
+ * rule below is about.
+ *
+ * **text** is `textBody` verbatim plus the signature — not escaped, and
+ * carrying no pixel.
  * That is correct MIME practice rather than a tracking hole: a text/plain
  * part cannot load an image, so there is nothing to embed in it, and
  * escaping HTML entities into plaintext would only show the recipient
@@ -192,9 +238,10 @@ export function buildTrackedMessage(message: TrackedMessage): TrackedMessageBody
   const escaped = escapeHtml(normalised).replace(/\n/g, '<br>');
 
   return {
-    text: message.textBody,
+    text: message.textBody + SIGNATURE_TEXT,
     html:
       `<div dir="auto">${escaped}</div>` +
+      SIGNATURE_HTML +
       `<img alt="" src="${pixelUrl(message.pixelBase, message.token)}">` +
       (message.htmlQuote ?? ''),
   };

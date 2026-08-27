@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { buildTrackedMessage, escapeHtml, formatFrom } from '../src/send/build.ts';
+import {
+  SIGNATURE_HTML,
+  SIGNATURE_TEXT,
+  SIGNATURE_URL,
+  buildTrackedMessage,
+  escapeHtml,
+  formatFrom,
+} from '../src/send/build.ts';
 import type { TrackedMessage } from '../src/send/build';
 
 /**
@@ -110,14 +117,16 @@ describe('buildTrackedMessage — text alternative', () => {
     const body = `Line one\nLine & two <b>not markup</b>`;
     const { text } = buildTrackedMessage(messageWith({ textBody: body }));
 
-    expect(text).toBe(body);
+    expect(text).toBe(body + SIGNATURE_TEXT);
     expect(text).not.toContain('&amp;');
     expect(text).not.toContain(TOKEN);
     expect(text).not.toContain('<img');
   });
 
   it('preserves an empty body as an empty string', () => {
-    expect(buildTrackedMessage(messageWith({ textBody: '' })).text).toBe('');
+    // An empty body is still an empty body — what follows it is the
+    // signature, not content the user wrote.
+    expect(buildTrackedMessage(messageWith({ textBody: '' })).text).toBe(SIGNATURE_TEXT);
   });
 });
 
@@ -135,7 +144,7 @@ describe('buildTrackedMessage — html alternative', () => {
   it('serialises the whole html body byte for byte', () => {
     const { html } = buildTrackedMessage(messageWith({ textBody: 'hello' }));
 
-    expect(html).toBe(`<div dir="auto">hello</div>${PIXEL_TAG}`);
+    expect(html).toBe(`<div dir="auto">hello</div>${SIGNATURE_HTML}${PIXEL_TAG}`);
   });
 
   it('carries no sizing, styling or descriptive-alt attribute on the pixel', () => {
@@ -157,12 +166,12 @@ describe('buildTrackedMessage — html alternative', () => {
 
   it('turns newlines into <br>', () => {
     const { html } = buildTrackedMessage(messageWith({ textBody: 'one\ntwo\nthree' }));
-    expect(html).toBe(`<div dir="auto">one<br>two<br>three</div>${PIXEL_TAG}`);
+    expect(html).toBe(`<div dir="auto">one<br>two<br>three</div>${SIGNATURE_HTML}${PIXEL_TAG}`);
   });
 
   it('normalises CRLF and bare CR to the same <br>', () => {
     const { html } = buildTrackedMessage(messageWith({ textBody: 'one\r\ntwo\rthree' }));
-    expect(html).toBe(`<div dir="auto">one<br>two<br>three</div>${PIXEL_TAG}`);
+    expect(html).toBe(`<div dir="auto">one<br>two<br>three</div>${SIGNATURE_HTML}${PIXEL_TAG}`);
   });
 
   it('escapes the body so a pasted script tag cannot execute in a mail client', () => {
@@ -171,14 +180,14 @@ describe('buildTrackedMessage — html alternative', () => {
     );
 
     expect(html).toBe(
-      `<div dir="auto">&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;</div>${PIXEL_TAG}`,
+      `<div dir="auto">&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;</div>${SIGNATURE_HTML}${PIXEL_TAG}`,
     );
     expect(html).not.toContain('<script');
   });
 
   it('still emits the pixel for an empty body', () => {
     const { html } = buildTrackedMessage(messageWith({ textBody: '' }));
-    expect(html).toBe(`<div dir="auto"></div>${PIXEL_TAG}`);
+    expect(html).toBe(`<div dir="auto"></div>${SIGNATURE_HTML}${PIXEL_TAG}`);
   });
 });
 
@@ -250,13 +259,13 @@ describe('buildTrackedMessage — spec §5.2, the pixel goes BEFORE the quote', 
   it('serialises a reply body byte for byte: body, pixel, then quote', () => {
     const { html } = buildTrackedMessage(messageWith({ textBody: 'my reply', htmlQuote: QUOTE }));
 
-    expect(html).toBe(`<div dir="auto">my reply</div>${PIXEL_TAG}${QUOTE}`);
+    expect(html).toBe(`<div dir="auto">my reply</div>${SIGNATURE_HTML}${PIXEL_TAG}${QUOTE}`);
   });
 
   it('with no quote the pixel still appends to the body root — unchanged behaviour', () => {
     const { html } = buildTrackedMessage(messageWith({ textBody: 'new mail' }));
 
-    expect(html).toBe(`<div dir="auto">new mail</div>${PIXEL_TAG}`);
+    expect(html).toBe(`<div dir="auto">new mail</div>${SIGNATURE_HTML}${PIXEL_TAG}`);
     expect(html.endsWith(PIXEL_TAG)).toBe(true);
   });
 
@@ -272,8 +281,48 @@ describe('buildTrackedMessage — spec §5.2, the pixel goes BEFORE the quote', 
   it('leaves the plaintext alternative free of both pixel and quote markup', () => {
     const { text } = buildTrackedMessage(messageWith({ textBody: 'my reply', htmlQuote: QUOTE }));
 
-    expect(text).toBe('my reply');
+    expect(text).toBe('my reply' + SIGNATURE_TEXT);
     expect(text).not.toContain('gmail_quote');
     expect(text).not.toContain('<img');
+  });
+});
+
+describe('the signature, on every message this app sends', () => {
+  it('is a real hyperlink, not bare text', () => {
+    // "say sent with Valen Mail that is hyper linked" — the whole point.
+    const { html } = buildTrackedMessage(messageWith());
+    expect(html).toContain(`<a href="${SIGNATURE_URL}"`);
+    expect(html).toMatch(/>Valen Mail<\/a>/);
+  });
+
+  it('appears in the plaintext alternative too, behind the RFC 3676 delimiter', () => {
+    // `-- ` with the trailing space is what makes a REPLY quote the body
+    // without the signature. Without it every round trip in a thread
+    // accumulates another copy.
+    const { text } = buildTrackedMessage(messageWith({ textBody: 'hi' }));
+    expect(text).toContain('\n-- \n');
+    expect(text).toContain(SIGNATURE_URL);
+    expect(text.indexOf('-- ')).toBeGreaterThan(text.indexOf('hi'));
+  });
+
+  it('sits BEFORE the pixel and before the quote', () => {
+    // Before the quote because a signature under the quoted original reads
+    // as part of what is being quoted. Before the pixel because spec §5.2
+    // binds the pixel to sit immediately before the quote boundary.
+    const quote = '<blockquote>original</blockquote>';
+    const { html } = buildTrackedMessage(messageWith({ textBody: 'reply', htmlQuote: quote }));
+    expect(html.indexOf(SIGNATURE_HTML)).toBeGreaterThan(html.indexOf('reply'));
+    expect(html.indexOf(SIGNATURE_HTML)).toBeLessThan(html.indexOf(PIXEL_TAG));
+    expect(html.indexOf(PIXEL_TAG)).toBeLessThan(html.indexOf(quote));
+  });
+
+  it('appears exactly once per message, in each alternative', () => {
+    const { html, text } = buildTrackedMessage(messageWith({ textBody: 'hi' }));
+    expect(html.split(SIGNATURE_URL)).toHaveLength(2);
+    expect(text.split(SIGNATURE_URL)).toHaveLength(2);
+  });
+
+  it('carries its own colour on the link, so no client paints it default blue', () => {
+    expect(SIGNATURE_HTML).toMatch(/<a [^>]*style="[^"]*color:/);
   });
 });

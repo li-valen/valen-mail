@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { SIGNATURE_TEXT } from '../src/send/build.ts';
 import {
   buildMessageId,
   mintTokens,
@@ -422,7 +423,7 @@ describe('sendTracked — headers vs envelope (spec §5.3)', () => {
 
     for (const call of calls) {
       expect(call.options.subject).toBe('Group subject');
-      expect(call.options.text).toBe('body text');
+      expect(call.options.text).toBe('body text' + SIGNATURE_TEXT);
       expect(call.options.from).toBe('primary@example.com');
     }
   });
@@ -646,7 +647,7 @@ describe('sendTracked — attachments', () => {
     await sendTracked({ transport }, sendRequest({ attachments: [REPORT] }));
 
     for (const call of calls) {
-      expect(call.options.text).toBe('body text');
+      expect(call.options.text).toBe('body text' + SIGNATURE_TEXT);
       expect(call.options.html).toContain('<img alt="" src="https://track.example/o/');
     }
   });

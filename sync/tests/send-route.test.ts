@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { SIGNATURE_HTML } from '../src/send/build.ts';
 import { PassThrough } from 'node:stream';
 import type { IncomingMessage } from 'node:http';
 import {
@@ -1186,7 +1187,7 @@ describe('POST /api/send — the quoted original (spec §5.2 and §5.6)', () => 
     await handleSend(sendRequest(validBody()), makeDeps({ transports }));
 
     expect(calls[0]!.html).toBe(
-      `<div dir="auto">body text</div><img alt="" src="https://track.example/o/${'f'.repeat(31)}0.png">`,
+      `<div dir="auto">body text</div>${SIGNATURE_HTML}<img alt="" src="https://track.example/o/${'f'.repeat(31)}0.png">`,
     );
   });
 
