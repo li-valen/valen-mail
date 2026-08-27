@@ -1392,10 +1392,10 @@ export default function App() {
       searchValue={searchInput}
       onSearchChange={handleSearchChange}
       isBusy={gate.status === 'checking'}
-      // The reader REPLACES the list, so below `lg:` the shell strips back
-      // to the message itself. See AppShell's `isReading` for what that
-      // hides and why the desktop is untouched.
-      isReading={selected !== null}
+      // Reading and composing both REPLACE the list, so below `lg:` the
+      // shell strips back to the task itself. See AppShell's `isImmersive`
+      // for what that hides and why the desktop is untouched.
+      isImmersive={selected !== null || view === 'compose'}
       contentRef={contentRef}
       composeRef={composeTriggerRef}
       // ThemeToggle renders unconditionally: it is a device preference,

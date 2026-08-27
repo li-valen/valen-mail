@@ -212,11 +212,20 @@ describe('the §5.3.1 notice is rendered before the send, not after', () => {
     expect(compose).toMatch(/draft\.to\.length \+ draft\.cc\.length/);
   });
 
-  it('the notice sits in the form, above the Send control', () => {
+  it('the notice sits where Send is, not a body-length below it', () => {
+    // This used to read "above the Send control", because both sat at the
+    // foot of the form. Send is an icon in the header now. Source order
+    // alone would therefore pass with the warning stranded at the bottom of
+    // a phone screen, under the whole message body — reachable only by
+    // scrolling PAST the button it is warning about. So the invariant is
+    // stated against the layout instead: the notice renders in the header
+    // region, before the fields, which is where Send went.
     const noticeAt = compose.indexOf('degradationNotice()');
-    const sendAt = compose.indexOf("type=\"submit\"");
+    const toFieldAt = compose.indexOf('id={toFieldId}');
+    const bodyAt = compose.indexOf('placeholder="Compose email"');
     expect(noticeAt).toBeGreaterThan(-1);
-    expect(sendAt).toBeGreaterThan(noticeAt);
+    expect(noticeAt).toBeLessThan(toFieldAt);
+    expect(noticeAt).toBeLessThan(bodyAt);
   });
 });
 

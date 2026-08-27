@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import appSource from '../src/App.tsx?raw';
 import messageBodyContentSource from '../src/components/MessageBodyContent.tsx?raw';
 import stylesCss from '../src/styles.css?raw';
 import indexHtml from '../index.html?raw';
@@ -70,15 +71,21 @@ describe('the composer, on a phone', () => {
     expect(recipientInputClasses()).toContain('${TOUCH_MIN_HEIGHT}');
   });
 
-  it('sizes every small button in the composer for a thumb', () => {
-    const small = stripComments(composeSource).match(/size="sm"/g) ?? [];
-    const sized = stripComments(composeSource).match(/size="sm" className=\{TOUCH_HEIGHT\}/g) ?? [];
-    expect(small.length).toBeGreaterThan(0);
-    expect(sized.length).toBe(small.length);
+  it('sizes the composer’s icon controls for a thumb', () => {
+    // Close, attach and send are icon buttons in the header now rather than
+    // labelled Buttons, so TOUCH_HEIGHT (which sets a height only) is the
+    // wrong tool: an icon button needs a square target. `size-11` is 44px in
+    // both axes — the same floor, expressed for the shape it applies to.
+    const src = stripComments(composeSource);
+    expect(src).toMatch(/inline-flex size-11 shrink-0 items-center justify-center rounded-full/);
   });
 
-  it('sizes Send, which is the one button that must not be missed', () => {
-    expect(stripComments(composeSource)).toMatch(/type="submit" className=\{TOUCH_HEIGHT\}/);
+  it('sizes Send, which is the one control that must not be missed', () => {
+    // It carries the shared icon-button class, so it inherits that 44px.
+    const src = stripComments(composeSource);
+    const sendAt = src.indexOf('type="submit"');
+    expect(sendAt).toBeGreaterThan(-1);
+    expect(src.slice(sendAt, sendAt + 400)).toContain('iconButton');
   });
 
   it('makes the shared field atoms touch-height on phones and dense on desktop', () => {
@@ -88,15 +95,26 @@ describe('the composer, on a phone', () => {
   });
 });
 
-describe('opening a message strips the shell back to the message, below lg:', () => {
+describe('reading or writing a message strips the shell back to it, below lg:', () => {
   const shell = stripComments(appShellSource);
 
-  it('takes the prop that says a message is open', () => {
+  it('takes the prop that says a single task has the column', () => {
     // App.tsx's `selected !== null`. The shell cannot infer this: the
     // reader REPLACES the list inside `children`, so from out here the two
     // states look identical.
-    expect(shell).toMatch(/readonly isReading\?: boolean;/);
-    expect(stripComments(appShellSource)).toMatch(/isReading = false,/);
+    expect(shell).toMatch(/readonly isImmersive\?: boolean;/);
+    expect(stripComments(appShellSource)).toMatch(/isImmersive = false,/);
+  });
+
+  it('counts BOTH reading and composing, which is the half the shell cannot see', () => {
+    // The shell is handed a boolean; it cannot tell what put the column into
+    // a single task. Asserting only the shell's side let a mutation reverting
+    // App.tsx to `selected !== null` pass green while the composer got its
+    // search bar back — caught by mutation-testing this guard, not by
+    // reading it.
+    expect(stripComments(appSource)).toMatch(
+      /isImmersive=\{selected !== null \|\| view === 'compose'\}/,
+    );
   });
 
   it('hides the search bar and hamburger while reading, on phones only', () => {
@@ -105,26 +123,26 @@ describe('opening a message strips the shell back to the message, below lg:', ()
     // top besides title and email." The reader carries its own back
     // control, so a nav bar above it spends 64px offering a second way off
     // the same screen.
-    expect(shell).toMatch(/isReading && 'hidden lg:block'/);
+    expect(shell).toMatch(/isImmersive && 'hidden lg:block'/);
   });
 
   it('moves the notch inset onto the content column when that bar goes', () => {
     // The header is what normally pads for the cutout. Hiding it without
     // this renders the subject line behind the status bar.
-    expect(shell).toMatch(/isReading && 'pt-\[var\(--safe-top\)\] lg:pt-0'/);
+    expect(shell).toMatch(/isImmersive && 'pt-\[var\(--safe-top\)\] lg:pt-0'/);
   });
 
   it('hides the folder heading VISUALLY but keeps it for the outline', () => {
     // "Inbox" is junk on a phone showing one message. It is also the
     // document's h1, and deleting it would start a screen reader's outline
     // at the message's own h2.
-    expect(shell).toMatch(/isReading && 'sr-only'/);
+    expect(shell).toMatch(/isImmersive && 'sr-only'/);
   });
 
   it('withdraws the floating Compose button while reading', () => {
     // Gmail does the same. It would also collide with the reader's own
     // actions, and the reserved space it implies would be a gap.
-    expect(shell).toMatch(/const showComposeFab = view !== 'compose' && !isReading;/);
+    expect(shell).toMatch(/const showComposeFab = view !== 'compose' && !isImmersive;/);
   });
 });
 
@@ -196,7 +214,7 @@ describe('reaching Compose below lg:, where the sidebar is a closed drawer', () 
     // a list and the reader's sticky Reply bar on a message — because the
     // failure is identical either way: space with nothing over it is a gap,
     // something over it with no space hides the last line.
-    expect(shell).toMatch(/const reservesBottomBar = showComposeFab \|\| isReading;/);
+    expect(shell).toMatch(/const reservesBottomBar = showComposeFab \|\| isImmersive;/);
     expect(shell).toMatch(/reservesBottomBar\s*\n?\s*\?\s*'pb-\[calc\(var\(--safe-bottom\)\+5rem\)\] lg:pb-\[var\(--safe-bottom\)\]'/);
     expect(shell).toMatch(/:\s*'pb-\[var\(--safe-bottom\)\]'/);
   });

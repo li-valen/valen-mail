@@ -300,8 +300,8 @@ export interface AppShellProps {
    *  established, so assistive tech knows the emptiness is temporary. */
   readonly isBusy?: boolean;
   /**
-   * True while the reader has REPLACED the list — App.tsx's
-   * `selected !== null`.
+   * True while a single task has REPLACED the list — reading a message, or
+   * writing one.
    *
    * Below `lg:` this strips the shell back to the message, which is what
    * the user asked for after putting Valen Mail beside Gmail on a phone:
@@ -311,11 +311,17 @@ export interface AppShellProps {
    * stacking to roughly a third of the viewport before a single line of
    * the message.
    *
+   * Composing counts for the same reason reading does, and the user said so
+   * twice: the composer sat under a search field it cannot use, a folder
+   * heading naming a place it is not in, and its own header — 39% of a
+   * 393px screen gone before the first line of the message. *"too much
+   * space taken up. clean simple efficient."*
+   *
    * Above `lg:` it changes NOTHING. There is room for the search field and
    * the selection on a desktop, and losing them on the way into a message
    * would be a regression rather than a simplification.
    */
-  readonly isReading?: boolean;
+  readonly isImmersive?: boolean;
   /**
    * A ref onto the ONE scrolling element in this layout — the `<main>`
    * below. `<main>` scrolls, not the document (`h-dvh` + `flex-1
@@ -357,7 +363,7 @@ export default function AppShell({
   searchValue,
   onSearchChange,
   sidebarFooter,
-  isReading = false,
+  isImmersive = false,
   isBusy = false,
   contentRef,
   composeRef,
@@ -370,7 +376,7 @@ export default function AppShell({
    *  reserves the space it occupies and the two must not disagree — space
    *  reserved with no button is a gap, and a button with no space reserved
    *  covers the last row. */
-  const showComposeFab = view !== 'compose' && !isReading;
+  const showComposeFab = view !== 'compose' && !isImmersive;
 
   /**
    * Whether SOMETHING is pinned to the bottom edge below `lg:` — the
@@ -382,7 +388,7 @@ export default function AppShell({
    * space with nothing over it is a gap at the foot of every screen, and
    * something over it with no space hides the last line.
    */
-  const reservesBottomBar = showComposeFab || isReading;
+  const reservesBottomBar = showComposeFab || isImmersive;
 
   // Every sidebar control closes the drawer after acting: below `lg:` the
   // sidebar covers the content it just changed, so leaving it open would
@@ -608,7 +614,7 @@ export default function AppShell({
         <header
           className={cn(
             'h-[calc(4rem+var(--safe-top))] shrink-0 border-b border-neutral-200 bg-card pt-[var(--safe-top)] pl-[var(--safe-left)] pr-[var(--safe-right)] dark:border-border',
-            isReading && 'hidden lg:block',
+            isImmersive && 'hidden lg:block',
           )}
         >
           <div className="mx-auto flex h-full max-w-5xl items-center gap-3 px-4 sm:px-6 lg:px-8">
@@ -673,7 +679,7 @@ export default function AppShell({
             // hidden, this column is what sits under the cutout, so it
             // takes the inset over — otherwise the subject line renders
             // behind the status bar.
-            isReading && 'pt-[var(--safe-top)] lg:pt-0',
+            isImmersive && 'pt-[var(--safe-top)] lg:pt-0',
             // Room for the floating Compose button to sit over, so the last
             // row of a list — or the last line of a message — can still be
             // scrolled clear of it. Only while that button is actually
@@ -708,11 +714,11 @@ export default function AppShell({
                 — the user said so — but it is still the document's `h1`,
                 and deleting it would start a screen reader's outline at
                 the message's own `<h2>`. Hidden, kept, announced. */}
-            <div className={cn(isReading ? 'lg:mb-0' : 'mb-4 lg:mb-0')}>
+            <div className={cn(isImmersive ? 'lg:mb-0' : 'mb-4 lg:mb-0')}>
               <h1
                 className={cn(
                   'truncate text-base font-semibold text-neutral-900 dark:text-foreground lg:sr-only',
-                  isReading && 'sr-only',
+                  isImmersive && 'sr-only',
                 )}
               >
                 {heading}

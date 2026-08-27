@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent, KeyboardEvent } from 'react';
-import { Loader2, Paperclip, Send, X } from 'lucide-react';
+import { ChevronDown, Loader2, Paperclip, Send, X } from 'lucide-react';
 
 import { ApiError } from '../api';
 import { getIdentities, identityIdForAccount, primaryIdentityId, sendMail } from '../composeApi';
@@ -12,7 +12,6 @@ import {
   degradationNotice,
   formatFileSize,
   mergePicked,
-  totalBytes,
   willDegradeTracking,
   withoutPickedAt,
 } from '../attachmentPicker';
@@ -36,14 +35,10 @@ import type { ComposeDraft, ComposeErrors } from './composeValidation';
 import { describeSendFailure, summarizeResults } from './composeResults';
 import type { ResultSummary, SendFailure } from './composeResults';
 import { Alert, AlertDescription } from '../ui/Alert';
-import { Button } from '../ui/Button';
 import { Card } from '../ui/Card';
-import { Input } from '../ui/Input';
 import { Label } from '../ui/Label';
-import { Select } from '../ui/Select';
-import { Textarea } from '../ui/Textarea';
 import { cn } from '../ui/cn';
-import { TOUCH_HEIGHT } from '../ui/touchTarget';
+import { TOUCH_INPUT_TEXT } from '../ui/touchTarget';
 
 /**
  * The composer: pick an account, name some recipients, write plain text,
@@ -93,7 +88,6 @@ export const DISCARD_DRAFT_PROMPT = 'Discard this draft? What you have written w
  */
 const TRACKING_NOTE = 'Tracked — each recipient gets their own tracking pixel.';
 
-const RECIPIENT_HINT = 'Separate addresses with a comma or a space.';
 
 /** Shown when the browser could not hand over a file the user picked — a
  *  file moved or deleted between picking and sending is the usual cause. */
@@ -365,7 +359,6 @@ export default function Compose({ reply, onClose, onSent, onDirtyChange }: Compo
    */
   const recipientCount = draft.to.length + draft.cc.length;
   const attachmentProblem = useMemo(() => attachmentError(picked), [picked]);
-  const attachedBytes = useMemo(() => totalBytes(picked), [picked]);
   const isTrackingDegraded = useMemo(
     // Suppressed while an attachment is over a hard cap: that send cannot
     // happen at all, so telling the user what its tracking would look like
@@ -526,291 +519,344 @@ export default function Compose({ reply, onClose, onSent, onDirtyChange }: Compo
     identities.length > 0 &&
     attachmentProblem === undefined;
 
+  /* ONE ROW OF ICONS INSTEAD OF A TITLE BAR AND A FOOTER.
+     The composer carried a heading with a Cancel button at the top and a
+     Send button in a footer at the bottom, with labelled, bordered fields
+     and three lines of helper text in between. On a 393px screen that left
+     the body — the only part anyone is actually here to use — as a strip.
+     The user, beside Gmail's compose: "too much space taken up. clean
+     simple efficient."
+
+     So: close, attach and send become icons on one line, and the heading
+     goes `sr-only`. It still names the section for `aria-labelledby`, which
+     is how a screen reader announces whether this is a reply, a forward or
+     a new message — the one thing the visual redesign would otherwise
+     silently drop. */
+  const iconButton =
+    'inline-flex size-11 shrink-0 items-center justify-center rounded-full text-neutral-600 ' +
+    'transition-colors cursor-pointer touch-manipulation hover:bg-neutral-100 hover:text-neutral-900 ' +
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ' +
+    'focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-40 ' +
+    'dark:text-muted-foreground dark:hover:bg-accent dark:hover:text-accent-foreground';
+
   return (
-    // PLAN 7 TASK 2 — the composer arrives on the same curve and at the
-    // same distance as the reader (src/motion/Panel.tsx): they are the
-    // two surfaces that replace the whole content column, so they should
-    // not enter differently. Its EXIT is the incoming view's entrance —
-    // closing the composer changes `view`, and App.tsx's view swap
-    // animates whatever comes back — so there is nothing to animate here
-    // on the way out.
     <Panel>
       <section aria-labelledby={titleId} onKeyDown={handleKeyDown}>
-      <Card>
-        <header className="flex items-center justify-between gap-3 border-b border-neutral-200 px-4 py-3 dark:border-border sm:px-6 sm:py-4">
-          <h2 id={titleId} className="text-base font-semibold">
-            {composerTitleFor(reply?.mode ?? null)}
-          </h2>
-          <Button type="button" variant="ghost" size="sm" className={TOUCH_HEIGHT} onClick={requestClose} disabled={isSending}>
-            Cancel
-          </Button>
-        </header>
+        <Card className="overflow-hidden">
+          <form onSubmit={handleSubmit} noValidate>
+            <header className="flex items-center justify-between gap-1 border-b border-neutral-200 px-2 py-1.5 dark:border-border">
+              <button
+                type="button"
+                onClick={requestClose}
+                disabled={isSending}
+                className={iconButton}
+              >
+                <X className="size-5" aria-hidden="true" />
+                <span className="sr-only">Close</span>
+              </button>
 
-        <form onSubmit={handleSubmit} noValidate className="space-y-4 p-4 sm:p-6">
-          {identityLoad.status === 'error' && (
-            <Alert variant="destructive">
-              <AlertDescription>{identityLoad.message}</AlertDescription>
-            </Alert>
-          )}
+              <h2 id={titleId} className="sr-only">
+                {composerTitleFor(reply?.mode ?? null)}
+              </h2>
 
-          {identityLoad.status === 'ready' && identities.length === 0 && (
-            <Alert variant="warning">
-              <AlertDescription>
-                No sending accounts are configured, so Valen Mail cannot send anything yet.
-              </AlertDescription>
-            </Alert>
-          )}
+              <div className="flex items-center gap-1">
+                {/* The real <input type="file"> does the work; this button is
+                    its accessible surrogate, because a <label> styled as a
+                    button is clickable but not focusable. The input is out of
+                    the tab order and hidden from the a11y tree so exactly ONE
+                    control is announced, not two. */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  tabIndex={-1}
+                  aria-hidden="true"
+                  onChange={handleFilesPicked}
+                />
+                <button
+                  type="button"
+                  disabled={isSending}
+                  onClick={() => fileInputRef.current?.click()}
+                  className={iconButton}
+                >
+                  <Paperclip className="size-5" aria-hidden="true" />
+                  <span className="sr-only">Attach files</span>
+                </button>
 
-          <div className="space-y-1.5">
-            <Label htmlFor={identityFieldId}>Send from</Label>
-            <Select
-              id={identityFieldId}
-              value={identityId}
-              disabled={isSending || isLoadingIdentities || identities.length === 0}
-              aria-invalid={errors.identityId !== undefined}
-              onChange={(event) => setIdentityId(event.target.value)}
-            >
-              {isLoadingIdentities && <option value="">Loading accounts…</option>}
-              {identities.map((identity) => (
-                <option key={identity.id} value={identity.id}>
-                  {identity.isPrimary ? `${identity.email} (primary)` : identity.email}
-                </option>
-              ))}
-            </Select>
+                <button
+                  type="submit"
+                  disabled={!canSend}
+                  aria-busy={isSending}
+                  aria-describedby={trackingNoteId}
+                  className={cn(iconButton, 'text-primary hover:text-primary dark:text-primary')}
+                >
+                  {isSending ? (
+                    <Loader2 className="size-5 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Send className="size-5" aria-hidden="true" />
+                  )}
+                  <span className="sr-only">{isSending ? 'Sending…' : 'Send'}</span>
+                </button>
+              </div>
+            </header>
+
+            {isTrackingDegraded && (
+              /* SPEC §5.3.1 / §7A.2 — said BEFORE the send, while the user
+                 can still drop a file or a recipient.
+
+                 IT MOVED WHEN SEND MOVED. This used to sit at the foot of the
+                 form, immediately above a Send button that was also at the
+                 foot — so "before the send" was true both in the source and
+                 on the screen. Send is an icon in the header now, and a
+                 warning left at the bottom would sit a full body-length below
+                 the control it is warning about: on a phone the user could
+                 send without ever scrolling to it. Adjacent to Send is what
+                 the spec is actually asking for, so it follows Send up here.
+
+                 An Alert rather than a muted line because this is a decision,
+                 not a footnote: what the message can tell them afterwards is
+                 about to change. `<Settle>` because of WHEN it appears —
+                 mid-compose, in answer to the file just attached, with the
+                 form already on screen around it. */
+              <div className="px-4 pt-3">
+                <Settle>
+                  <Alert variant="warning">
+                    <AlertDescription>{degradationNotice()}</AlertDescription>
+                  </Alert>
+                </Settle>
+              </div>
+            )}
+
+            <RecipientField
+              id={toFieldId}
+              label="To"
+              addresses={to}
+              pending={toPending}
+              onChange={(next, pending) => {
+                setTo(next);
+                setToPending(pending);
+              }}
+              failed={partial?.failed}
+              error={errors.to}
+              isDisabled={isSending}
+              inputRef={toInputRef}
+              placeholder="name@example.com"
+              trailing={
+                isCcShown ? undefined : (
+                  /* Cc lives behind this the way it does in Gmail: most mail
+                     has none, and a permanently visible empty Cc row is a
+                     whole row of nothing. */
+                  <button
+                    type="button"
+                    disabled={isSending}
+                    onClick={() => {
+                      isCcRevealedByUserRef.current = true;
+                      setCcShown(true);
+                    }}
+                    className={iconButton}
+                  >
+                    <ChevronDown className="size-5" aria-hidden="true" />
+                    <span className="sr-only">Add Cc</span>
+                  </button>
+                )
+              }
+            />
+
+            {isCcShown && (
+              <RecipientField
+                id={ccFieldId}
+                label="Cc"
+                addresses={cc}
+                pending={ccPending}
+                onChange={(next, pending) => {
+                  setCc(next);
+                  setCcPending(pending);
+                }}
+                failed={partial?.failed}
+                error={errors.cc}
+                isDisabled={isSending}
+                inputRef={ccInputRef}
+                placeholder="name@example.com"
+              />
+            )}
+
+            {errors.recipients !== undefined && (
+              <p role="alert" className="px-4 py-2 text-xs text-red-600 dark:text-red-400">
+                {errors.recipients}
+              </p>
+            )}
+
+            {/* From, Subject and the body share the address rows' geometry —
+                same left edge for the label, same for the value — which is
+                what keeps a borderless form reading as a form. */}
+            <div className="flex items-center gap-3 border-b border-neutral-200 px-4 dark:border-border">
+              <Label
+                htmlFor={identityFieldId}
+                className="w-14 shrink-0 py-3 text-sm font-normal text-neutral-500 dark:text-muted-foreground"
+              >
+                From
+              </Label>
+              <select
+                id={identityFieldId}
+                value={identityId}
+                disabled={isSending || isLoadingIdentities || identities.length === 0}
+                aria-invalid={errors.identityId !== undefined}
+                onChange={(event) => setIdentityId(event.target.value)}
+                className={cn(
+                  'min-w-0 flex-1 cursor-pointer touch-manipulation border-0 bg-transparent py-3 outline-none',
+                  '[color-scheme:light] dark:[color-scheme:dark]',
+                  TOUCH_INPUT_TEXT,
+                )}
+              >
+                {isLoadingIdentities && <option value="">Loading accounts…</option>}
+                {identities.map((identity) => (
+                  <option key={identity.id} value={identity.id}>
+                    {identity.isPrimary ? `${identity.email} (primary)` : identity.email}
+                  </option>
+                ))}
+              </select>
+            </div>
             {errors.identityId !== undefined && (
-              <p role="alert" className="text-xs text-red-600 dark:text-red-400">
+              <p role="alert" className="px-4 py-2 text-xs text-red-600 dark:text-red-400">
                 {errors.identityId}
               </p>
             )}
-          </div>
 
-          <RecipientField
-            id={toFieldId}
-            label="To"
-            addresses={to}
-            pending={toPending}
-            onChange={(next, pending) => {
-              setTo(next);
-              setToPending(pending);
-            }}
-            failed={partial?.failed}
-            error={errors.to}
-            hint={RECIPIENT_HINT}
-            isDisabled={isSending}
-            inputRef={toInputRef}
-            placeholder="name@example.com"
-          />
-
-          {isCcShown ? (
-            <RecipientField
-              id={ccFieldId}
-              label="Cc"
-              addresses={cc}
-              pending={ccPending}
-              onChange={(next, pending) => {
-                setCc(next);
-                setCcPending(pending);
-              }}
-              failed={partial?.failed}
-              error={errors.cc}
-              isDisabled={isSending}
-              inputRef={ccInputRef}
-              placeholder="name@example.com"
-            />
-          ) : (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm" className={TOUCH_HEIGHT}
-              disabled={isSending}
-              onClick={() => {
-                isCcRevealedByUserRef.current = true;
-                setCcShown(true);
-              }}
-            >
-              Add Cc
-            </Button>
-          )}
-
-          {errors.recipients !== undefined && (
-            <p role="alert" className="text-xs text-red-600 dark:text-red-400">
-              {errors.recipients}
-            </p>
-          )}
-
-          <div className="space-y-1.5">
-            <Label htmlFor={subjectFieldId}>Subject</Label>
-            <Input
-              id={subjectFieldId}
-              value={subject}
-              disabled={isSending}
-              aria-invalid={errors.subject !== undefined}
-              onChange={(event) => setSubject(event.target.value)}
-              // A single-submit-button form submits on Enter in any text
-              // input — which here would mean an unfinished message going
-              // out the moment someone finishes typing a subject and
-              // reaches for the next field by habit. Enter moves to the
-              // body instead, so Send is reachable only by Send.
-              onKeyDown={(event) => {
-                if (event.key !== 'Enter') return;
-                event.preventDefault();
-                bodyRef.current?.focus();
-              }}
-            />
+            <div className="flex items-center gap-3 border-b border-neutral-200 px-4 dark:border-border">
+              <Label
+                htmlFor={subjectFieldId}
+                className="w-14 shrink-0 py-3 text-sm font-normal text-neutral-500 dark:text-muted-foreground"
+              >
+                Subject
+              </Label>
+              <input
+                id={subjectFieldId}
+                type="text"
+                value={subject}
+                disabled={isSending}
+                aria-invalid={errors.subject !== undefined}
+                onChange={(event) => setSubject(event.target.value)}
+                // A single-submit-button form submits on Enter in any text
+                // input — which here would mean an unfinished message going
+                // out the moment someone finishes the subject and reaches for
+                // the next field by habit. Enter moves to the body instead,
+                // so Send is reachable only by Send.
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter') return;
+                  event.preventDefault();
+                  bodyRef.current?.focus();
+                }}
+                className={cn(
+                  'min-w-0 flex-1 border-0 bg-transparent py-3 outline-none placeholder:text-muted-foreground',
+                  TOUCH_INPUT_TEXT,
+                )}
+              />
+            </div>
             {errors.subject !== undefined && (
-              <p role="alert" className="text-xs text-red-600 dark:text-red-400">
+              <p role="alert" className="px-4 py-2 text-xs text-red-600 dark:text-red-400">
                 {errors.subject}
               </p>
             )}
-          </div>
 
-          <div className="space-y-1.5">
-            <Label htmlFor={bodyFieldId}>Message</Label>
-            <Textarea
+            {/* No visible label, so the placeholder is not the accessible
+                name — `aria-label` is. A placeholder disappears the moment
+                anyone types, which is exactly when a screen reader user would
+                still need to know what the field is. */}
+            <textarea
               id={bodyFieldId}
               ref={bodyRef}
-              rows={12}
+              rows={14}
               value={textBody}
               disabled={isSending}
+              aria-label="Message"
               aria-invalid={errors.textBody !== undefined}
               onChange={(event) => setTextBody(event.target.value)}
+              placeholder="Compose email"
+              className={cn(
+                'w-full resize-none border-0 bg-transparent px-4 py-3 outline-none placeholder:text-muted-foreground',
+                TOUCH_INPUT_TEXT,
+              )}
             />
             {errors.textBody !== undefined && (
-              <p role="alert" className="text-xs text-red-600 dark:text-red-400">
+              <p role="alert" className="px-4 pb-2 text-xs text-red-600 dark:text-red-400">
                 {errors.textBody}
               </p>
             )}
-          </div>
 
-          {/* ATTACHMENTS. A real <input type="file"> does the work; the
-              Button is its accessible surrogate, because a <label>
-              styled as a button is clickable but not focusable, and a
-              bare file input cannot be styled to match anything else on
-              this form. The input is taken out of the tab order and
-              hidden from the accessibility tree so there is exactly ONE
-              control announced here, not two.
+            {/* Everything below here renders ONLY when it has something to
+                say. That is the difference between this and what it replaced:
+                the old form paid for a hint line, an attach button and a
+                footer on every compose, whether or not any of them applied. */}
+            <div className="space-y-2 px-4 pb-3 empty:hidden">
+              {identityLoad.status === 'error' && (
+                <Alert variant="destructive">
+                  <AlertDescription>{identityLoad.message}</AlertDescription>
+                </Alert>
+              )}
 
-              Fluid at every width: the row wraps rather than gaining a
-              second layout, and the chips wrap with it, so nothing here
-              is gated to `lg:`. Attaching a file on a phone is not a
-              desktop affordance. */}
-          <div className="space-y-2">
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                className="hidden"
-                tabIndex={-1}
-                aria-hidden="true"
-                onChange={handleFilesPicked}
-              />
-              <Button
-                type="button"
-                variant="outline"
-                size="sm" className={TOUCH_HEIGHT}
-                disabled={isSending}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <Paperclip aria-hidden="true" />
-                Attach files
-              </Button>
+              {identityLoad.status === 'ready' && identities.length === 0 && (
+                <Alert variant="warning">
+                  <AlertDescription>
+                    No sending accounts are configured, so Valen Mail cannot send anything yet.
+                  </AlertDescription>
+                </Alert>
+              )}
+
               {picked.length > 0 && (
-                <p className="text-xs text-muted-foreground">
-                  {picked.length === 1 ? '1 file' : `${picked.length} files`} ·{' '}
-                  {formatFileSize(attachedBytes)}
+                <ul aria-label="Attached files" className="flex flex-wrap items-center gap-1.5">
+                  {picked.map((attachment, index) => (
+                    <li key={attachment.id}>
+                      <span className={cn(CHIP_BASE, CHIP_NEUTRAL)}>
+                        {/* Filenames are user input rendered as a text child,
+                            like every address chip beside them — nothing here
+                            goes near a raw-HTML sink. */}
+                        <span className="truncate">{attachment.name}</span>
+                        <span className={CHIP_SECONDARY}>{formatFileSize(attachment.size)}</span>
+                        <button
+                          type="button"
+                          onClick={() => removeAttachment(index)}
+                          disabled={isSending}
+                          className={CHIP_REMOVE}
+                        >
+                          <X className="h-3 w-3" aria-hidden="true" />
+                          <span className="sr-only">Remove {attachment.name}</span>
+                        </button>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {attachmentProblem !== undefined && (
+                <p role="alert" className="text-xs text-red-600 dark:text-red-400">
+                  {attachmentProblem}
                 </p>
               )}
-            </div>
-
-            {picked.length > 0 && (
-              <ul aria-label="Attached files" className="flex flex-wrap items-center gap-1.5">
-                {picked.map((attachment, index) => (
-                  <li key={attachment.id}>
-                    <span className={cn(CHIP_BASE, CHIP_NEUTRAL)}>
-                      {/* Filenames are user input rendered as a text
-                          child, like every address chip beside them —
-                          nothing here goes near a raw-HTML sink. */}
-                      <span className="truncate">{attachment.name}</span>
-                      <span className={CHIP_SECONDARY}>{formatFileSize(attachment.size)}</span>
-                      <button
-                        type="button"
-                        onClick={() => removeAttachment(index)}
-                        disabled={isSending}
-                        className={CHIP_REMOVE}
-                      >
-                        <X className="h-3 w-3" aria-hidden="true" />
-                        <span className="sr-only">Remove {attachment.name}</span>
-                      </button>
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            {attachmentProblem !== undefined && (
-              <p role="alert" className="text-xs text-red-600 dark:text-red-400">
-                {attachmentProblem}
-              </p>
-            )}
-            {readError !== null && (
-              <p role="alert" className="text-xs text-red-600 dark:text-red-400">
-                {readError}
-              </p>
-            )}
-          </div>
-
-          {isTrackingDegraded && (
-            /* SPEC §5.3.1 / §7A.2 — said BEFORE the send, while the user
-               can still drop a file or a recipient. An Alert rather than
-               the quiet muted line below it because this is a decision,
-               not a footnote: what the message can tell them afterwards
-               is about to change.
-
-               `<Settle>` because of WHEN it appears: mid-compose, in
-               answer to the file the user just attached, with the form
-               already on screen around it. Every other banner in this app
-               settles in for exactly that reason (see App.tsx's), and
-               this was the one that punched into the layout between two
-               frames — which reads as the form having jumped rather than
-               as the app answering. */
-            <Settle>
-              <Alert variant="warning">
-                <AlertDescription>{degradationNotice()}</AlertDescription>
-              </Alert>
-            </Settle>
-          )}
-
-          {quoteNotice !== null && (
-            /* Quiet, and stated where the user is looking when they
-               finish writing. The quote itself is assembled server-side
-               (../replyDraft.ts's header), so there is nothing here to
-               preview — only the promise that it will be there, or the
-               admission that it will not. */
-            <p className="text-xs text-muted-foreground">{quoteNotice}</p>
-          )}
-
-          <ComposeOutcome
-            partial={partial}
-            failure={failure}
-            onDropSentRecipients={() => keepOnlyFailed(partial?.failed ?? [])}
-          />
-
-          <footer className="flex flex-wrap items-center justify-between gap-3 pt-2">
-            <p id={trackingNoteId} className="text-xs text-muted-foreground">
-              {TRACKING_NOTE}
-            </p>
-            <Button type="submit" className={TOUCH_HEIGHT} disabled={!canSend} aria-busy={isSending} aria-describedby={trackingNoteId}>
-              {isSending ? (
-                <Loader2 className="animate-spin" aria-hidden="true" />
-              ) : (
-                <Send aria-hidden="true" />
+              {readError !== null && (
+                <p role="alert" className="text-xs text-red-600 dark:text-red-400">
+                  {readError}
+                </p>
               )}
-              {isSending ? 'Sending…' : 'Send'}
-            </Button>
-          </footer>
-        </form>
-      </Card>
+
+
+              <ComposeOutcome
+                partial={partial}
+                failure={failure}
+                onDropSentRecipients={() => keepOnlyFailed(partial?.failed ?? [])}
+              />
+
+              {/* The tracking disclosure stays, and stays VISIBLE. It is one
+                  muted line rather than a footer, but it is the one thing on
+                  this form the user cannot infer from the interface — every
+                  recipient gets their own pixel — and it is what Send's
+                  `aria-describedby` points at. Quiet is fine; absent is not. */}
+              <p id={trackingNoteId} className="text-xs text-muted-foreground">
+                {quoteNotice === null ? TRACKING_NOTE : `${quoteNotice} ${TRACKING_NOTE}`}
+              </p>
+            </div>
+          </form>
+        </Card>
       </section>
     </Panel>
   );

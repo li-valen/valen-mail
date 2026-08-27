@@ -1,4 +1,4 @@
-import type { KeyboardEvent, Ref } from 'react';
+import type { KeyboardEvent, ReactNode, Ref } from 'react';
 import { X } from 'lucide-react';
 
 import {
@@ -56,7 +56,9 @@ interface RecipientFieldProps {
    *  partial failure is legible per address, not just as a count. */
   readonly failed?: readonly string[];
   readonly error?: string;
-  readonly hint?: string;
+  /** Rendered at the right end of the row — the To row uses it for the
+   *  Cc/Bcc disclosure, the way Gmail does. */
+  readonly trailing?: ReactNode;
   readonly isDisabled?: boolean;
   readonly inputRef?: Ref<HTMLInputElement>;
   readonly placeholder?: string;
@@ -70,14 +72,13 @@ export default function RecipientField({
   onChange,
   failed = [],
   error,
-  hint,
+  trailing,
   isDisabled = false,
   inputRef,
   placeholder,
 }: RecipientFieldProps) {
-  const hintId = `${id}-hint`;
   const errorId = `${id}-error`;
-  const describedBy = [hint === undefined ? null : hintId, error === undefined ? null : errorId]
+  const describedBy = [error === undefined ? null : errorId]
     .filter((value): value is string => value !== null)
     .join(' ');
 
@@ -124,18 +125,31 @@ export default function RecipientField({
   }
 
   return (
-    <div className="space-y-1.5">
-      <Label htmlFor={id}>{label}</Label>
+    /* A ROW, NOT A LABELLED BOX. The composer used to stack a label above a
+       bordered field for every address line; four of those plus their hints
+       filled most of a phone screen before the body. The user, beside
+       Gmail's compose: "too much space taken up. clean simple efficient."
+       Gmail's answer is a label sitting inline at the left of a borderless
+       row, with one hairline between rows doing the separating — so the
+       field's edges cost nothing and the body gets the space back. */
+    <div
+      className={cn(
+        'border-b border-neutral-200 transition-colors focus-within:bg-neutral-50 dark:border-border dark:focus-within:bg-accent/30',
+        isDisabled && 'opacity-50',
+      )}
+    >
+      <div className="flex items-start gap-3 px-4">
+        <Label
+          htmlFor={id}
+          /* Fixed width so To / Cc / From / Subject share one left edge and
+             their values share another — the alignment is what makes a
+             borderless form still read as a form. */
+          className="w-14 shrink-0 py-3 text-sm font-normal text-neutral-500 dark:text-muted-foreground"
+        >
+          {label}
+        </Label>
 
-      {/* The border and focus ring live on this wrapper rather than on
-          the input, so chips and caret read as one field. */}
-      <div
-        className={cn(
-          'flex w-full flex-wrap items-center gap-1.5 rounded-md border bg-transparent px-2 py-1.5 transition-colors focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background',
-          error === undefined ? 'border-input' : 'border-red-400 dark:border-red-800',
-          isDisabled && 'opacity-50',
-        )}
-      >
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 py-1.5">
         {addresses.length > 0 && (
           <ul className="flex flex-wrap items-center gap-1.5">
             {addresses.map((address) => {
@@ -179,16 +193,13 @@ export default function RecipientField({
           onBlur={commitPending}
           className={`min-w-[8rem] flex-1 bg-transparent px-1 py-0.5 outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed ${TOUCH_INPUT_TEXT} ${TOUCH_MIN_HEIGHT}`}
         />
+        </div>
+
+        {trailing !== undefined && <div className="shrink-0 self-center">{trailing}</div>}
       </div>
 
-      {hint !== undefined && (
-        <p id={hintId} className="text-xs text-muted-foreground">
-          {hint}
-        </p>
-      )}
-
       {error !== undefined && (
-        <p id={errorId} role="alert" className="text-xs text-red-600 dark:text-red-400">
+        <p id={errorId} role="alert" className="px-4 pb-2 text-xs text-red-600 dark:text-red-400">
           {error}
         </p>
       )}
