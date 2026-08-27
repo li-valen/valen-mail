@@ -64,7 +64,7 @@ function messageFor(error: unknown): string {
   if (error instanceof ApiError) {
     return `The sync service answered ${error.status}. Sent mail could not load.`;
   }
-  return "Postbox can't reach the sync service. Sent mail could not load.";
+  return "Valen Mail can't reach the sync service. Sent mail could not load.";
 }
 
 export interface FollowupViewProps {

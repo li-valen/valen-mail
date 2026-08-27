@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development.
 
 **Goal:** Sync mail history, not just the newest 50 UIDs per folder — the blocker
-between Postbox and the user's stated goal of never opening Gmail again.
+between Valen Mail and the user's stated goal of never opening Gmail again.
 
 **Measured problem (2026-08-25):** INBOX depth is **3 days** on primary, 6 on
 personal, 14-15 on harvard/masterman. Search and browse only reach that window.

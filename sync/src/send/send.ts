@@ -236,7 +236,7 @@ export interface SendTrackedRequest {
   readonly textBody: string;
   /**
    * The quoted original as ../send/quote.ts built it, or undefined for a
-   * plain compose. Already stripped of any Postbox pixel the original
+   * plain compose. Already stripped of any Valen Mail pixel the original
    * carried (spec §5.6) — the strip runs at quote construction, BEFORE
    * ./build.ts injects this recipient's new pixel immediately in front of
    * it (spec §5.2).

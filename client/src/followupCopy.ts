@@ -212,7 +212,7 @@ export function emptyStateFor(
 ): FollowupEmptyState {
   if (!opensAvailable) {
     return {
-      title: "Postbox can't reach the tracking service.",
+      title: "Valen Mail can't reach the tracking service.",
       description:
         'Read state is missing, not empty. This fills in again once the connection returns.',
     };

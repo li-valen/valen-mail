@@ -5,7 +5,7 @@ import { cn } from './cn';
 /**
  * Ported verbatim from Plunk (AGPL-3.0),
  * `packages/ui/src/components/atoms/Card.tsx`. `CardFooter` is omitted —
- * nothing in Postbox renders one, and the brief is "port only the atoms
+ * nothing in Valen Mail renders one, and the brief is "port only the atoms
  * you use".
  */
 export function Card({ className, ref, ...props }: React.ComponentProps<'div'>) {

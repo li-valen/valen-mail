@@ -118,7 +118,7 @@ export interface TrackedMessage {
    * absent for a plain compose, which is every message this product sent
    * before Plan 9.
    *
-   * ALREADY STRIPPED of any Postbox pixel the original carried (spec §5.6)
+   * ALREADY STRIPPED of any Valen Mail pixel the original carried (spec §5.6)
    * and already escaped where it needed to be: this builder splices it in
    * verbatim. It is html by construction, so escaping it here would show
    * the recipient the quote's own markup as literal text.

@@ -3,7 +3,7 @@ import { isCurrentSelection, resolveLoadMorePage } from '../src/components/inbox
 import type { InboxCursor, InboxMessage, InboxPage } from '../src/api';
 
 /**
- * I3 fix (Postbox whole-branch review). `InboxList.tsx`'s `loadMore` can
+ * I3 fix (Valen Mail whole-branch review). `InboxList.tsx`'s `loadMore` can
  * resolve after the user has switched {folder, account}: without a guard,
  * the stale page gets appended to whatever list is now on screen (one
  * folder's rows spliced onto another's), and the stale request's

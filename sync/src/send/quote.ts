@@ -77,7 +77,7 @@ function twoDigits(value: number): string {
 
 /**
  * "On Tue, Nov 14, 2023 at 10:13 PM Ada <ada@example.com> wrote:" —
- * Gmail's own attribution shape, so a reply from Postbox is
+ * Gmail's own attribution shape, so a reply from Valen Mail is
  * indistinguishable from a reply from Gmail in every client that renders
  * one.
  *

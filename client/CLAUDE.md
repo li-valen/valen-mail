@@ -1,4 +1,4 @@
-# Postbox client — frontend build guide
+# Valen Mail client — frontend build guide
 
 Derived from ~/frontend-CLAUDE.md. That file stays a template; this is its
 filled-in instance for this project. Read that file for the full tier tables.

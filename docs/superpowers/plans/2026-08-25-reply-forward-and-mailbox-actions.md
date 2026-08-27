@@ -32,7 +32,7 @@ bodies), §5.6 (strip own pixel when preparing a reply/forward draft, BINDING),
   `.gmail_quote` element; appended to the body root only when no quote exists.
   Plan 4 only ever exercised the second branch. This plan exercises the first.
 - **Draft strip** (spec §5.6, BINDING): a reply/forward draft MUST have any
-  existing Postbox pixel stripped **before** the new pixel is injected. This is a
+  existing Valen Mail pixel stripped **before** the new pixel is injected. This is a
   *different code path* from `api/strip-pixel.ts`'s strip-at-render (commit
   `d056622`) and does not come for free from it — the quote is built from the
   original body, and an unstripped quote re-fires the original recipient's token.
@@ -72,7 +72,7 @@ bodies), §5.6 (strip own pixel when preparing a reply/forward draft, BINDING),
 ## Task 1: Expose the threading headers the reader already parses
 
 Today `ParsedMessage` returns `from`/`to`/`cc`/`subject`/`date` but **not**
-`messageId` or `references`. Without them a reply from Postbox arrives in the
+`messageId` or `references`. Without them a reply from Valen Mail arrives in the
 recipient's Gmail as a brand-new thread — the single most visible way a mail
 client looks broken. `mailparser` already parses both; the route simply drops them.
 
@@ -211,7 +211,7 @@ git commit -m "feat: expose Message-ID and References so replies can thread"
 ```ts
 const QUOTE = { fromLabel: 'Ada <ada@example.com>', sentAtMs: 1_700_000_000_000 };
 
-test('strips a Postbox pixel out of the quoted original (spec 5.6)', () => {
+test('strips a Valen Mail pixel out of the quoted original (spec 5.6)', () => {
   // Arrange — this is our own tracking origin, i.e. exactly what our own Sent
   // copy of the message being replied to contains.
   const html = buildQuotedHtml({
@@ -266,7 +266,7 @@ import { stripOwnTrackingPixels } from '../api/strip-pixel.ts';
 
 /**
  * "On Mon, Nov 14, 2023 at 10:13 PM Ada <ada@example.com> wrote:" — Gmail's
- * own attribution shape, so a reply from Postbox is indistinguishable from a
+ * own attribution shape, so a reply from Valen Mail is indistinguishable from a
  * reply from Gmail in every client that renders one.
  *
  * FIXED to UTC deliberately. This string is written into mail that leaves the

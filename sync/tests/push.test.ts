@@ -582,7 +582,7 @@ describe('sendPush payload bounds', () => {
   it('falls back to a usable title when the subject bounds away to nothing', async () => {
     const { sent, sendImpl } = capture();
     await sendPush(VALID_SUBSCRIPTION, { title: '   ' }, VAPID, sendImpl);
-    expect((JSON.parse(sent[0]!) as { title: string }).title).toBe('Postbox');
+    expect((JSON.parse(sent[0]!) as { title: string }).title).toBe('Valen Mail');
   });
 
   it('leaves an absent optional field absent rather than sending an empty string', async () => {

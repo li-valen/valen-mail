@@ -178,7 +178,7 @@ function OpensFeedBody({ load, now, compact, onOpenEvent }: OpensFeedBodyProps) 
       <Panel compact={compact}>
         <EmptyState
           icon={CloudOff}
-          title="Postbox can't reach the tracking service."
+          title="Valen Mail can't reach the tracking service."
           description="This feed is blank because nothing is being recorded, not because nothing happened. It fills in again once the connection returns."
         />
       </Panel>
@@ -482,7 +482,7 @@ function OpenEntry({ event, now, onOpen, variants, isNew }: OpenEntryProps) {
         <span className="min-w-0 flex-1">
           {/* THE TIME GETS ITS OWN COLUMN, and that is the whole of this
               change. As one truncating sentence the row read
-              `li.valen.008@gmail.com opened "…` in a 320px rail: the
+              `recipient@example.com opened "…` in a 320px rail: the
               recipient (nearly always the same address, and therefore the
               least informative part) consumed the width, and both the
               subject and the time — the two things the row exists to say

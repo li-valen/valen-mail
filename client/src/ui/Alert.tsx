@@ -6,7 +6,7 @@ import { cn } from './cn';
 /**
  * Ported verbatim from Plunk (AGPL-3.0),
  * `packages/ui/src/components/atoms/Alert.tsx`. `AlertTitle` is omitted —
- * every alert Postbox renders is a single sentence plus a recovery
+ * every alert Valen Mail renders is a single sentence plus a recovery
  * control, with no separate heading line.
  */
 const alertVariants = cva(

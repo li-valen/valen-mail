@@ -7,7 +7,7 @@ import { cn } from './cn';
  * Ported verbatim from Plunk (AGPL-3.0),
  * `packages/ui/src/components/molecules/EmptyState.tsx`.
  *
- * Postbox renders TWO different EmptyStates in the opens feed, and keeping
+ * Valen Mail renders TWO different EmptyStates in the opens feed, and keeping
  * them distinguishable is a product requirement, not a style choice: "the
  * tracking service answered and nothing has come back" and "the tracking
  * service could not be reached" are different facts, so they get different

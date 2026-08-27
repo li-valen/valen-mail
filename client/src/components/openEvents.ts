@@ -230,8 +230,8 @@ export function formatOpenRowSentence(event: OpenEvent, now: number): string {
  * The WHO-and-WHAT half of the sentence above, without the time.
  *
  * Exists because the rail is a 320px column and the row is one truncating
- * line: `li.valen.008@gmail.com opened "Postbox end-to-end send test" ·
- * 2h ago` renders there as `li.valen.008@gmail.com opened "…`, which
+ * line: `recipient@example.com opened "Valen Mail end-to-end send test" ·
+ * 2h ago` renders there as `recipient@example.com opened "…`, which
  * loses BOTH facts the row exists to carry. The recipient address is also
  * the least informative part — in this mailbox it is very nearly always
  * the same address — and it is first, so it eats the width that the
@@ -405,7 +405,7 @@ export function advanceOpensPoll(
 
   let liveMessage: string | null = null;
   if (view.kind === 'unavailable' && previousKind !== 'unavailable') {
-    liveMessage = "Postbox can't reach the tracking service.";
+    liveMessage = "Valen Mail can't reach the tracking service.";
   } else if (view.kind === 'ready' && previousKind === 'unavailable') {
     liveMessage = 'Tracking reconnected.';
   }

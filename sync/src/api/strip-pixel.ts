@@ -1,5 +1,5 @@
 /**
- * Spec 5.6 — removing Postbox's OWN tracking pixel from a message body
+ * Spec 5.6 — removing Valen Mail's OWN tracking pixel from a message body
  * before that body is rendered.
  *
  * WHY THIS EXISTS. Gmail files a copy of every SMTP send into the sender's
@@ -11,9 +11,9 @@
  * who did nothing.
  *
  * Nothing can be done about that inside Gmail's own clients. But inside
- * Postbox we own the render path completely, so the honest fix is simply
+ * Valen Mail we own the render path completely, so the honest fix is simply
  * to never make the request: strip the pixel before the html reaches the
- * iframe. "Postbox does not lie to you about your own mail" is a property
+ * iframe. "Valen Mail does not lie to you about your own mail" is a property
  * we can actually hold, and this module is where it is held.
  *
  * APPLIED TO EVERY RENDERED BODY, NOT JUST THE SENT COPY. The Sent copy is

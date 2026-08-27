@@ -1,5 +1,5 @@
 /**
- * The three-tone read-state vocabulary — the centrepiece: Postbox typesets
+ * The three-tone read-state vocabulary — the centrepiece: Valen Mail typesets
  * uncertainty at the same size, weight and contrast as certainty, so
  * `confirmed` is the ONLY tone that ever means "a person read this."
  * Everything else — a known machine fetch, or a classification nobody has
@@ -42,7 +42,7 @@ const OPEN_STATE: ReadStateInfo = {
   label: 'opened',
   tone: 'confirmed',
   title:
-    'A fetch that matches no known prefetcher, more than 60 seconds after send. This is the only signal Postbox treats as a person reading.',
+    'A fetch that matches no known prefetcher, more than 60 seconds after send. This is the only signal Valen Mail treats as a person reading.',
   token: 'OPEN',
   permanent: false,
 };
@@ -70,7 +70,7 @@ const UNCONFIRMABLE_TITLES: Record<UnconfirmableClassification, string> = {
  * tone/label as a known machine fetch, never to `confirmed`.
  */
 const GENERIC_UNCONFIRMABLE_TITLE =
-  "Postbox doesn't recognize this signal and won't assume it was a person reading. Treated the same as a known machine fetch: unconfirmable, not confirmed.";
+  "Valen Mail doesn't recognize this signal and won't assume it was a person reading. Treated the same as a known machine fetch: unconfirmable, not confirmed.";
 
 function isUnconfirmableClassification(value: string): value is UnconfirmableClassification {
   return value === 'mpp' || value === 'prefetch' || value === 'scanner';

@@ -35,7 +35,7 @@ differentiators are specified in the spec, section 7A.
 per project and then recorded — so these get confirmed or overridden deliberately at
 the start of Plan 3, not inherited by accident. Reasoning behind each proposal:
 
-- **`impeccable`** over `taste-skill`: Postbox is a long-lived product UI — app shell,
+- **`impeccable`** over `taste-skill`: Valen Mail is a long-lived product UI — app shell,
   dense message lists, compose forms, empty states — which is exactly the split the
   guide draws. `taste-skill` is for landing pages and marketing sites. Not both
   (guide: stacking direction skills produces averaged mush).

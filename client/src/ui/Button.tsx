@@ -8,7 +8,7 @@ import { cn } from './cn';
  *
  * One deliberate deviation: Plunk's version supports `asChild` via
  * `@radix-ui/react-slot`, so a Button can render as a Next.js `<Link>`.
- * Postbox has no router and no link-shaped buttons, so the Slot branch —
+ * Valen Mail has no router and no link-shaped buttons, so the Slot branch —
  * and the dependency it needs — is dropped rather than vendored unused.
  * Everything else, including the focus-visible ring, is verbatim.
  *

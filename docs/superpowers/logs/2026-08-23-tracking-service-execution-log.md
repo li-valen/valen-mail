@@ -128,9 +128,9 @@ Ruling: PRE-EMPTIVE on Task 4 — `isApplePrivacyProxy` in classify.ts and
 Task 4: dispatched (haiku) — BASE 47cb4d1
 Task 4: implementer DONE (7761237, 28/28 suite) — review dispatched (sonnet)
 BLOCKER (Task 7 only): Gmail app password failed SMTP AUTH (535) against
-  li.valen.008@gmail.com. I guessed that account; user has multiple. App passwords are
+  recipient@example.com. I guessed that account; user has multiple. App passwords are
   account-specific. Awaiting the correct GMAIL_USER. Does not block Tasks 4-6.
-RESOLVED: GMAIL_USER=xinfinitypro@gmail.com (app password was issued on that account,
+RESOLVED: GMAIL_USER=sender@example.com (app password was issued on that account,
   not li.valen.008@). SMTP AUTH verified SUCCESS against smtp.gmail.com:465.
   Task 7 unblocked. Note: this address becomes `account_id` on Task 7's token rows.
 Task 4: review — spec ✅, quality Approved BUT one Important finding: precedence order
@@ -251,8 +251,8 @@ Task 6: fix round 1 re-review — BOTH findings ADDRESSED. Re-reviewer grepped t
   still asserts all six properties with none quietly dropped.
 Task 6: complete (commits 1c4334c..62e4447, review clean after 1 fix round)
 Task 7: calibration matrix revised with the user's REAL accounts. Sender
-  xinfinitypro@gmail.com; targets li.valen.008@gmail.com (Gmail web + Gmail iOS) and
-  li.valen@icloud.com (Apple Mail). NO Outlook account — that row dropped.
+  sender@example.com; targets recipient@example.com (Gmail web + Gmail iOS) and
+  you@icloud.example (Apple Mail). NO Outlook account — that row dropped.
   Consequence named: without a non-proxied desktop client, Gmail rows can only confirm
   that device data is unrecoverable; they cannot validate parseUserAgent at all.
   Added an MPP CONTROL EXPERIMENT as the highest-value row: two sends to iCloud, one

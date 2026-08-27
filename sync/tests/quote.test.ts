@@ -33,7 +33,7 @@ function quote(overrides: Partial<QuoteInput> = {}): string {
 
 describe('attributionLine', () => {
   it("matches Gmail's own attribution shape", () => {
-    // A reply from Postbox should be indistinguishable from a reply from
+    // A reply from Valen Mail should be indistinguishable from a reply from
     // Gmail in every client that renders one.
     expect(attributionLine('Ada <ada@example.com>', 1_700_000_000_000)).toBe(
       'On Tue, Nov 14, 2023 at 10:13 PM Ada <ada@example.com> wrote:',
@@ -74,7 +74,7 @@ describe('attributionLine', () => {
 });
 
 describe('buildQuotedHtml — spec 5.6, our own pixel never rides in the quote', () => {
-  it('strips a Postbox pixel out of the quoted original', () => {
+  it('strips a Valen Mail pixel out of the quoted original', () => {
     // This is our own tracking origin, i.e. exactly what our own Sent copy
     // of the message being replied to contains. Quoting it unstripped
     // re-fires the ORIGINAL recipient's token on every future reply,

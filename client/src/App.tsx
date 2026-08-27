@@ -150,7 +150,7 @@ function SessionError({ message, onRetry, onDismiss }: SessionErrorProps) {
   return (
     <Alert variant="destructive" className="mb-6">
       <AlertDescription className="flex flex-wrap items-center gap-3">
-        <span className="flex-1 min-w-[12rem]">{message} Postbox has not loaded any mail.</span>
+        <span className="flex-1 min-w-[12rem]">{message} Valen Mail has not loaded any mail.</span>
         <Button variant="outline" size="sm" onClick={onRetry}>
           Try again
         </Button>
@@ -857,8 +857,8 @@ export default function App() {
         setStarOverrides((overrides) => withoutStar(overrides, key));
         setStarError(
           next
-            ? "That message could not be starred — Postbox couldn't reach your mailbox."
-            : "That message could not be unstarred — Postbox couldn't reach your mailbox.",
+            ? "That message could not be starred — Valen Mail couldn't reach your mailbox."
+            : "That message could not be unstarred — Valen Mail couldn't reach your mailbox.",
         );
       },
     );
@@ -1207,7 +1207,7 @@ export default function App() {
         if (replyAttemptRef.current !== token) return;
         console.error('App: could not load the message to reply to', error);
         setReplyError(
-          "That message could not be opened for a reply — Postbox couldn't reach your mailbox.",
+          "That message could not be opened for a reply — Valen Mail couldn't reach your mailbox.",
         );
       });
     },

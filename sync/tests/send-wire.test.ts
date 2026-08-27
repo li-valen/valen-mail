@@ -177,7 +177,7 @@ describe('a reply, so it lands in the chain it answers', () => {
    * So a bracket-stripping bug between the composer and the socket is
    * survivable, and no test here can fail on it — which is worth knowing
    * before someone adds one believing it does. Where the warning may still
-   * bite is Postbox's OWN threading: `message_id` is stored and matched
+   * bite is Valen Mail's OWN threading: `message_id` is stored and matched
    * with its brackets, so a value trimmed before it reaches the database
    * would fail to match its parent in the conversation view. That is a
    * different module and a different test's job.

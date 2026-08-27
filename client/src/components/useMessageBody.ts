@@ -28,7 +28,7 @@ export function messageFor(error: unknown): string {
   if (error instanceof ApiError) {
     return `The sync service answered ${error.status}. This message could not be opened.`;
   }
-  return "Postbox can't reach the sync service. This message could not be opened.";
+  return "Valen Mail can't reach the sync service. This message could not be opened.";
 }
 
 export type LoadState =

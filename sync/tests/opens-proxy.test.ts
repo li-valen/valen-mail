@@ -98,7 +98,7 @@ describe('fetchOpens', () => {
       token: 'abc123',
       accountId: 'acct-1',
       messageId: '<abc123@postbox.local>',
-      recipientEmail: 'li.valen.008@gmail.com',
+      recipientEmail: 'recipient@example.com',
       subject: 'hello',
       sentAt: 1787535607578,
       occurredAt: 1787599793591,

@@ -96,7 +96,7 @@ function messageFor(error: unknown): string {
   if (error instanceof ApiError) {
     return `The sync service answered ${error.status}. The inbox could not load.`;
   }
-  return "Postbox can't reach the sync service. The inbox could not load.";
+  return "Valen Mail can't reach the sync service. The inbox could not load.";
 }
 
 /**

@@ -1,6 +1,6 @@
 {
-  "name": "Postbox",
-  "short_name": "Postbox",
+  "name": "Valen Mail",
+  "short_name": "Valen Mail",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#fafafa",

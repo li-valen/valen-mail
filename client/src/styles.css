@@ -1,5 +1,5 @@
 /**
- * Postbox's Tailwind v4 entry stylesheet.
+ * Valen Mail's Tailwind v4 entry stylesheet.
  *
  * PROVENANCE. Ported from Plunk (github.com/useplunk/plunk, AGPL-3.0),
  * file `apps/web/src/styles/globals.css`. The `@theme` block, the bare
@@ -8,7 +8,7 @@
  *
  *   - `@plugin '@tailwindcss/forms'` / `'@tailwindcss/typography'` —
  *     neither package is installed here and neither is needed: the ported
- *     Input atom styles itself, and Postbox renders no long-form prose.
+ *     Input atom styles itself, and Valen Mail renders no long-form prose.
  *   - `@import 'tw-animate-css'` — only Plunk's Radix overlay atoms
  *     (Tooltip/Dialog/Popover) use its `animate-in` utilities, and none of
  *     those atoms were ported.
@@ -166,7 +166,7 @@
         /* THE DISPLAY CUTOUT AND THE HOME INDICATOR, named once.
            index.html sets `viewport-fit=cover`, which is an explicit
            opt-in to drawing the app edge to edge - under the notch and
-           under the home indicator - on an iPhone with Postbox installed
+           under the home indicator - on an iPhone with Valen Mail installed
            to the home screen. Nothing was reading `env(safe-area-inset-*)`
            back, so the top bar sat under the status bar and the last row
            of mail sat under the home indicator.

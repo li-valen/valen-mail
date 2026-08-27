@@ -59,7 +59,7 @@ function AttachmentEntry({ message, attachment }: AttachmentEntryProps) {
       ) : (
         <span
           className="shrink-0 text-xs text-neutral-500 dark:text-muted-foreground"
-          title="This part has no IMAP part number, so Postbox has no address to download it from. A guessed one would fetch the wrong bytes."
+          title="This part has no IMAP part number, so Valen Mail has no address to download it from. A guessed one would fetch the wrong bytes."
         >
           Unavailable
           <span className="sr-only"> — no download address for this attachment</span>

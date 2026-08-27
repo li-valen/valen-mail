@@ -89,7 +89,7 @@ export const DISCARD_DRAFT_PROMPT = 'Discard this draft? What you have written w
 /**
  * The product, in one line, at the moment it matters. Not a footnote and
  * not a settings toggle: the user is told plainly, right beside Send,
- * what sending through Postbox does that sending through Gmail does not.
+ * what sending through Valen Mail does that sending through Gmail does not.
  */
 const TRACKING_NOTE = 'Tracked — each recipient gets their own tracking pixel.';
 
@@ -97,7 +97,7 @@ const RECIPIENT_HINT = 'Separate addresses with a comma or a space.';
 
 /** Shown when the browser could not hand over a file the user picked — a
  *  file moved or deleted between picking and sending is the usual cause. */
-const ATTACHMENT_READ_ERROR = 'Postbox could not read one of these files. Remove it and try again.';
+const ATTACHMENT_READ_ERROR = 'Valen Mail could not read one of these files. Remove it and try again.';
 
 /** One picked file, with the browser's own `File` kept alongside the
  *  plain shape ../attachmentPicker.ts works on. The `File` never reaches
@@ -176,9 +176,9 @@ type IdentityLoad =
 /** Names the status, never the response body. */
 function identityErrorFor(error: unknown): string {
   if (error instanceof ApiError) {
-    return `The sync service answered ${error.status}. Postbox could not load your sending accounts.`;
+    return `The sync service answered ${error.status}. Valen Mail could not load your sending accounts.`;
   }
-  return 'Postbox could not reach the sync service to load your sending accounts.';
+  return 'Valen Mail could not reach the sync service to load your sending accounts.';
 }
 
 export default function Compose({ reply, onClose, onSent, onDirtyChange }: ComposeProps) {
@@ -556,7 +556,7 @@ export default function Compose({ reply, onClose, onSent, onDirtyChange }: Compo
           {identityLoad.status === 'ready' && identities.length === 0 && (
             <Alert variant="warning">
               <AlertDescription>
-                No sending accounts are configured, so Postbox cannot send anything yet.
+                No sending accounts are configured, so Valen Mail cannot send anything yet.
               </AlertDescription>
             </Alert>
           )}

@@ -366,7 +366,7 @@ describe('expandedDetailFor — what the hover/focus expansion shows', () => {
   it('carries the SAME cause explanation readStateFor(...).title gives that classification, distinct per cause', () => {
     const open = expandedDetailFor(buildEvent({ token: 'd', classification: 'open' }));
     const mpp = expandedDetailFor(buildEvent({ token: 'e', classification: 'mpp' }));
-    expect(open.cause.toLowerCase()).toContain('only signal postbox treats');
+    expect(open.cause.toLowerCase()).toContain('only signal valen mail treats');
     expect(mpp.cause.toLowerCase()).toContain('apple mail privacy protection');
     expect(open.cause).not.toBe(mpp.cause);
   });

@@ -105,7 +105,7 @@ const OPENS_URL = '/?rail=opens';
  *
  * The measurement makes the third shape the obvious one, and it is what
  * shipped: STRIP THE PIXEL AT RENDER, NOT AT SEND. We cannot stop Gmail's
- * own clients from fetching it, but inside Postbox we own the render path
+ * own clients from fetching it, but inside Valen Mail we own the render path
  * completely, so the request is simply never made — see
  * ../api/strip-pixel.ts and its use in ../api/message.ts. It needs no IMAP
  * write, no expunge, no dependence on Gmail's Message-ID dedupe, and
@@ -114,7 +114,7 @@ const OPENS_URL = '/?rail=opens';
  * The rule is UNCONDITIONAL — every rendered body, not just the Sent copy,
  * which is what spec 5.6 asks for. A reply quoting the original carries the
  * original recipient's pixel, so an INBOX copy fires it too. And with
- * exactly one Postbox user, any pixel on our own TRACKING_BASE_URL origin
+ * exactly one Valen Mail user, any pixel on our own TRACKING_BASE_URL origin
  * was minted here for mail that user sent, so no folder holds one whose
  * firing could report a true fact. What the rule IS scoped by is the
  * ORIGIN: only our own pixel path, never a third party's and never an
@@ -124,7 +124,7 @@ const OPENS_URL = '/?rail=opens';
  * ONLY. Opening the same Sent copy in Gmail's own web or mobile client
  * still fetches the pixel and still arrives here as a plain `'open'`
  * naming the recipient. That is genuinely outside this product's reach,
- * so the claim is "Postbox does not lie to you about your own mail" —
+ * so the claim is "Valen Mail does not lie to you about your own mail" —
  * never "the misattribution is fixed". Rule 2 below remains the only
  * suppression this function performs.
 
@@ -191,7 +191,7 @@ export function buildMailNotification(message: MessageInput): PushPayload {
 
   // Gmail's shape, at the user's request: the SENDER is the title and the
   // subject is the body. The OS already prefixes the app name on both
-  // platforms, so putting "Postbox" (or the app's own framing) in the title
+  // platforms, so putting "Valen Mail" (or the app's own framing) in the title
   // spends the most valuable line in the notification restating something
   // the user can already see. Sender-as-title is also what makes a lock
   // screen glanceable — "who wants me" before "about what".

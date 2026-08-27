@@ -1,5 +1,5 @@
 /**
- * Postbox service worker.
+ * Valen Mail service worker.
  *
  * It handles exactly two events — `push` and `notificationclick` — and it
  * is registered only when a person turns notifications on (see
@@ -7,7 +7,7 @@
  *
  * THERE IS DELIBERATELY NO `fetch` HANDLER AND NO USE OF THE CACHE STORAGE
  * API. This is not a stylistic preference and it must not be "improved"
- * into offline support. Postbox authorises /api/* with an ambient
+ * into offline support. Valen Mail authorises /api/* with an ambient
  * HttpOnly cookie rather than an Authorization header, which means a
  * worker on this origin can read every mailbox response as plain,
  * already-authorised JSON. Storing one would write four real Gmail
@@ -122,7 +122,7 @@ function sameOriginPath(raw) {
  */
 function showFromPush(data) {
   const payload = readPayload(data);
-  const title = asText(payload && payload.title, 'Postbox', MAX_TITLE_LENGTH);
+  const title = asText(payload && payload.title, 'Valen Mail', MAX_TITLE_LENGTH);
   const body = asText(payload && payload.body, '', MAX_BODY_LENGTH);
 
   return self.registration.showNotification(title, {
@@ -141,7 +141,7 @@ self.addEventListener('push', (event) => {
 });
 
 /**
- * Focuses an already-open Postbox window, navigating it to the target, or
+ * Focuses an already-open Valen Mail window, navigating it to the target, or
  * opens one if none exists. `includeUncontrolled` matters: a tab loaded
  * before this worker activated is not controlled by it but is still the
  * window the person means.

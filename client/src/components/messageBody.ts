@@ -86,7 +86,7 @@ export const IFRAME_SANDBOX =
  * oversight.** This function used to take an `allowRemote` flag, default
  * false, so a reader had to press "Load remote images" per message — the
  * reasoning being that a remote image tells the sender the exact second
- * their mail was opened, which is precisely the mechanism Postbox uses to
+ * their mail was opened, which is precisely the mechanism Valen Mail uses to
  * detect opens on the mail the USER sends. The user reviewed that and
  * overruled it, verbatim: "remove the dont load images thing i dont care
  * if people can track me with the pixels." Mail now renders the way the

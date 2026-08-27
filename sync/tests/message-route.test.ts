@@ -387,8 +387,8 @@ describe('parsed message route / gate and validation', () => {
 });
 
 /**
- * Spec 5.6 — Postbox strips its OWN tracking pixel out of every message
- * body it renders, so reading this user's own mail in Postbox never fires a
+ * Spec 5.6 — Valen Mail strips its OWN tracking pixel out of every message
+ * body it renders, so reading this user's own mail in Valen Mail never fires a
  * pixel this installation minted and never manufactures an open attributed
  * to a recipient who did nothing.
  *
@@ -401,7 +401,7 @@ describe('parsed message route / gate and validation', () => {
  * UNCONDITIONAL, not scoped to Sent. A reply quoting the original carries
  * the original recipient's pixel, so rendering that INBOX copy would report
  * "alice opened your mail" when Alice merely replied and the user read the
- * reply. And with exactly one Postbox user, any pixel on our own origin was
+ * reply. And with exactly one Valen Mail user, any pixel on our own origin was
  * minted here for mail this user sent — there is no folder in which firing
  * it could report a true fact.
  *

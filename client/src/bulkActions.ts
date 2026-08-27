@@ -394,9 +394,9 @@ export function bulkMoveFailureFor(
 
   const verb = failedVerbFor(destination);
   if (outcome.movedKeys.length === 0) {
-    return `None of the ${plural(outcome.attempted)} could be ${verb} — Postbox couldn't reach your mailbox. They are all back in your inbox.`;
+    return `None of the ${plural(outcome.attempted)} could be ${verb} — Valen Mail couldn't reach your mailbox. They are all back in your inbox.`;
   }
-  return `${failed} of ${outcome.attempted} messages could not be ${verb} — Postbox couldn't reach your mailbox. They are back in your inbox.`;
+  return `${failed} of ${outcome.attempted} messages could not be ${verb} — Valen Mail couldn't reach your mailbox. They are back in your inbox.`;
 }
 
 /**
@@ -433,7 +433,7 @@ export function bulkUndoFailureFor(
   if (outcome.restoredKeys.length === 0) {
     return `None of the ${plural(outcome.attempted)} could be moved back — they all stayed ${where}.`;
   }
-  return `${stuck} of ${outcome.attempted} messages stayed ${where} — Postbox couldn't move them back.`;
+  return `${stuck} of ${outcome.attempted} messages stayed ${where} — Valen Mail couldn't move them back.`;
 }
 
 /**
@@ -453,10 +453,10 @@ export function bulkFlagFailureFor(outcome: BulkFlagOutcome): string | null {
 
   const direction = outcome.seen ? 'read' : 'unread';
   if (outcome.attempted === 1) {
-    return `That message could not be marked as ${direction} — Postbox couldn't reach your mailbox.`;
+    return `That message could not be marked as ${direction} — Valen Mail couldn't reach your mailbox.`;
   }
   if (outcome.changedKeys.length === 0) {
-    return `None of the ${plural(outcome.attempted)} could be marked as ${direction} — Postbox couldn't reach your mailbox.`;
+    return `None of the ${plural(outcome.attempted)} could be marked as ${direction} — Valen Mail couldn't reach your mailbox.`;
   }
-  return `${failed} of ${outcome.attempted} messages could not be marked as ${direction} — Postbox couldn't reach your mailbox.`;
+  return `${failed} of ${outcome.attempted} messages could not be marked as ${direction} — Valen Mail couldn't reach your mailbox.`;
 }

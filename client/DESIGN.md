@@ -1,9 +1,9 @@
-# Postbox — DESIGN.md
+# Valen Mail — DESIGN.md
 
 > **Superseded by the Plunk rebase** (see `client/CLAUDE.md`'s "Direction pivot 2") — the visual values below no longer apply.
 > §5's read-state semantics and copy voice remain binding.
 
-The visual contract for the Postbox client. Written for an implementer who was not in
+The visual contract for the Valen Mail client. Written for an implementer who was not in
 the design conversation. Every value here is literal. Where a number is stated, use that
 number; do not substitute one that "looks about right."
 
@@ -24,18 +24,18 @@ alternates are recorded in §8. Disclosed rather than hidden.
 
 ## 1. Design thesis
 
-Postbox looks like a strip-chart recorder, not an inbox. Time is a continuous vertical
+Valen Mail looks like a strip-chart recorder, not an inbox. Time is a continuous vertical
 line down the page and every message and every open event is a mark placed on it, so the
 gaps are as readable as the marks — an interval where nothing came back looks different
 from an interval where the pen was up. Every other email tracker resolves a read into a
-green checkmark; Postbox refuses that, because its own calibration run measured four of
+green checkmark; Valen Mail refuses that, because its own calibration run measured four of
 six recorded opens as machines, so the interface is built to typeset uncertainty at the
 same size, weight, and contrast as certainty rather than greying it out. Colour appears
 in exactly one place — the read-state of a sent message — which makes the palette a
 vocabulary of three words instead of a decoration. The one thing this product must never
 do is look confident about something it does not know.
 
-**The memory test.** If you saw Postbox once and described it an hour later, you should
+**The memory test.** If you saw Valen Mail once and described it an hour later, you should
 say: "it's a line down the page with marks on it, and it tells you when it doesn't know."
 
 ---
@@ -585,7 +585,7 @@ Three hard bans, all measured:
 2. **Never display a lag under 60 seconds as a confirmed open.** The server suppresses
    these (`PREFETCH_WINDOW_MS = 60_000`), and the UI must not reintroduce them by, e.g.,
    rendering a raw hits list.
-3. **Never render a checkmark glyph, anywhere in Postbox, for any purpose.** Not
+3. **Never render a checkmark glyph, anywhere in Valen Mail, for any purpose.** Not
    `lucide-react`'s `Check`, `CheckCircle`, `BadgeCheck`, or any variant. The checkmark
    is the lie this product exists to refuse.
 
@@ -617,10 +617,10 @@ Write these strings. Do not paraphrase them; the precision *is* the product.
 - Headline: `Kate Yu opened this.`
 - Meta (mono): `14:06 · 2h 11m after sending`
 - Token: `OPEN`
-- Expanded note (popover): `A fetch that matches no known prefetcher, more than 60 seconds after send. This is the only signal Postbox treats as a person reading.`
+- Expanded note (popover): `A fetch that matches no known prefetcher, more than 60 seconds after send. This is the only signal Valen Mail treats as a person reading.`
 
 **Awaiting**
-- Headline: `No signal yet.` — **never** "Not opened." Postbox cannot make that claim.
+- Headline: `No signal yet.` — **never** "Not opened." Valen Mail cannot make that claim.
 - Meta (mono): `sent 14:02 · nothing received`
 - Token: `—`
 - Expanded note: `Nothing has fetched the image in this message. That is not evidence it went unread — a recipient with images off produces this state forever.`
@@ -646,7 +646,7 @@ confirmed. The UI must not imply that waiting longer will help.
 - **The entry has no spinner, no pulse, no shimmer, no "checking…", and no refresh
   control.** Any motion or affordance implying future resolution is a defect. This is
   the single most important behaviour in this document: a permanently unconfirmable
-  recipient that *looks* like it is still loading is exactly the dishonesty Postbox
+  recipient that *looks* like it is still loading is exactly the dishonesty Valen Mail
   exists to remove, wearing a different costume.
 
 ---
@@ -706,7 +706,7 @@ through an animation.
 | 20 | `Icon` | `lucide-react` only, one family, `stroke-width: 1.5`, 16px in rows / 18px in toolbar. **No emoji, no Unicode glyphs standing in for icons.** | — |
 
 **No account colour legend.** Four accounts are distinguished by the mono address stub in
-the row meta and by the toolbar filter — never by colour. Colour in Postbox means a
+the row meta and by the toolbar filter — never by colour. Colour in Valen Mail means a
 read-state and nothing else; four account hues would destroy that in one commit.
 
 **Motion, minimal spec (a full pass runs later).** 120–180ms, `--ease-out`, on state
@@ -754,10 +754,10 @@ a viewer will otherwise read "nothing happened."
 | Spine | solid | **dashed**, `--state-unavailable` |
 | Rail controls | enabled | **disabled** |
 | Colour | — | **fully achromatic** — the only state in the product with no chroma |
-| Copy | "Nothing has come back yet." | "Postbox can't reach the tracking service." |
+| Copy | "Nothing has come back yet." | "Valen Mail can't reach the tracking service." |
 
 Copy:
-- Headline (`--t-2xl`): `Postbox can't reach the tracking service.`
+- Headline (`--t-2xl`): `Valen Mail can't reach the tracking service.`
 - Sub (`--t-md`): `The rail is blank because nothing is being recorded, not because nothing happened.`
 - Meta (mono `--t-xs`): `last contact 11:48 · retrying`
 - On the collapsed mobile strip: `Tracking unreachable` with the dashed treatment on the
@@ -829,13 +829,13 @@ document before it was removed.
     strongest catch, because it was not merely generic — it was *dishonest*. An open rate
     computed over a population that is four-sixths machines is a fabricated number, and
     the hero-metric template would have given it the most authoritative position on the
-    screen. Removed entirely. There is no aggregate open-rate figure anywhere in Postbox,
+    screen. Removed entirely. There is no aggregate open-rate figure anywhere in Valen Mail,
     and there should never be one.
 11. **The checkmark.** Banned outright, in every icon variant, for every purpose. Named
     in §5.1 so it cannot creep back in as a "resolved" affordance somewhere unrelated.
 
 **What I deliberately kept despite a warning.** Green for confirmed, even though green is
-the colour of every competitor's dishonest badge. Postbox is the only client entitled to
+the colour of every competitor's dishonest badge. Valen Mail is the only client entitled to
 it, and reclaiming green by *earning* it says more than inventing a novel hue for the one
 state that needs no explanation. Likewise IBM Plex, which is on the overused-faces list
 but is justified here by the Sans/Mono metric compatibility (§3.1), which is structural in

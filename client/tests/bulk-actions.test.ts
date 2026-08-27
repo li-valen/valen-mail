@@ -269,7 +269,7 @@ describe('undoing a batch', () => {
       },
     });
     expect(bulkUndoFailureFor('archive', outcome)).toBe(
-      "That message stayed archived — Postbox couldn't move it back.",
+      "That message stayed archived — Valen Mail couldn't move it back.",
     );
   });
 });
@@ -344,7 +344,7 @@ describe('what the notice says after a batch', () => {
       },
     });
     expect(bulkMoveFailureFor('archive', outcome)).toBe(
-      "That message could not be archived — Postbox couldn't reach your mailbox.",
+      "That message could not be archived — Valen Mail couldn't reach your mailbox.",
     );
   });
 

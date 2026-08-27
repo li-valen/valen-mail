@@ -1,4 +1,4 @@
-# Postbox — Specification
+# Valen Mail — Specification
 
 **Status:** Draft v1
 **Date:** 2026-08-23
@@ -66,7 +66,7 @@ browsers, so notifications ship before the wrapper does.
 
 Mailspring encodes `{messageId, accountId, recipient}` as plain Base64url in
 the pixel URL. This is decodable by anyone who inspects the URL, and a
-forwarded message leaks the original recipient's address. Postbox uses a
+forwarded message leaks the original recipient's address. Valen Mail uses a
 random 128-bit token resolved against the database instead. Same resistance
 to pattern-matching blockers, no information leak.
 
@@ -179,12 +179,12 @@ every open after the first is silently lost.
 Adopted from Mailspring's `remove-tracking-pixels`, which carries the note
 that checking "is from me" alone is insufficient.
 
-- On rendering any message body, Postbox MUST strip its own pixels whose
+- On rendering any message body, Valen Mail MUST strip its own pixels whose
   token resolves to one of the user's accounts. A reply or bounce can carry
   the original pixel and fire phantom opens indefinitely.
-- On preparing a reply or forward draft, Postbox MUST strip any existing
-  Postbox pixel before the new pixel is injected.
-- On rendering incoming mail, Postbox MUST strip third-party tracking
+- On preparing a reply or forward draft, Valen Mail MUST strip any existing
+  Valen Mail pixel before the new pixel is injected.
+- On rendering incoming mail, Valen Mail MUST strip third-party tracking
   pixels matched against a blocklist (seeded from Mailspring's 25-entry
   list: Yesware, Streak, Mailtrack, HubSpot, Salesloft, Mixpanel, Intercom,
   Boomerang, Bananatag, MailChimp, Cirrus Insight, and others).
@@ -216,7 +216,7 @@ devices: id(pk) · endpoint · p256dh · auth · label · created_at
   strict CSP. Remote content MUST be blocked by default.
 - **7.2** Location inference from IP is a **non-goal**. Superhuman shipped
   it, took public backlash in 2019, removed it, and deleted the historical
-  data. Postbox never stores a raw recipient IP.
+  data. Valen Mail never stores a raw recipient IP.
 - **7.3** Tracking MUST be per-account opt-in and per-message overridable,
   matching Superhuman's post-2019 opt-in default.
 - **7.4** App passwords MUST live in OS keychain or an env file that is
@@ -234,7 +234,7 @@ organises around one axis: time. Gmail, Outlook, Spark, Superhuman and Hey all
 show what arrived, newest first, and differ mainly in density and chrome. A
 visually novel client organised the same way is a reskin.
 
-Postbox holds a dimension none of them expose: **who has read what, and when.**
+Valen Mail holds a dimension none of them expose: **who has read what, and when.**
 The design should be organised around that, not merely decorated with it.
 Concretely, these are the views the tracking data makes possible and that no
 mainstream client offers:
@@ -279,7 +279,7 @@ design against these facts, not against what tracking is imagined to do:
 Consequence for 7A.1: the read-state organising principle stands, but every
 view built on it MUST distinguish three states — confirmed, unconfirmable,
 and no-signal — rather than the binary read/unread every other client shows.
-That distinction is the product, and faking it would make Postbox worse than
+That distinction is the product, and faking it would make Valen Mail worse than
 the clients it is replacing.
 
 **7A.3 Direction is chosen by prototype, not by assertion.** Plan 3 MUST open
@@ -343,7 +343,7 @@ identities, which per-recipient tracking would exhaust quickly.
 - **L4. Shared-subdomain filtering.** Some corporate mail gateways block
   images from `*.vercel.app`. The pixel base URL MUST be a single config
   value so a custom domain can be swapped in later without a code change.
-- **L5. Only mail sent through Postbox is tracked.** Mail sent from Gmail's
+- **L5. Only mail sent through Valen Mail is tracked.** Mail sent from Gmail's
   web UI is invisible until the Chrome extension expansion ships.
 - **L6. Gmail IMAP limits:** ~15 concurrent connections and ~2.5 GB/day
   download per account. Sync must respect both.

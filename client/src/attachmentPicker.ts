@@ -83,7 +83,7 @@ export function totalBytes(files: readonly Sized[]): number {
 /**
  * SPEC §5.3.1 — will this send lose per-person attribution?
  *
- * Postbox sends one copy per recipient, so the attachments cost
+ * Valen Mail sends one copy per recipient, so the attachments cost
  * `bytes x recipients`, not `bytes`. A 10 MB deck to five people is
  * 50 MB. Above the budget the send falls back to a single shared marker
  * and the message can no longer say WHO opened it — only that somebody
@@ -226,10 +226,10 @@ export function attachmentError(files: readonly PickedFile[]): string | undefine
     // it reads "10 MB" and a message saying the limit is "10 MB" looks
     // like the app contradicting itself. No rounding can separate those
     // two numbers on screen — the sentence has to.
-    return `These add up to more than ${formatFileSize(MAX_ATTACHMENT_TOTAL_BYTES)}, which is all Postbox can attach.`;
+    return `These add up to more than ${formatFileSize(MAX_ATTACHMENT_TOTAL_BYTES)}, which is all Valen Mail can attach.`;
   }
   const unsendable = files.find((file) => !isSendableFilename(file.name));
-  if (unsendable) return 'One of these files has a name Postbox cannot send.';
+  if (unsendable) return 'One of these files has a name Valen Mail cannot send.';
   return undefined;
 }
 

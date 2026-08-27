@@ -71,7 +71,7 @@ export function sentNoticeMessage(sentCount: number): string {
 }
 
 /** Whether the failure is one where nothing at all left the building, or
- *  one where Postbox genuinely cannot tell. */
+ *  one where Valen Mail genuinely cannot tell. */
 export type DeliveryCertainty = 'not-sent' | 'unknown';
 
 export interface SendFailure {
@@ -99,12 +99,12 @@ export function formatRetryDelay(seconds: number | null): string {
   return `in ${minutes} minute${minutes === 1 ? '' : 's'}`;
 }
 
-/** Nothing left the building, and Postbox can say so. */
+/** Nothing left the building, and Valen Mail can say so. */
 function notSent(message: string): SendFailure {
   return { message, certainty: 'not-sent' };
 }
 
-/** Postbox cannot tell. The only honest instruction is "go and look". */
+/** Valen Mail cannot tell. The only honest instruction is "go and look". */
 function uncertain(message: string): SendFailure {
   return { message, certainty: 'unknown' };
 }
@@ -123,7 +123,7 @@ const CHECK_SENT_MAIL = 'check your Sent mail before sending it again.';
 export function describeSendFailure(error: unknown): SendFailure {
   if (!(error instanceof ApiError)) {
     return uncertain(
-      `Postbox could not reach the sync service, so it cannot tell whether the message went out — ${CHECK_SENT_MAIL}`,
+      `Valen Mail could not reach the sync service, so it cannot tell whether the message went out — ${CHECK_SENT_MAIL}`,
     );
   }
 
@@ -134,7 +134,7 @@ export function describeSendFailure(error: unknown): SendFailure {
       );
     case 401:
       return notSent(
-        'Not sent — your session has expired. Copy your message somewhere safe, reload Postbox to sign in again, then send it.',
+        'Not sent — your session has expired. Copy your message somewhere safe, reload Valen Mail to sign in again, then send it.',
       );
     case 404:
       return notSent(
@@ -143,21 +143,21 @@ export function describeSendFailure(error: unknown): SendFailure {
     case 429: {
       const retryAfterSeconds = error instanceof SendRejection ? error.retryAfterSeconds : null;
       return notSent(
-        `Not sent — Postbox allows 30 sends an hour and that is spent. Try again ${formatRetryDelay(retryAfterSeconds)}.`,
+        `Not sent — Valen Mail allows 30 sends an hour and that is spent. Try again ${formatRetryDelay(retryAfterSeconds)}.`,
       );
     }
     case 502:
       // Fail-closed, on purpose: the product IS the tracking, so a send
-      // that quietly went out untracked would be Postbox lying about what
+      // that quietly went out untracked would be Valen Mail lying about what
       // it did (Plan 4 Task 3).
       return notSent(
-        'Not sent — tracking is unavailable. Postbox will not send a message it cannot track, so nothing went out.',
+        'Not sent — tracking is unavailable. Valen Mail will not send a message it cannot track, so nothing went out.',
       );
     case 503:
       return notSent('Not sent — sending is not configured on the sync service.');
     default:
       return uncertain(
-        `The sync service answered ${error.status}. Postbox cannot tell whether the message went out — ${CHECK_SENT_MAIL}`,
+        `The sync service answered ${error.status}. Valen Mail cannot tell whether the message went out — ${CHECK_SENT_MAIL}`,
       );
   }
 }

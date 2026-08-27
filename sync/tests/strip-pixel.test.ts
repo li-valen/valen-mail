@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { stripOwnTrackingPixels } from '../src/api/strip-pixel.ts';
 
 /**
- * Spec 5.6 — Postbox must strip its OWN tracking pixels before rendering a
- * message body, so that reading your own mail in Postbox never fires a
+ * Spec 5.6 — Valen Mail must strip its OWN tracking pixels before rendering a
+ * message body, so that reading your own mail in Valen Mail never fires a
  * pixel and never manufactures an open event attributed to a recipient.
  *
  * The binding property under test is a NARROW one, and both halves matter

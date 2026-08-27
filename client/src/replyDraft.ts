@@ -14,7 +14,7 @@ import type { ComposeDraft } from './components/composeValidation';
  * components/MessageView.tsx only wire what is decided here.
  *
  * **THE CLIENT DOES NOT BUILD THE QUOTE, AND STRUCTURALLY CANNOT.**
- * spec §5.6 requires the quoted original to have any Postbox tracking
+ * spec §5.6 requires the quoted original to have any Valen Mail tracking
  * pixel stripped out of it BEFORE the reply's own pixel is injected —
  * otherwise every reply in a thread re-fires the ORIGINAL recipient's
  * token forever, reporting opens nobody performed. That strip needs

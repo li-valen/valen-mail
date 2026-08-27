@@ -1,5 +1,5 @@
 {
-  "name": "postbox-client",
+  "name": "valen-mail-client",
   "private": true,
   "type": "module",
   "scripts": {

@@ -115,7 +115,7 @@ export function validateCompose(draft: ComposeDraft): ComposeValidation {
   if (draft.identityId === '') {
     errors.identityId = 'Choose an account to send from.';
   } else if (draft.identityId.length > MAX_IDENTITY_ID_CHARS) {
-    errors.identityId = 'That sending account is not one Postbox can use.';
+    errors.identityId = 'That sending account is not one Valen Mail can use.';
   }
 
   const badTo = invalidRecipients(draft.to);
@@ -133,7 +133,7 @@ export function validateCompose(draft: ComposeDraft): ComposeValidation {
   const recipientCount = draft.to.length + draft.cc.length;
   if (recipientCount > MAX_RECIPIENTS) {
     errors.recipients =
-      `Postbox sends to at most ${MAX_RECIPIENTS} people at once — To and Cc together. ` +
+      `Valen Mail sends to at most ${MAX_RECIPIENTS} people at once — To and Cc together. ` +
       `This message has ${recipientCount}.`;
   }
 

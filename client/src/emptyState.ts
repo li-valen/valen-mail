@@ -28,7 +28,7 @@ import type { FolderId } from './inboxFilters';
  * tracks it). It is a proxy, not a fact about the server, and the copy is
  * written so that being wrong about it is survivable in either direction:
  * the hedged version still says what a still-empty folder would mean, and
- * the settled version never claims more than "nothing in what Postbox
+ * the settled version never claims more than "nothing in what Valen Mail
  * keeps".
  */
 
@@ -37,10 +37,10 @@ export interface EmptyStateCopy {
   readonly description: string;
 }
 
-/** The one claim the settled copy is allowed to make. Postbox keeps the
+/** The one claim the settled copy is allowed to make. Valen Mail keeps the
  *  newest 50 messages per account per folder, so "empty" here always
  *  means "empty within what was synced" — never "empty on the server". */
-const KEEP_CLAIM = 'Postbox keeps the newest 50 messages per account for this folder.';
+const KEEP_CLAIM = 'Valen Mail keeps the newest 50 messages per account for this folder.';
 
 /** The three folders the sync loop DISCOVERS by IMAP special-use rather
  *  than knows by name — the only ones trap 3 applies to. INBOX is a
@@ -59,7 +59,7 @@ function discoveryHedged(folder: DiscoveredFolder): EmptyStateCopy {
   return {
     title: `No ${label} mail synced yet`,
     description:
-      `Postbox finds each account's ${label} folder on its first sync cycle. ` +
+      `Valen Mail finds each account's ${label} folder on its first sync cycle. ` +
       `If it is still empty after that, ${label} really is empty.`,
   };
 }
@@ -104,7 +104,7 @@ const SETTLED: Readonly<Record<FolderId, EmptyStateCopy>> = {
 const HEDGED: Readonly<Record<FolderId, EmptyStateCopy>> = {
   inbox: {
     title: 'No mail synced yet',
-    description: 'Postbox is still making its first pass over this mailbox. Messages appear here as it goes.',
+    description: 'Valen Mail is still making its first pass over this mailbox. Messages appear here as it goes.',
   },
   starred: {
     title: 'No flagged mail synced yet',
@@ -208,7 +208,7 @@ export function searchEmptyStateFor(
     return {
       title: `Nothing in ${label} to search yet`,
       description:
-        `${label} has not produced a message in Postbox this session, so there is nothing ` +
+        `${label} has not produced a message in Valen Mail this session, so there is nothing ` +
         `for "${query}" to match against yet — this is not the same as finding nothing. ` +
         `Clear the search once ${label} has filled in, and try again.`,
     };
@@ -217,7 +217,7 @@ export function searchEmptyStateFor(
   return {
     title: `No matches for "${query}" in ${label}`,
     description:
-      `Postbox searched senders, subjects and previews in ${label}. Previews exist only on ` +
+      `Valen Mail searched senders, subjects and previews in ${label}. Previews exist only on ` +
       'recently synced mail, so a phrase from an older message\u2019s body will not match. ' +
       'Clear the search to go back to the full list.',
   };

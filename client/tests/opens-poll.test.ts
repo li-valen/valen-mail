@@ -47,7 +47,7 @@ describe('advanceOpensPoll — the transition-announcement policy', () => {
 
   it('announces "can\'t reach" on a first-ever tick that is already unavailable — there is no earlier kind to compare against, so `null` must behave like "not already unavailable"', () => {
     const tick = advanceOpensPoll(null, UNAVAILABLE);
-    expect(tick.liveMessage).toBe("Postbox can't reach the tracking service.");
+    expect(tick.liveMessage).toBe("Valen Mail can't reach the tracking service.");
   });
 
   it('does not repeat the "can\'t reach" announcement on a still-unavailable retry', () => {
@@ -106,7 +106,7 @@ describe('advanceOpensPoll — the single-poller property', () => {
     }
 
     expect(messages.filter((message) => message !== null)).toHaveLength(1);
-    expect(messages[0]).toBe("Postbox can't reach the tracking service.");
+    expect(messages[0]).toBe("Valen Mail can't reach the tracking service.");
   });
 
   it('one accumulated thread announces exactly one outage and one reconnect across a down-then-up run', () => {
@@ -121,7 +121,7 @@ describe('advanceOpensPoll — the single-poller property', () => {
     }
 
     expect(messages).toEqual([
-      "Postbox can't reach the tracking service.",
+      "Valen Mail can't reach the tracking service.",
       null,
       'Tracking reconnected.',
       null,

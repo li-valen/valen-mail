@@ -247,7 +247,7 @@ function toSendResult(value: unknown): SendResult | null {
  * A 200 whose body cannot be read as JSON rejects rather than resolving
  * empty, and that is deliberate: the server answered 200, so copies did
  * go out, and reporting "nothing was sent" would be worse than reporting
- * "Postbox cannot tell" (which is what ./components/composeResults.ts
+ * "Valen Mail cannot tell" (which is what ./components/composeResults.ts
  * turns the rejection into).
  */
 export async function sendMail(

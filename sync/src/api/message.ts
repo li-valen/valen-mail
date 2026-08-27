@@ -443,11 +443,11 @@ export async function handleMessage(
 
   const shaped = toParsedMessage(parsed);
   // Spec 5.6 — strip OUR OWN pixel from EVERY rendered body, so reading any
-  // of this user's mail in Postbox never fires a pixel this installation
+  // of this user's mail in Valen Mail never fires a pixel this installation
   // minted and never manufactures an open attributed to a recipient.
   // Unconditional on purpose: the Sent copy is the loudest case but not the
   // only one (a reply quoting the original carries the original's pixel),
-  // and there is exactly one Postbox user, so no folder can hold a pixel of
+  // and there is exactly one Valen Mail user, so no folder can hold a pixel of
   // ours whose firing would report a true fact. See ./strip-pixel.ts for
   // why the rule is this narrow and what it deliberately leaves alone.
   const message = { ...shaped, html: stripOwnTrackingPixels(shaped.html, pixelBase) };

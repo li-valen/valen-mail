@@ -13,7 +13,7 @@
  * The point of the rule, stated once so nobody has to reconstruct it from
  * the arithmetic.
  *
- * Postbox sends ONE tokenized copy per recipient (spec §5.3) — that is
+ * Valen Mail sends ONE tokenized copy per recipient (spec §5.3) — that is
  * what makes "Kate opened this" true rather than "someone opened this".
  * Gmail files every one of those copies into Sent and the client cannot
  * suppress it, so a message with an attachment costs the sending account

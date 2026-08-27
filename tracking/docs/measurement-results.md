@@ -53,10 +53,10 @@ Outlook is dropped from the matrix rather than left as a placeholder row.
 
 | # | Label | Recipient | Client / condition | Command |
 |---|---|---|---|---|
-| 1 | `gmail-web` | `li.valen.008@gmail.com` | Gmail web (desktop browser) | `node --env-file=.env scripts/send-test.mjs li.valen.008@gmail.com "gmail-web"` |
-| 2 | `gmail-ios-app` | `li.valen.008@gmail.com` | Gmail iOS app | `node --env-file=.env scripts/send-test.mjs li.valen.008@gmail.com "gmail-ios-app"` |
-| 3 | `apple-mail-mpp-on` (send A) | `li.valen@icloud.com` | Apple Mail, **Protect Mail Activity ON** (default) | `node --env-file=.env scripts/send-test.mjs li.valen@icloud.com "apple-mail-mpp-on"` |
-| 4 | `apple-mail-mpp-off` (send B) | `li.valen@icloud.com` | Apple Mail, **Protect Mail Activity OFF** | `node --env-file=.env scripts/send-test.mjs li.valen@icloud.com "apple-mail-mpp-off"` |
+| 1 | `gmail-web` | `recipient@example.com` | Gmail web (desktop browser) | `node --env-file=.env scripts/send-test.mjs recipient@example.com "gmail-web"` |
+| 2 | `gmail-ios-app` | `recipient@example.com` | Gmail iOS app | `node --env-file=.env scripts/send-test.mjs recipient@example.com "gmail-ios-app"` |
+| 3 | `apple-mail-mpp-on` (send A) | `you@icloud.example` | Apple Mail, **Protect Mail Activity ON** (default) | `node --env-file=.env scripts/send-test.mjs you@icloud.example "apple-mail-mpp-on"` |
+| 4 | `apple-mail-mpp-off` (send B) | `you@icloud.example` | Apple Mail, **Protect Mail Activity OFF** | `node --env-file=.env scripts/send-test.mjs you@icloud.example "apple-mail-mpp-off"` |
 | 5 | `real-contact` *(optional, user's discretion)* | a real contact, chosen by the user | the contact's own client — involves a third party | `node --env-file=.env scripts/send-test.mjs <contact address> "real-contact"` |
 
 Rows 1–2 (Gmail) are expected to yield `device_class: unknown` regardless of
@@ -179,15 +179,15 @@ client.
 ## Smoke test (connectivity check only — not a calibration data point)
 
 One send was made during Task 7 implementation to prove the send path and
-report path work end-to-end, from `xinfinitypro@gmail.com` to
-`li.valen.008@gmail.com`. It is recorded here for traceability only. It is
+report path work end-to-end, from `sender@example.com` to
+`recipient@example.com`. It is recorded here for traceability only. It is
 **not** part of the calibration matrix above (it wasn't necessarily opened
 under a controlled condition, and no open was required or waited for), so it
 is not a substitute for rows 1–5.
 
 | Field | Value |
 |---|---|
-| Sent | 2026-08-24T01:40:07.578Z, to `li.valen.008@gmail.com` |
+| Sent | 2026-08-24T01:40:07.578Z, to `recipient@example.com` |
 | Token | `313b3c5e24e403ddd84bb52244594a43` |
 | Hit arrived | Yes — one hit, +203s after send |
 | Classification | `open` |

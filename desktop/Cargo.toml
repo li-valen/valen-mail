@@ -3,7 +3,7 @@ name = "postbox-desktop"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.82"
-description = "Postbox — the macOS desktop shell for the Postbox mail client"
+description = "Valen Mail — the macOS desktop shell for the Valen Mail mail client"
 publish = false
 
 [build-dependencies]

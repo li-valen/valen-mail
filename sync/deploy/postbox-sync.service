@@ -1,5 +1,5 @@
 [Unit]
-Description=Postbox mail sync service
+Description=Valen Mail mail sync service
 After=network-online.target postgresql.service
 Wants=network-online.target
 

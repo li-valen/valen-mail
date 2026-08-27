@@ -387,7 +387,7 @@ $ sudo systemd-analyze verify postbox-sync.service
 $ echo $?
 0
 $ sudo systemctl status postbox-sync.service --no-pager
-○ postbox-sync.service - Postbox mail sync service
+○ postbox-sync.service - Valen Mail mail sync service
      Loaded: loaded (/etc/systemd/system/postbox-sync.service; enabled; preset: enabled)
      Active: inactive (dead)
 $ sudo systemctl is-enabled postbox-sync.service

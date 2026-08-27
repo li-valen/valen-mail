@@ -1,8 +1,8 @@
 {
-  "name": "postbox-desktop",
+  "name": "valen-mail-desktop",
   "private": true,
   "version": "0.1.0",
-  "description": "Tauri CLI wrapper for the Postbox macOS shell. No frontend build lives here — see tauri.conf.json.",
+  "description": "Tauri CLI wrapper for the Valen Mail macOS shell. No frontend build lives here — see tauri.conf.json.",
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",

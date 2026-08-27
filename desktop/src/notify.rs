@@ -6,7 +6,7 @@
 //!
 //! macOS does not let an app ask for notification permission on its own
 //! schedule the way a web page does. The system raises its own alert —
-//! "Postbox would like to send you notifications" — the first time the
+//! "Valen Mail would like to send you notifications" — the first time the
 //! app actually delivers one, and never again. So the moment the user is
 //! asked is decided entirely by the moment the first notification is
 //! posted, which under poll.rs is "the first genuinely new message
@@ -28,12 +28,12 @@
 //! the same way it does for a shown one, because delivery is the OS's
 //! decision to make and not this process's to second-guess.
 //!
-//! # No banner while Postbox is the frontmost app, and that is correct
+//! # No banner while Valen Mail is the frontmost app, and that is correct
 //!
 //! `NSUserNotificationCenter` does not draw a banner for the app that is
 //! already in front, and mac-notification-sys does not implement
 //! `shouldPresentNotification:` to override it. So a notification posted
-//! while the user is looking at Postbox is delivered to Notification
+//! while the user is looking at Valen Mail is delivered to Notification
 //! Centre but never flashes on screen.
 //!
 //! Measured, not assumed — the same notification, twice, read out of
@@ -139,7 +139,7 @@ pub fn announce(window: &WebviewWindow, message: &Message) {
     // Gmail's shape, and the same one the PWA already uses
     // (`buildMailNotification`, sync/src/push/dispatch.ts): the sender is
     // the title and the subject is the body. macOS prefixes the app name
-    // itself, so putting "Postbox" in the title would spend the most
+    // itself, so putting "Valen Mail" in the title would spend the most
     // valuable line restating something already on screen.
     //
     // Both strings are written by whoever sent the mail. They reach the

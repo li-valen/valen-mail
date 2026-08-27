@@ -1205,7 +1205,7 @@ export class ImapConnection {
 - [ ] **Step 4: Run the test against real Gmail**
 
 ```bash
-TEST_IMAP_EMAIL=xinfinitypro@gmail.com \
+TEST_IMAP_EMAIL=sender@example.com \
 TEST_IMAP_PASSWORD=<app password> \
 npx vitest run tests/connection.test.ts
 ```
@@ -1405,7 +1405,7 @@ Add to `sync/src/imap/connection.ts`, inside the `ImapConnection` class:
 - [ ] **Step 4: Run the test against real Gmail**
 
 ```bash
-TEST_IMAP_EMAIL=xinfinitypro@gmail.com \
+TEST_IMAP_EMAIL=sender@example.com \
 TEST_IMAP_PASSWORD=<app password> \
 npx vitest run tests/fetch.test.ts
 ```
@@ -1866,7 +1866,7 @@ git commit -m "feat: unified inbox json api with constant-time bearer auth"
 
 ```ini
 [Unit]
-Description=Postbox mail sync service
+Description=Valen Mail mail sync service
 After=network-online.target postgresql.service
 Wants=network-online.target
 

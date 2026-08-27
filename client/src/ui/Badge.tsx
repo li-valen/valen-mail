@@ -8,7 +8,7 @@ import { cn } from './cn';
  * `packages/ui/src/components/atoms/Badge.tsx`.
  *
  * `success` is the one variant that carries meaning rather than decoration
- * in Postbox: it is reserved for the CONFIRMED read state and nothing else
+ * in Valen Mail: it is reserved for the CONFIRMED read state and nothing else
  * (see components/ReadState.tsx). `neutral` carries the unconfirmable
  * states, so the two never differ by colour alone — the mark shape beside
  * the badge does the non-colour work.
@@ -44,7 +44,7 @@ export interface BadgeProps
     VariantProps<typeof badgeVariants> {}
 
 /** Plunk renders a `<div>`; this renders a `<span>` so a badge stays valid
- *  inline content inside the `<span>`-based list rows Postbox composes. */
+ *  inline content inside the `<span>`-based list rows Valen Mail composes. */
 export function Badge({ className, variant, ...props }: BadgeProps) {
   return <span className={cn(badgeVariants({ variant }), className)} {...props} />;
 }

@@ -1,6 +1,6 @@
 {
   "$schema": "./gen/schemas/desktop-schema.json",
-  "productName": "Postbox",
+  "productName": "Valen Mail",
   "version": "0.1.0",
   "identifier": "org.duckdns.postbox-valen.desktop",
   "build": {
@@ -26,8 +26,8 @@
       "icons/icon.ico"
     ],
     "category": "Productivity",
-    "shortDescription": "Postbox",
-    "longDescription": "The Postbox mail client as a native macOS window.",
+    "shortDescription": "Valen Mail",
+    "longDescription": "The Valen Mail mail client as a native macOS window.",
     "macOS": {
       "minimumSystemVersion": "10.15"
     }

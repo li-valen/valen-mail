@@ -31,7 +31,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let about = AboutMetadata {
         name: Some(package.name.clone()),
         version: Some(package.version.to_string()),
-        comments: Some("The Postbox mail client, as a macOS window.".into()),
+        comments: Some("The Valen Mail mail client, as a macOS window.".into()),
         website: Some(crate::origin::POSTBOX_URL.into()),
         ..Default::default()
     };

@@ -100,7 +100,7 @@ describe('opening a message strips the shell back to the message, below lg:', ()
   });
 
   it('hides the search bar and hamburger while reading, on phones only', () => {
-    // The user, with Postbox beside Gmail on an iPhone: "When you click
+    // The user, with Valen Mail beside Gmail on an iPhone: "When you click
     // into an email on ios remove the inbox and like all the junk at the
     // top besides title and email." The reader carries its own back
     // control, so a nav bar above it spends 64px offering a second way off

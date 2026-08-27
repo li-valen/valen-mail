@@ -1237,7 +1237,7 @@ describe('POST /api/send — the quoted original (spec §5.2 and §5.6)', () => 
 /**
  * Plan 11 Task 2 — attachments, and spec §5.3.1's BINDING mitigation.
  *
- * Postbox sends one tokenized copy per recipient and Gmail files every one
+ * Valen Mail sends one tokenized copy per recipient and Gmail files every one
  * of them into Sent, so an attachment costs `bytes x recipients` of a
  * 15 GB quota. Above TRACKED_SEND_BYTE_BUDGET the message degrades to a
  * single shared token — the tests below are what stop that rule from

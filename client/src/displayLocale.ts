@@ -7,7 +7,7 @@
  * for anyone whose phone says `17 Aug` and `14:32` - the Web Interface
  * Guidelines ask for the reader's own locale, not the author's.
  *
- * WHAT THIS DELIBERATELY DOES NOT DO: translate. Postbox's copy is
+ * WHAT THIS DELIBERATELY DOES NOT DO: translate. Valen Mail's copy is
  * English - `Today`, `Yesterday`, `Inbox`, `Archived.` - and this module
  * does not pretend otherwise. It governs FORMAT (field order, clock
  * convention, month and weekday abbreviations) and nothing else, which is

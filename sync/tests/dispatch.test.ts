@@ -241,7 +241,7 @@ describe('notification shape', () => {
 
   it('puts the sender in the title and the subject in the body, Gmail-style', () => {
     // The OS prefixes the app name itself on both platforms, so the title is
-    // spent on WHO rather than on restating "Postbox". Asserting the split
+    // spent on WHO rather than on restating "Valen Mail". Asserting the split
     // (not just "both strings appear somewhere") is the point: a build that
     // concatenated them back into one line would still contain both.
     const m = buildMailNotification(makeMessage());

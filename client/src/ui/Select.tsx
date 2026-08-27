@@ -23,7 +23,7 @@ import { cn } from './cn';
  * `[color-scheme:light] dark:[color-scheme:dark]` is what keeps the
  * UA-painted OPTION LIST in the same theme as the page. `:root` declares
  * `color-scheme: light dark` (src/styles.css), which lets the UA choose
- * from `prefers-color-scheme` — but Postbox's palette is chosen by the
+ * from `prefers-color-scheme` — but Valen Mail's palette is chosen by the
  * `.dark` CLASS, from a stored System/Light/Dark preference, and those
  * two disagree exactly when someone on a dark OS picks Light. Without
  * these classes that person gets a black dropdown over a white form.

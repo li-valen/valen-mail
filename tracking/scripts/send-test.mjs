@@ -56,7 +56,7 @@ if (!tokenPattern.test(token)) {
 }
 
 const messageId = `test-${Date.now()}@postbox.local`;
-const subject = `Postbox tracking test — ${label ?? recipient}`;
+const subject = `Valen Mail tracking test — ${label ?? recipient}`;
 
 /**
  * SENDER_IP must stay UNSET for calibration. tokens.sender_ip exists solely

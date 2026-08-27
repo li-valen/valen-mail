@@ -13,7 +13,7 @@ import { cn } from './cn';
  *
  *  1. **Semantics.** `SwitchPrimitives.Root` renders a real
  *     `<button type="button" role="switch" aria-checked={checked}>`, which
- *     is exactly the semantics Postbox's hand-rolled toggle carried before
+ *     is exactly the semantics Valen Mail's hand-rolled toggle carried before
  *     this port and which client/tests/push-toggle.test.ts's contract
  *     assumes.
  *

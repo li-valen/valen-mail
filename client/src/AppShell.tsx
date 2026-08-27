@@ -26,12 +26,12 @@ import { cn } from './ui/cn';
  * the translate-x mobile drawer with its `bg-black/50` scrim, and the
  * `lg:hidden h-16` mobile topbar.
  *
- * Postbox-specific deviations, each deliberate:
+ * Valen Mail-specific deviations, each deliberate:
  *
  *  - **Buttons, not `<Link>`s.** Plunk navigates with Next.js routing.
- *    Postbox has no router dependency, so nav items are `<button>`s
+ *    Valen Mail has no router dependency, so nav items are `<button>`s
  *    carrying `aria-current="page"` for the active one.
- *  - **No project switcher and no user dropdown.** Postbox is a
+ *  - **No project switcher and no user dropdown.** Valen Mail is a
  *    single-user, single-project client; neither has anything to switch
  *    between. (Plunk's `⌘K` command palette is a third thing this file
  *    used to list here as a non-feature. Plan 7 Task 3 gave the same
@@ -213,7 +213,7 @@ function Wordmark() {
       <div className="flex h-7 w-7 items-center justify-center rounded-md bg-neutral-900 text-white dark:bg-primary dark:text-primary-foreground">
         <Mailbox className="h-4 w-4" aria-hidden="true" />
       </div>
-      <span className="text-xl font-bold text-neutral-900 dark:text-foreground">Postbox</span>
+      <span className="text-xl font-bold text-neutral-900 dark:text-foreground">Valen Mail</span>
     </div>
   );
 }
@@ -293,7 +293,7 @@ export interface AppShellProps {
   readonly searchValue: string;
   readonly onSearchChange: (value: string) => void;
   /** Rendered in the sidebar's bottom block, where Plunk puts Settings and
-   *  the account menu. Postbox puts the theme control and the
+   *  the account menu. Valen Mail puts the theme control and the
    *  notifications control there (App.tsx). */
   readonly sidebarFooter?: ReactNode;
   /** Marks the content column busy while the session is still being
@@ -304,7 +304,7 @@ export interface AppShellProps {
    * `selected !== null`.
    *
    * Below `lg:` this strips the shell back to the message, which is what
-   * the user asked for after putting Postbox beside Gmail on a phone:
+   * the user asked for after putting Valen Mail beside Gmail on a phone:
    * *"When you click into an email on ios remove the inbox and like all
    * the junk at the top besides title and email."* On a 393px screen the
    * search field, the folder heading and the reader's own chrome were

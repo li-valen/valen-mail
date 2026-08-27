@@ -39,7 +39,7 @@ function messageFor(error: unknown): string {
   if (error instanceof ApiError) {
     return `The sync service answered ${error.status}. Nothing was signed in.`;
   }
-  return "Postbox can't reach the sync service. Nothing was signed in.";
+  return "Valen Mail can't reach the sync service. Nothing was signed in.";
 }
 
 export default function LoginView({ onSubmit }: LoginViewProps) {
@@ -87,7 +87,7 @@ export default function LoginView({ onSubmit }: LoginViewProps) {
           <div className="flex h-8 w-8 items-center justify-center rounded-md bg-neutral-900 text-white dark:bg-primary dark:text-primary-foreground">
             <Mailbox className="h-4 w-4" aria-hidden="true" />
           </div>
-          <span className="text-2xl font-bold text-neutral-900 dark:text-foreground">Postbox</span>
+          <span className="text-2xl font-bold text-neutral-900 dark:text-foreground">Valen Mail</span>
         </div>
 
         <Card>
@@ -95,11 +95,11 @@ export default function LoginView({ onSubmit }: LoginViewProps) {
             <form onSubmit={handleSubmit} noValidate className="space-y-4">
               <div className="space-y-1.5">
                 <h1 className="text-lg font-semibold tracking-tight text-neutral-900 dark:text-foreground">
-                  Postbox needs your token.
+                  Valen Mail needs your token.
                 </h1>
                 <p className="text-sm leading-relaxed text-neutral-500 dark:text-muted-foreground">
                   This browser is not signed in. Paste the sync service&rsquo;s API token once.
-                  Postbox keeps a signed session cookie for thirty days, never the token itself.
+                  Valen Mail keeps a signed session cookie for thirty days, never the token itself.
                 </p>
               </div>
 

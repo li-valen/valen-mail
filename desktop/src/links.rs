@@ -1,11 +1,11 @@
 //! Handing a URL to the user's default browser.
 //!
-//! Everything that is not the Postbox origin leaves this window. Two
+//! Everything that is not the Valen Mail origin leaves this window. Two
 //! separate WebKit paths can ask for that, and the shell has to answer both
 //! or the requirement is only half met:
 //!
 //!  * **Navigation** — the main frame being sent somewhere. Cancelled and
-//!    re-opened outside, so the app shell can never be carried off Postbox.
+//!    re-opened outside, so the app shell can never be carried off Valen Mail.
 //!  * **New window** — `window.open`, or a link with `target="_blank"`.
 //!    This is the path that actually matters for mail: the reader renders a
 //!    message body inside a sandboxed iframe carrying `<base target="_blank">`
@@ -47,7 +47,7 @@ pub fn open_outside<R: Runtime>(app: &AppHandle<R>, url: &Url) {
         }
         // Callers only reach here for URLs they already declined to render,
         // so this is unreachable in practice. Doing nothing is still the
-        // right answer: it must never become "open Postbox in the browser".
+        // right answer: it must never become "open Valen Mail in the browser".
         Destination::InApp => {}
     }
 }

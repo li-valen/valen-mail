@@ -217,7 +217,7 @@ describe('src/styles.css palette structure', () => {
 
   // Non-vacuity guard for the set-equality test below: if the parser stopped
   // finding the `.dark` block, that test would early-return and pass while
-  // checking nothing. Postbox ships the ported dark palette (unapplied), so
+  // checking nothing. Valen Mail ships the ported dark palette (unapplied), so
   // it must be found. A future task that genuinely deletes the block updates
   // this line deliberately rather than losing the check by accident.
   it('finds the ported .dark palette block', () => {

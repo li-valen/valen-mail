@@ -83,8 +83,8 @@ export type EnableResult =
  */
 const FAILURE_MESSAGES: Readonly<Record<EnableFailure, string>> = {
   'permission-denied': 'This browser did not grant permission to show notifications.',
-  'not-configured': 'Postbox has no push keys configured, so it cannot send notifications yet.',
-  failed: 'Postbox could not subscribe this browser to notifications.',
+  'not-configured': 'Valen Mail has no push keys configured, so it cannot send notifications yet.',
+  failed: 'Valen Mail could not subscribe this browser to notifications.',
 };
 
 function failure(reason: EnableFailure): EnableResult {
@@ -118,7 +118,7 @@ export async function enablePush(deps: EnablePushDeps): Promise<EnableResult> {
     const registration = await deps.registerWorker();
     const subscription = await registration.pushManager.subscribe({
       // Required by Chrome, and an honest description of what this does:
-      // every push Postbox sends produces a visible notification.
+      // every push Valen Mail sends produces a visible notification.
       userVisibleOnly: true,
       applicationServerKey: urlBase64ToUint8Array(publicKey),
     });
@@ -166,7 +166,7 @@ export async function disablePush(deps: DisablePushDeps): Promise<DisableResult>
     return { ok: true };
   } catch (error) {
     console.error(`push: could not fully unsubscribe this browser — ${describeError(error)}`);
-    return { ok: false, message: 'Postbox could not turn notifications off completely.' };
+    return { ok: false, message: 'Valen Mail could not turn notifications off completely.' };
   }
 }
 

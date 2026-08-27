@@ -4,7 +4,7 @@
 //! # Why there is still no credential in this process
 //!
 //! main.rs's opening comment says the shell keeps nothing, because the
-//! webview is a first-party client of the Postbox origin and WebKit does
+//! webview is a first-party client of the Valen Mail origin and WebKit does
 //! the whole credential dance itself. That is still true, and this module
 //! is written to keep it true.
 //!

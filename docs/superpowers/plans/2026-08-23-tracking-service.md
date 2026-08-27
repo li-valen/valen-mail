@@ -988,7 +988,7 @@ if (!recipient) {
 const sql = neon(process.env.DATABASE_URL);
 const token = randomBytes(16).toString('hex');
 const messageId = `test-${Date.now()}@postbox.local`;
-const subject = `Postbox tracking test — ${label ?? recipient}`;
+const subject = `Valen Mail tracking test — ${label ?? recipient}`;
 
 await sql`
   insert into tokens (token, account_id, message_id, recipient_email, subject, sender_ip)

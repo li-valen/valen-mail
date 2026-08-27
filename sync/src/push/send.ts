@@ -68,7 +68,7 @@ const TTL_SECONDS = 4 * 60 * 60;
  * The bound lives here, at the one chokepoint that talks to a push
  * service, rather than being inherited as an obligation by Task 7's
  * dispatcher — an obligation a second caller would eventually forget.
- * `url` and `tag` are bounded for the same reason even though Postbox
+ * `url` and `tag` are bounded for the same reason even though Valen Mail
  * authors them: the guarantee should hold for whatever any future caller
  * passes, not for what today's caller happens to pass.
  */
@@ -111,7 +111,7 @@ function boundedOptional(value: string | undefined, maxLength: number): string |
  */
 function boundPayload(payload: PushPayload): PushPayload {
   return {
-    title: boundedText(payload.title, MAX_TITLE_LENGTH) || 'Postbox',
+    title: boundedText(payload.title, MAX_TITLE_LENGTH) || 'Valen Mail',
     body: boundedOptional(payload.body, MAX_BODY_LENGTH),
     url: boundedOptional(payload.url, MAX_URL_LENGTH),
     tag: boundedOptional(payload.tag, MAX_TAG_LENGTH),

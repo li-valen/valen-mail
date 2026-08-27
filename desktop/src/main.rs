@@ -1,4 +1,4 @@
-//! Postbox for macOS — a native window onto the deployed Postbox client.
+//! Valen Mail for macOS — a native window onto the deployed Valen Mail client.
 //!
 //! # Why this loads a remote URL instead of bundling the client
 //!
@@ -28,7 +28,7 @@
 //! What this shell is responsible for, then, is the part a browser tab does
 //! not give you: a real window that remembers itself, a native menu bar
 //! (see menu.rs — without it ⌘C does nothing), a hard rule that the window
-//! never leaves Postbox (see links.rs and origin.rs), and native new-mail
+//! never leaves Valen Mail (see links.rs and origin.rs), and native new-mail
 //! notifications (poll.rs, mailwatch.rs, inbox.rs, notify.rs).
 //!
 //! That last one is the one place the "no credential here" rule above gets
@@ -168,11 +168,11 @@ fn build_main_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     let for_new_window = app.clone();
 
     WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::External(url))
-        .title("Postbox")
+        .title("Valen Mail")
         .inner_size(DEFAULT_WIDTH, DEFAULT_HEIGHT)
         .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
         .visible(false)
-        // The app shell itself must never be navigated off Postbox. wry
+        // The app shell itself must never be navigated off Valen Mail. wry
         // runs this for subframes too, which is why `classify` treats
         // `about:` as in-app — see origin.rs.
         .on_navigation(move |url| match origin::classify(url) {
@@ -195,13 +195,13 @@ fn build_main_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         // would silently do nothing. wry has already resolved a
         // de-duplicated path under ~/Downloads by the time this runs; all
         // that is left is to refuse downloads that did not come from
-        // Postbox itself.
+        // Valen Mail itself.
         .on_download(|_webview, event| match event {
             DownloadEvent::Requested { url, .. } => {
                 let allowed = origin::is_postbox(&url);
                 if !allowed {
                     eprintln!(
-                        "desktop: refused a download from {} — not the Postbox origin",
+                        "desktop: refused a download from {} — not the Valen Mail origin",
                         origin::for_log(&url)
                     );
                 }

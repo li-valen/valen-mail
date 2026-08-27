@@ -60,9 +60,9 @@ import { Switch } from '../ui/Switch';
 /** Copy for the three states that are not a control. Written as what is
  *  true and what to do about it, never as an error code. */
 const NOTES: Readonly<Record<Exclude<PushCapability, 'available'>, string>> = {
-  'ios-install': 'Share → Add to Home Screen, then open Postbox from there to turn on notifications.',
+  'ios-install': 'Share → Add to Home Screen, then open Valen Mail from there to turn on notifications.',
   unsupported: 'This browser cannot show notifications.',
-  blocked: 'Notifications are blocked for Postbox in this browser’s settings.',
+  blocked: 'Notifications are blocked for Valen Mail in this browser’s settings.',
 };
 
 export default function PushToggle() {

@@ -203,7 +203,7 @@ export interface OpenTally {
  *  2. OWN-PIXEL OPENS ARE NOT COUNTED. Gmail files a copy of every SMTP
  *     send into the sender's own Sent folder, byte-identical to the
  *     recipient's — same live token. Commit d056622 strips that pixel
- *     before Postbox renders any body (spec §5.6), so it no longer fires
+ *     before Valen Mail renders any body (spec §5.6), so it no longer fires
  *     from inside this product. But every open row recorded BEFORE that
  *     fix is still in the tracking database, attributed to a recipient
  *     who did nothing, and re-reading the same Sent copy in Gmail's own

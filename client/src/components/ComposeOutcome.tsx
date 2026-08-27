@@ -16,7 +16,7 @@ import type { ResultSummary, SendFailure } from './composeResults';
  *    everyone it already reached would get the message twice, each with
  *    a second tracking pixel.
  *  - **A refused or unknown send** — ./composeResults.ts has already
- *    decided whether Postbox may claim nothing went out, so this just
+ *    decided whether Valen Mail may claim nothing went out, so this just
  *    renders the sentence it produced.
  *
  * Every address the partial case is about is marked in the recipient

@@ -198,7 +198,7 @@ export function moveNoticeFor(destination: MoveDestination): string {
  * What the user is told when the move did NOT happen — said in the same
  * breath as the row coming back, so the two agree.
  *
- * Names the mailbox rather than the app ("Postbox couldn't reach your
+ * Names the mailbox rather than the app ("Valen Mail couldn't reach your
  * mailbox"), matching the star failure copy in App.tsx: the user's model
  * is that this app talks to Gmail, and the actionable fact is that the
  * far end did not answer.
@@ -206,11 +206,11 @@ export function moveNoticeFor(destination: MoveDestination): string {
 export function moveFailureFor(destination: MoveDestination): string {
   switch (destination) {
     case 'archive':
-      return "That message could not be archived — Postbox couldn't reach your mailbox.";
+      return "That message could not be archived — Valen Mail couldn't reach your mailbox.";
     case 'trash':
-      return "That message could not be moved to Trash — Postbox couldn't reach your mailbox.";
+      return "That message could not be moved to Trash — Valen Mail couldn't reach your mailbox.";
     case 'spam':
-      return "That message could not be reported as spam — Postbox couldn't reach your mailbox.";
+      return "That message could not be reported as spam — Valen Mail couldn't reach your mailbox.";
   }
 }
 
@@ -225,7 +225,7 @@ export function moveFailureFor(destination: MoveDestination): string {
  * looking in the wrong folder.
  */
 export function undoFailureFor(destination: MoveDestination): string {
-  return `That message stayed ${pastParticipleFor(destination)} — Postbox couldn't move it back.`;
+  return `That message stayed ${pastParticipleFor(destination)} — Valen Mail couldn't move it back.`;
 }
 
 /**

@@ -84,7 +84,7 @@ interface BodyFrameProps {
  * ground above it. Attacker-authored HTML therefore still announces
  * itself as a separate object — in dark mode by a full white-on-near-black
  * inversion, in light mode by elevation and the gap. What a message
- * cannot do is paint something that reads as Postbox's own chrome, which
+ * cannot do is paint something that reads as Valen Mail's own chrome, which
  * is the property the old border was actually buying. A shadow and a gap
  * buy it without a hairline; a borderless sheet flush against the header
  * would not, which is why the gap is not negotiable decoration.

@@ -32,7 +32,7 @@ const POSTBOX_HOST: &str = "postbox-valen.duckdns.org";
 /// Where a URL a webview wants to visit should actually end up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Destination {
-    /// Render it here. Only the Postbox origin itself, plus the inert
+    /// Render it here. Only the Valen Mail origin itself, plus the inert
     /// `about:` URLs a frame is created with.
     InApp,
     /// Hand it to the user's default browser and cancel it here.
@@ -43,7 +43,7 @@ pub enum Destination {
 
 /// True only for `https://postbox-valen.duckdns.org` on its default port.
 ///
-/// Each clause closes a way to look like Postbox without being it: `https`
+/// Each clause closes a way to look like Valen Mail without being it: `https`
 /// alone rejects a downgraded `http://` copy, the exact host rejects both
 /// `postbox-valen.duckdns.org.evil.com` and a sibling `*.duckdns.org`, and
 /// requiring the default port rejects `:8443` — a different origin as far

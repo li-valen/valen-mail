@@ -1,7 +1,7 @@
 /**
  * The sidebar's account roster (Plan 5 Task 3).
  *
- * Postbox has no roster endpoint, and this task does not add one: the
+ * Valen Mail has no roster endpoint, and this task does not add one: the
  * account rows are derived from the pages GET /api/inbox has already
  * returned (components/InboxList.tsx's `summarizeAccounts`), because
  * "how many of the loaded messages are yours" is a claim the loaded

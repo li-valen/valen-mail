@@ -432,13 +432,13 @@ UNPARKED — Task 1's `isPrimary` finding is now LOAD-BEARING (spec 7B.1). It wa
   Exactly one account must be primary and the config loader MUST enforce it before Plan 4
   consumes it. Add to the whole-branch review's triage list.
 FOUR ACCOUNTS CONFIGURED AND LIVE-VERIFIED (accounts.json, gitignored, confirmed):
-  xinfinitypro@gmail.com        30,832 msgs   (primary, provisional)
-  li.valen.008@gmail.com        11,060 msgs
+  sender@example.com        30,832 msgs   (primary, provisional)
+  recipient@example.com        11,060 msgs
   valenli@college.harvard.edu      525 msgs   <- Google WORKSPACE; app passwords and
                                                  IMAP are NOT disabled by Harvard's admin
                                                  policy. This was the one genuinely at
                                                  risk of failing at Task 9.
-  valenmasterman@gmail.com      18,043 msgs
+  third@example.com      18,043 msgs
 REAL DATA REPLACES MY ESTIMATE:
   planned ~50,000 msgs/mailbox -> 500,000 for ten
   actual average 15,115        -> ~151,000 for ten
@@ -506,14 +506,14 @@ Task 7: fix round 1 (b782653, 105/105, both regression tests mutation-verified).
   CONTROLLER VERIFIED the timer fix: process exits in ~1s where it would previously have
   held the event loop up to MAX_BACKOFF_MS (5 min).
 RATE LIMIT CONFIRMED — the shared test account is being throttled:
-    xinfinitypro@gmail.com        4680ms   <-- hammered all session
-    li.valen.008@gmail.com        1587ms
+    sender@example.com        4680ms   <-- hammered all session
+    recipient@example.com        1587ms
     valenli@college.harvard.edu    775ms
-    valenmasterman@gmail.com       557ms
+    third@example.com       557ms
   Still authenticating, not blocked, but the trend is clear. MITIGATION, binding on the
   remaining tasks: Task 8 gets a HARD zero-live-connections rule (its endpoints are
   testable with a fake Db and a fake pool — nothing about the HTTP layer needs IMAP).
-  If any later task genuinely requires a live connection, use valenmasterman@gmail.com
+  If any later task genuinely requires a live connection, use third@example.com
   (barely touched) rather than xinfinitypro.
 Task 7: fix round 1 re-review — BOTH findings ADDRESSED. Timer test uses
   vi.getTimerCount() (observes pending-timer STATE, not elapsed time) so it genuinely

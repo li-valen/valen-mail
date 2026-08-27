@@ -4,7 +4,7 @@
  * in?
  *
  * This is the whole product idea. Every other client sorts outbound mail
- * by date; Postbox sorts it by whether anyone read it and whether anyone
+ * by date; Valen Mail sorts it by whether anyone read it and whether anyone
  * answered. That ranking is decided here, before any SQL exists, so the
  * states are settled rather than fitted to whatever a query happened to
  * make convenient.

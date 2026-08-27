@@ -43,12 +43,12 @@ export interface SessionGateControls {
  */
 function messageFor(error: unknown): string {
   if (error instanceof ApiError && error.status === 401) {
-    return 'Signing in worked, but the session was not kept. Postbox needs HTTPS (localhost aside) and cookies enabled for this site.';
+    return 'Signing in worked, but the session was not kept. Valen Mail needs HTTPS (localhost aside) and cookies enabled for this site.';
   }
   if (error instanceof ApiError) {
     return `The sync service answered ${error.status}.`;
   }
-  return "Postbox can't reach the sync service.";
+  return "Valen Mail can't reach the sync service.";
 }
 
 export function useSessionGate(): SessionGateControls {

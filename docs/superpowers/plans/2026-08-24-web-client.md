@@ -417,8 +417,8 @@ export default defineConfig({
 
 ```json
 {
-  "name": "Postbox",
-  "short_name": "Postbox",
+  "name": "Valen Mail",
+  "short_name": "Valen Mail",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#f6f7f9",
@@ -710,7 +710,7 @@ git commit -m "feat: recent opens rail with three honest read states"
 
 **No third-party service.** Web Push is a W3C standard: generate a VAPID keypair once, sign a JWT, POST to whatever endpoint the browser hands you. Apple and Google operate the push services, but you never register with either. `web-push` is the one new dependency — it exists to do the ECDSA signing and payload encryption correctly, and hand-rolling that is a poor trade.
 
-**iOS is the constraint that shapes the UI.** Safari only permits `PushManager.subscribe()` from a Home Screen-installed PWA. `PushToggle` must detect `navigator.standalone === false` on iOS and render instructions — *"Share → Add to Home Screen, then open Postbox from there"* — rather than calling `subscribe()` and failing with an opaque error.
+**iOS is the constraint that shapes the UI.** Safari only permits `PushManager.subscribe()` from a Home Screen-installed PWA. `PushToggle` must detect `navigator.standalone === false` on iOS and render instructions — *"Share → Add to Home Screen, then open Valen Mail from there"* — rather than calling `subscribe()` and failing with an opaque error.
 
 - [ ] **Step 1: Generate keys and add the table**
 
@@ -945,6 +945,6 @@ git commit -m "feat: serve the client from the sync service origin"
 | C3 no app store — installable PWA | Task 3 (manifest), Task 6 (iOS guidance) |
 | One origin, no browser-held credential | Tasks 2, 3, 8 |
 
-**Deferred by design:** directions C and D as home views; compose and tracked send (Plan 4); a Tauri desktop shell (Plan 5). The rail will be sparse until Plan 4 ships a composer, because opens only exist for mail sent through Postbox — six tracked sends exist today, from calibration.
+**Deferred by design:** directions C and D as home views; compose and tracked send (Plan 4); a Tauri desktop shell (Plan 5). The rail will be sparse until Plan 4 ships a composer, because opens only exist for mail sent through Valen Mail — six tracked sends exist today, from calibration.
 
 **Type consistency:** `OpenEvent` is defined once in `sync/src/api/opens.ts` and mirrored structurally in the client. `uid` and `size_bytes` arrive as strings from `pg` and are never used arithmetically. `classification` is a plain string across the network boundary; only `readStateFor` and `shouldNotifyOpen` interpret it, and both default to the safe branch.

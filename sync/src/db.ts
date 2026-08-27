@@ -744,7 +744,7 @@ export function openDb(databaseUrl: string): Db {
            -- which now means "no new preview", not "erase the old one".
            snippet=coalesce(excluded.snippet, messages.snippet),
            -- synced_at is deliberately absent from this SET list. It
-           -- records when this row was FIRST written — the moment Postbox
+           -- records when this row was FIRST written — the moment Valen Mail
            -- learned the message existed — and the newest 50 UIDs arrive
            -- here again every cycle, so touching it would overwrite the
            -- one measurement it exists to preserve.

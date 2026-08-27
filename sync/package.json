@@ -1,5 +1,5 @@
 {
-  "name": "postbox-sync",
+  "name": "valen-mail-sync",
   "private": true,
   "type": "module",
   "scripts": {
