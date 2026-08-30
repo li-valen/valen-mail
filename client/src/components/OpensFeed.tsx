@@ -14,10 +14,12 @@ import { ROW_FOCUS } from './MessageRow';
 import { ReadState } from './ReadState';
 import {
   expandedDetailFor,
+  formatOpenCount,
   formatOpenRowLead,
   formatRelativeTime,
   selfCountLine,
 } from './openEvents';
+import type { GroupedOpen } from './openEvents';
 
 /**
  * The Recent Opens feed body, and the place the honesty requirement
@@ -265,7 +267,7 @@ function entryKey(event: OpenEvent): string {
 }
 
 interface OpenEntriesProps {
-  readonly displayable: readonly OpenEvent[];
+  readonly displayable: readonly GroupedOpen[];
   readonly now: number;
   readonly onOpen: (event: OpenEvent) => void;
 }
@@ -330,7 +332,7 @@ function OpenEntries({ displayable, now, onOpen }: OpenEntriesProps) {
 }
 
 interface OpenEntryProps {
-  readonly event: OpenEvent;
+  readonly event: GroupedOpen;
   readonly now: number;
   readonly onOpen: (event: OpenEvent) => void;
   /** Built once by `OpenEntries` above and shared across every row. */
@@ -495,6 +497,17 @@ function OpenEntry({ event, now, onOpen, variants, isNew }: OpenEntryProps) {
             <span className="min-w-0 flex-1 truncate text-sm text-neutral-900 dark:text-foreground">
               {formatOpenRowLead(event)}
             </span>
+            {/* THE COUNT SITS BESIDE THE TIME, not in the lead, because the
+                lead truncates first — see the note above. A copy fetched six
+                times is one row saying so, rather than six rows implying six
+                separate reads. Hidden at 1, which is nearly every row: an
+                "x1" on everything would be noise carrying no information. */}
+            {'count' in event && event.count > 1 && (
+              <span className="shrink-0 font-mono text-xs tabular-nums text-neutral-500 dark:text-muted-foreground">
+                <span aria-hidden="true">&times;{event.count}</span>
+                <span className="sr-only">{formatOpenCount(event.count)}</span>
+              </span>
+            )}
             <span className="shrink-0 font-mono text-xs tabular-nums text-neutral-500 dark:text-muted-foreground">
               {formatRelativeTime(event.occurredAt, now)}
             </span>

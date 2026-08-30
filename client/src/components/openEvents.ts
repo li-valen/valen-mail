@@ -222,8 +222,16 @@ export function describeEvent(event: OpenEvent): EventCopy {
  * and could not call `dangerouslySetInnerHTML` even if something later
  * tried.
  */
-export function formatOpenRowSentence(event: OpenEvent, now: number): string {
-  return `${formatOpenRowLead(event)} · ${formatRelativeTime(event.occurredAt, now)}`;
+export function formatOpenRowSentence(event: OpenEvent | GroupedOpen, now: number): string {
+  const times = 'count' in event && event.count > 1 ? ` · ${formatOpenCount(event.count)}` : '';
+  return `${formatOpenRowLead(event)}${times} · ${formatRelativeTime(event.occurredAt, now)}`;
+}
+
+/** "opened 6 times" — spoken form, for the row's accessible name. The visible
+ *  row shows the same number as a compact `x6` beside the time, where it
+ *  cannot be truncated away with the lead. */
+export function formatOpenCount(count: number): string {
+  return `opened ${count} times`;
 }
 
 /**
@@ -309,9 +317,70 @@ export function expandedDetailFor(event: OpenEvent): ExpandedOpenDetail {
   };
 }
 
+/**
+ * One recipient's copy of one message, plus how many times it registered.
+ *
+ * `count` is 1 for the ordinary case and only ever rendered above that.
+ */
+export interface GroupedOpen extends OpenEvent {
+  readonly count: number;
+}
+
 export interface OpensPartition {
-  readonly displayable: readonly OpenEvent[];
+  readonly displayable: readonly GroupedOpen[];
   readonly selfCount: number;
+}
+
+/**
+ * COLLAPSES REPEAT FETCHES OF THE SAME COPY INTO ONE ROW.
+ *
+ * The feed was a raw event log: every pixel fetch got its own row. Measured
+ * against the live service, that meant 26 rows for 10 actual recipient-copies
+ * — one message alone drew SIX rows spanning 22 hours. Read as a list, that
+ * says six people-shaped events happened. Mostly it is Gmail's image proxy
+ * re-fetching the same copy.
+ *
+ * **THE KEY IS THE TOKEN, and that is the point.** One token is minted per
+ * recipient per message, so it identifies exactly "this person's copy of this
+ * email" — which is the thing a reader means by "an open". Grouping by
+ * message would merge two different recipients; grouping by recipient would
+ * merge unrelated mail.
+ *
+ * **A CONFIRMED READ OUTRANKS EVERYTHING ELSE IN ITS GROUP.** If any fetch of
+ * a copy was classified `open`, the row is an open — a machine prefetch
+ * arriving later does not un-read a message a person read. Otherwise the row
+ * takes the most recent classification, which is the honest answer when
+ * nothing in the group was ever confirmed.
+ *
+ * **THE COUNT AND THE TIME BOTH DESCRIBE THAT WINNING CLASSIFICATION**, not
+ * the group as a whole. A copy with one prefetch and five opens is "opened 5
+ * times", most recently at the last of those five — saying six would count a
+ * machine fetch as a read, which is exactly the overstatement this app's
+ * three-tone vocabulary exists to avoid.
+ */
+export function groupOpens(events: readonly OpenEvent[]): readonly GroupedOpen[] {
+  const byToken = new Map<string, OpenEvent[]>();
+  for (const event of events) {
+    const bucket = byToken.get(event.token);
+    if (bucket === undefined) byToken.set(event.token, [event]);
+    else bucket.push(event);
+  }
+
+  const rows: GroupedOpen[] = [];
+  for (const bucket of byToken.values()) {
+    const newestFirst = [...bucket].sort((a, b) => b.occurredAt - a.occurredAt);
+    const confirmed = newestFirst.filter((event) => event.classification === 'open');
+    const winning = confirmed.length > 0 ? confirmed : newestFirst;
+    // `newestFirst` is never empty — a bucket exists only because something
+    // was pushed into it — so the representative is always defined.
+    const representative = winning[0] as OpenEvent;
+    const classification = representative.classification;
+    rows.push({
+      ...representative,
+      count: winning.filter((event) => event.classification === classification).length,
+    });
+  }
+  return rows.sort((a, b) => b.occurredAt - a.occurredAt);
 }
 
 /**
@@ -328,14 +397,17 @@ export interface OpensPartition {
  */
 export function partitionOpens(events: readonly OpenEvent[]): OpensPartition {
   const sorted = [...events].sort((a, b) => b.occurredAt - a.occurredAt);
-  const displayable = sorted.filter((event) => isDisplayable(event.classification));
-  const selfCount = sorted.length - displayable.length;
+  const displayable = groupOpens(sorted.filter((event) => isDisplayable(event.classification)));
+  // Counted from the RAW events, not the grouped rows: "3 views from you" is
+  // a count of views, and collapsing them first would report the number of
+  // messages instead.
+  const selfCount = sorted.length - sorted.filter((e) => isDisplayable(e.classification)).length;
   return { displayable, selfCount };
 }
 
 export type RailView =
   | { readonly kind: 'unavailable' }
-  | { readonly kind: 'ready'; readonly displayable: readonly OpenEvent[]; readonly selfCount: number };
+  | { readonly kind: 'ready'; readonly displayable: readonly GroupedOpen[]; readonly selfCount: number };
 
 /**
  * The single seam that keeps "the tracking service could not be reached"
