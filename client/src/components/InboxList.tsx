@@ -67,6 +67,7 @@ import { LIST_DIVIDERS, LIST_SURFACE } from './listSurface';
 import { isCurrentSelection, resolveLoadMorePage } from './inboxPaging';
 import { messageKey } from './messageBody';
 import { resolveStar, resolveUnread } from './messageFlags';
+import { useNowDate } from '../useNow';
 
 // Re-exported so `InboxList.tsx` stays the one public entry point for both
 // the component and the pure logic it renders with — tests import
@@ -297,7 +298,9 @@ export default function InboxList({
   // agrees on what "today" means, and a page that stays open for hours
   // does not silently relabel a message from "Today" to "Yesterday" out
   // from under the reader mid-scroll.
-  const [now] = useState(() => new Date());
+  // Ticks: day grouping asks what "today" is, and a frozen clock keeps
+  // yesterday's mail under TODAY after midnight. See ../useNow.ts.
+  const now = useNowDate();
   /**
    * Bumped once per {folder, account} selection — the fetch effect below
    * does it on every run, including the initial mount. `loadMore` reads

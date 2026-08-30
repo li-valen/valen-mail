@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { getOpens } from './api';
 import { advanceOpensPoll } from './components/openEvents';
 import type { RailView } from './components/openEvents';
+import { useNow } from './useNow';
 
 /**
  * Owns the ONE fetch/poll cycle for open events, for the lifetime of an
@@ -63,12 +64,13 @@ export interface OpensFeedState {
 export function useOpensFeed(isEnabled: boolean): OpensFeedState {
   const [load, setLoad] = useState<OpensLoadState>({ status: 'loading' });
   const [liveMessage, setLiveMessage] = useState('');
-  // Resolved once, the first time this hook ever runs — not once per
-  // poll — same reasoning as every other "now" snapshot in this codebase
-  // (InboxList.tsx, and OpensView.tsx before this hoist): relative times
-  // ("5m ago") should not silently creep forward while the tab sits open
-  // in the background for hours.
-  const [now] = useState(() => Date.now());
+  // A TICKING clock, not a snapshot. This used to be
+  // `useState(() => Date.now())` on the reasoning that relative times should
+  // not creep forward while the tab sits open — which is backwards, and on
+  // THIS hook was the worst of the four, because the feed polls: every event
+  // arriving after mount had `occurredAt > now` and rendered "just now"
+  // indefinitely. See ./useNow.ts.
+  const now = useNow();
   const previousKindRef = useRef<RailView['kind'] | null>(null);
 
   useEffect(() => {

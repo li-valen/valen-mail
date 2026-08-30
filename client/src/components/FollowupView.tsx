@@ -15,6 +15,7 @@ import { cn } from '../ui/cn';
 import { Settle } from '../motion';
 import FollowupRow from './FollowupRow';
 import { LIST_DIVIDERS, LIST_SURFACE } from './listSurface';
+import { useNow } from '../useNow';
 
 /**
  * Spec §7A's two missing views, as one page with a two-value scope.
@@ -91,7 +92,8 @@ export default function FollowupView({ account, onOpenMessage }: FollowupViewPro
   // Resolved once per mount, for the same reason ./InboxList.tsx and
   // ../useOpensFeed.ts resolve theirs once: relative times must not creep
   // forward while the tab sits open in the background for hours.
-  const [now] = useState(() => Date.now());
+  // Ticks — see ../useNow.ts for why a frozen clock was wrong everywhere.
+  const now = useNow();
 
   /** Supersedes a `loadMore` still in flight for a previous selection —
    *  the same discipline ./InboxList.tsx's `selectionRef` applies, and for

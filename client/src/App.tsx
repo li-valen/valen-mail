@@ -72,6 +72,7 @@ import { initialViewFromSearch } from './initialView';
 import { useDebouncedQuery } from './useDebouncedQuery';
 import { useOpensFeed } from './useOpensFeed';
 import { useSessionGate } from './useSessionGate';
+import { useNowDate } from './useNow';
 
 /**
  * The app: an auth gate in front of Plunk's dashboard shell (see
@@ -280,10 +281,9 @@ export default function App() {
   const [dismissedErrorMessage, setDismissedErrorMessage] = useState<string | null>(null);
   // null = the list is showing; a row = the reader is showing that row.
   const [selected, setSelected] = useState<InboxMessage | null>(null);
-  // Resolved once per mount, for the same reason InboxList resolves its
-  // own: every relative timestamp the reader renders agrees on what
-  // "today" means for as long as the app stays open.
-  const [now] = useState(() => new Date());
+  // Ticks, so "today" stays today across midnight and the reader's
+  // timestamps stay true in a tab that is open for days. See ./useNow.ts.
+  const now = useNowDate();
   // The scrolling column (AppShell's <main>), plus what to put back when
   // the reader closes. Refs, not state: neither value should ever cause a
   // render, and both are read exactly once, inside a layout effect.
