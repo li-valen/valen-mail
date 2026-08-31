@@ -308,7 +308,7 @@ describe('parseAttachments — shape', () => {
  *
  * Nothing downstream was changed to support degraded tracking. The opens
  * feed renders `{recipientEmail} opened "{subject}"` and push renders
- * `{recipientEmail} opened your mail`, both verbatim — so putting the
+ * `{recipientEmail}` as the notification title, verbatim — so putting the
  * honest value in that field makes the degraded state render itself, in
  * every surface, with no branch anywhere.
  */
@@ -343,17 +343,28 @@ describe('SHARED_TOKEN_RECIPIENT', () => {
   });
 
   it('reads as the honest state everywhere it is rendered verbatim', () => {
-    // "someone opened your mail" — §7A.2's exact requirement, with no
-    // branch in the push path and none in the opens feed.
-    expect(buildOpenNotification(sharedOpen()).title).toBe(`${SHARED_TOKEN_RECIPIENT} opened your mail`);
+    // Still §7A.2's requirement and still no branch in the push path — the
+    // sentinel renders itself. The SHAPE moved: the title is the recipient
+    // and the verb is in the body, because iOS truncated the old
+    // whole-sentence title. Read together it is the same sentence.
+    const notification = buildOpenNotification(sharedOpen());
+    expect(notification.title).toBe(SHARED_TOKEN_RECIPIENT);
+    expect(notification.body).toContain('Opened');
   });
 
   it('is never mistaken for one of the user own addresses', () => {
-    // If it were, a genuine open would be suppressed as the sender
-    // reading their own Sent copy, and the degraded message would report
-    // nothing at all.
+    // If it were, a genuine open would be suppressed as the sender reading
+    // their own Sent copy, and the degraded message would report nothing.
     expect(isOwnAddress(SHARED_TOKEN_RECIPIENT, OWN)).toBe(false);
-    expect(shouldNotifyOpen(sharedOpen(), OWN)).toBe(true);
+  });
+
+  it('but a shared-token open still only BUZZES when a device was reported', () => {
+    // The sentinel says "we cannot name who opened this". A relay hit says
+    // "we cannot tell a read from the sender re-reading their own Sent
+    // copy". Two different unknowns, and the phone stays quiet for the
+    // second one regardless of the first — the feed still shows both.
+    expect(shouldNotifyOpen(sharedOpen({ deviceClass: 'desktop' }), OWN)).toBe(true);
+    expect(shouldNotifyOpen(sharedOpen({ deviceClass: null }), OWN)).toBe(false);
   });
 
   it('under-claims rather than over-claims in the follow-up tally', () => {

@@ -544,7 +544,7 @@ describe('createOpensPollFromConfig — the wiring', () => {
     const event = {
       token: 'tok', accountId: 'a', messageId: '<m@x>', recipientEmail,
       subject: 's', sentAt: 100, occurredAt: 200, classification: 'open',
-      deviceClass: null, os: null,
+      deviceClass: 'desktop', os: null,
     };
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ opens: [event] }), {

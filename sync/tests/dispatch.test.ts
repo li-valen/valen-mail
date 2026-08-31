@@ -60,7 +60,11 @@ function makeOpenEvent(overrides: Partial<OpenEvent> = {}): OpenEvent {
     sentAt: 1_756_000_000_000,
     occurredAt: 1_756_003_600_000,
     classification: 'open',
-    deviceClass: null,
+    // A REPORTED DEVICE, because that is now what makes an open notifiable.
+    // A hit through a relay carries no platform and cannot be pinned on the
+    // recipient — see shouldNotifyOpen. Cases that need the ambiguous shape
+    // pass `deviceClass: null` explicitly.
+    deviceClass: 'desktop',
     os: null,
     ...overrides,
   };
@@ -196,7 +200,11 @@ describe('shouldNotifyOpen — the recipient is one of my own accounts', () => {
 describe('notification shape', () => {
   it('an open notification names the person and the subject', () => {
     const n = buildOpenNotification(makeOpenEvent());
-    expect(n.title).toContain('opened');
+    // "opened" is in the BODY now: the title is the sender, matching the
+    // new-mail notification's shape, because iOS truncated the old
+    // whole-sentence title to "tlstrauss@fas.harvard.edu opened...".
+    expect(n.title).toBe('yspiegler@g.harvard.edu');
+    expect(n.body).toContain('Opened');
     expect(n.title).toContain('yspiegler@g.harvard.edu');
     expect(n.body).toContain('Grays M');
   });
@@ -525,6 +533,39 @@ describe('notifyOpens', () => {
       OWN_ADDRESSES,
       sendImpl,
     );
-    expect(titles).toEqual(['yspiegler@g.harvard.edu opened your mail']);
+    expect(titles).toEqual(['yspiegler@g.harvard.edu']);
+  });
+});
+
+
+describe('an open that cannot be pinned on the recipient must not buzz', () => {
+  /**
+   * The user, about two "tlstrauss@fas.harvard.edu opened..." notifications
+   * six minutes apart: "the tlstrauss opened isnt actually tlstrauss opened it
+   * was me opening it in gmail."
+   *
+   * The service sends one copy per recipient and Gmail files each in the
+   * sender's Sent folder carrying that recipient's pixel, so opening your own
+   * Sent copy fetches theirs through the same relay. Nothing in the hit tells
+   * them apart — except that a relay reports no platform and a real client
+   * does.
+   */
+  it('stays silent when the hit reported no device', () => {
+    expect(shouldNotifyOpen(makeOpenEvent({ deviceClass: null }), [])).toBe(false);
+    expect(shouldNotifyOpen(makeOpenEvent({ deviceClass: 'unknown' }), [])).toBe(false);
+  });
+
+  it('still notifies when a real client reported one', () => {
+    expect(shouldNotifyOpen(makeOpenEvent({ deviceClass: 'desktop' }), [])).toBe(true);
+  });
+
+  it('collapses repeat fetches of one copy into one notification', () => {
+    // Was tagged per-occurrence, so a proxy re-validating its cache stacked a
+    // fresh notification each time. The live data showed one copy fetched at
+    // 14, 18, 19 and 23 minutes after send.
+    const first = buildOpenNotification(makeOpenEvent({ occurredAt: 1_000 }));
+    const later = buildOpenNotification(makeOpenEvent({ occurredAt: 9_999 }));
+    expect(first.tag).toBe(later.tag);
+    expect(first.tag).not.toContain('1000');
   });
 });

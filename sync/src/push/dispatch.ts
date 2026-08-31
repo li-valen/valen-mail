@@ -137,6 +137,23 @@ const OPENS_URL = '/?rail=opens';
  */
 export function shouldNotifyOpen(event: OpenEvent, ownAddresses: readonly string[]): boolean {
   if (event.classification !== 'open') return false;
+  // A HIT THAT REPORTED NO DEVICE CANNOT NAME A PERSON, SO IT MUST NOT BUZZ.
+  //
+  // The user got two "tlstrauss@fas.harvard.edu opened..." notifications six
+  // minutes apart for mail to their professor — and it was them, opening
+  // their own Sent copy on gmail.com. The service sends one copy per
+  // recipient and Gmail files each in Sent carrying that recipient's pixel,
+  // so the sender's own read fetches the recipient's pixel through the same
+  // relay the recipient would use. Nothing in the hit separates them.
+  //
+  // This file already draws the distinction the fix needs: "'someone opened
+  // this' in a feed you went looking for is honest; a phone buzzing" is not.
+  // The feed still shows these — labelled as a fetch, naming nobody. The
+  // phone stays quiet, because a buzz is an assertion.
+  //
+  // A hit that DID report a platform came from a real client rather than a
+  // relay, and is the recipient's by construction. Those still notify.
+  if (!hasDeviceContext(event.deviceClass)) return false;
   return !isOwnAddress(event.recipientEmail, ownAddresses);
 }
 
@@ -169,13 +186,24 @@ export function buildOpenNotification(event: OpenEvent): PushPayload {
   const device = hasDeviceContext(event.deviceClass) ? ` — opened on ${event.deviceClass}` : '';
 
   return {
-    title: `${event.recipientEmail} opened your mail`,
-    body: `${subject}${device}`,
+    // The SENDER-as-title shape the new-mail notification already uses, for
+    // the same reason: "who" before "about what" is what makes a lock screen
+    // glanceable. The old title was a whole sentence and iOS truncated it to
+    // "tlstrauss@fas.harvard.edu opened..." — spending the most valuable line
+    // on a word the body could carry.
+    title: event.recipientEmail,
+    body: `Opened "${subject}"${device}`,
     url: OPENS_URL,
-    // Per event occurrence, not just per token: a second real open of the
-    // same message is a second real thing that happened and should not
-    // silently replace the first notification in the OS tray.
-    tag: `open:${event.token}:${event.occurredAt}`,
+    // ONE NOTIFICATION PER COPY, not per fetch. This used to include
+    // `occurredAt`, on the reasoning that "a second real open of the same
+    // message is a second real thing that happened". The live data says those
+    // repeats are mostly not second reads: one copy produced fetches at 14,
+    // 18, 19 and 23 minutes after send — Gmail's proxy re-validating a cached
+    // image, not a person reading four times in nine minutes. Dropping the
+    // timestamp makes a later fetch REPLACE the earlier notification, which
+    // is the same call the feed's episode-coalescing makes, from the same
+    // evidence.
+    tag: `open:${event.token}`,
   };
 }
 
@@ -195,14 +223,29 @@ export function buildMailNotification(message: MessageInput): PushPayload {
   // spends the most valuable line in the notification restating something
   // the user can already see. Sender-as-title is also what makes a lock
   // screen glanceable — "who wants me" before "about what".
+  // Gmail's third line: subject, then a preview of the message itself. The
+  // preview is what makes a notification answerable without opening the app —
+  // "Looking forward to EXPOS this semester" tells you whether this needs you
+  // now, and a bare subject does not. Omitted rather than padded when the
+  // message has no snippet yet.
+  const preview =
+    message.snippet !== null && message.snippet.length > 0 ? `\n${message.snippet}` : '';
+
   return {
     title: from,
-    body: subject,
+    body: `${subject}${preview}`,
     url: INBOX_URL,
-    // Unique per message (never collapses two different new-mail
-    // notifications into one), stable across a re-poll of the same UID
-    // (never stacks a duplicate for a message already shown).
-    tag: `mail:${message.accountId}:${message.folder}:${message.uid}`,
+    // GROUPED BY CONVERSATION, not by message. A thread that gets three
+    // replies while the phone is locked used to leave three separate
+    // notifications saying nearly the same thing; now the newest replaces the
+    // older ones, which is what Gmail does and what the reader does since it
+    // started showing conversations rather than messages. Falls back to the
+    // message's own identity when the server gave it no thread id, so an
+    // unthreaded message still never collapses into an unrelated one.
+    tag:
+      message.threadId !== null && message.threadId.length > 0
+        ? `thread:${message.accountId}:${message.threadId}`
+        : `mail:${message.accountId}:${message.folder}:${message.uid}`,
   };
 }
 

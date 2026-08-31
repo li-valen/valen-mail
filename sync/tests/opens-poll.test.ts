@@ -48,7 +48,7 @@ function makeOpenEvent(overrides: Partial<OpenEvent> = {}): OpenEvent {
     sentAt: 1_756_000_000_000,
     occurredAt: 1_756_000_100_000,
     classification: 'open',
-    deviceClass: null,
+    deviceClass: 'desktop',
     os: null,
     ...overrides,
   };
