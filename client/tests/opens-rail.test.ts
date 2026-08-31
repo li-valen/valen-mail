@@ -48,8 +48,11 @@ function buildEvent(overrides: Partial<OpenEvent> & { readonly token: string }):
     sentAt: 1_700_000_000_000,
     occurredAt: 1_700_000_060_000,
     classification: 'open',
-    deviceClass: 'unknown',
-    os: null,
+    // Attributable by default: a hit that reported a real platform came from a
+    // client rather than a relay, so naming the recipient is supportable. The
+    // proxied case — where it is NOT — has its own cases below.
+    deviceClass: 'desktop',
+    os: 'macOS',
     ...overrides,
   };
 }
@@ -273,6 +276,23 @@ describe('deriveRailView — unavailable told apart from empty', () => {
 const ROW_NOW = 1_700_000_060_000 + 5 * 60_000;
 
 describe('formatOpenRowSentence — subject is the "which email" the user asked for', () => {
+  it('refuses to name the recipient on a PROXIED hit', () => {
+    // The user, about mail to their professor: "The mail opens that get
+    // detected are not from the email of my professor but just when I open the
+    // email on gmail.com." The service sends one copy per recipient and Gmail
+    // files each in Sent carrying that recipient's pixel, so opening your own
+    // Sent copy fetches theirs, through the same proxy. Naming them there is a
+    // claim the evidence cannot carry.
+    const proxied = buildEvent({ token: 'p', deviceClass: 'unknown', os: null });
+    expect(formatOpenRowLead(proxied)).toBe('"Test subject" was fetched');
+    expect(formatOpenRowLead(proxied)).not.toContain('someone@example.com');
+  });
+
+  it('still names them when the hit reported a real device', () => {
+    const direct = buildEvent({ token: 'd', deviceClass: 'desktop', os: 'macOS' });
+    expect(formatOpenRowLead(direct)).toBe('someone@example.com opened "Test subject"');
+  });
+
   it('renders the subject, quoted, when present', () => {
     const event = buildEvent({ token: 'a', recipientEmail: 'kate@example.com', subject: 'Re: invoice' });
     expect(formatOpenRowSentence(event, ROW_NOW)).toBe('kate@example.com opened "Re: invoice" · 5m ago');
@@ -298,21 +318,53 @@ describe('formatOpenRowSentence — subject is the "which email" the user asked 
   });
 });
 
-describe('formatOpenRowSentence — mpp and open share the exact same sentence form', () => {
-  it('an open row and an mpp row both contain "opened"', () => {
-    const open = formatOpenRowSentence(buildEvent({ token: 'e', classification: 'open' }), ROW_NOW);
-    const mpp = formatOpenRowSentence(buildEvent({ token: 'f', classification: 'mpp' }), ROW_NOW);
-    expect(open).toContain('opened');
-    expect(mpp).toContain('opened');
+describe('the sentence claims only what the hit can support', () => {
+  /**
+   * THIS REVERSES A PROPERTY THIS FILE USED TO PIN, and the reversal is the
+   * point rather than a casualty.
+   *
+   * These two cases previously asserted that an `open` row and an `mpp` row
+   * were BYTE-IDENTICAL, on the reasoning that confidence belongs in the
+   * state mark and never in the words. The words were therefore always
+   * "{recipient} opened {subject}" — including for a hit nothing could
+   * attribute to that recipient.
+   *
+   * The user found the consequence: mail to their professor showed as the
+   * professor opening it, when it was the user viewing their own Sent copy on
+   * gmail.com. Identical wording did not make that neutral; it made an
+   * unconfirmable hit borrow the phrasing of a confirmed one. A mark cannot
+   * unsay a sentence that names a person and says "opened".
+   *
+   * So the wording now varies with what is knowable — and ONLY with that. It
+   * still does not vary with classification directly: `formatOpenRowLead`
+   * asks `isAttributable`, which is about whether a device was reported.
+   */
+  it('names the recipient on a hit that reported a device', () => {
+    const shared = { recipientEmail: 'kate@example.com', subject: 'Re: invoice' };
+    const direct = formatOpenRowSentence(
+      buildEvent({ token: 'g', classification: 'open', deviceClass: 'desktop', os: 'macOS', ...shared }),
+      ROW_NOW,
+    );
+    expect(direct).toContain('kate@example.com opened');
   });
 
-  // Stronger than the substring check above: given the SAME recipient,
-  // subject and timestamps, an open row and an mpp row are BYTE-IDENTICAL
-  // — not just similarly shaped — because this function never reads
-  // `event.classification` at all. This would fail immediately if a
-  // future edit special-cased even a single character by classification.
-  it('produces a byte-identical sentence for open vs. mpp given the same recipient/subject/time', () => {
-    const shared = { recipientEmail: 'kate@example.com', subject: 'Re: invoice', occurredAt: 1_700_000_060_000 };
+  it('and names nobody on a proxied hit, whatever its classification', () => {
+    const shared = { recipientEmail: 'kate@example.com', subject: 'Re: invoice', deviceClass: 'unknown', os: null };
+    for (const classification of ['open', 'mpp', 'prefetch'] as const) {
+      const sentence = formatOpenRowSentence(
+        buildEvent({ token: `t-${classification}`, classification, ...shared }),
+        ROW_NOW,
+      );
+      expect(sentence).not.toContain('kate@example.com');
+      expect(sentence).toContain('"Re: invoice" was fetched');
+    }
+  });
+
+  it('still says nothing DIFFERENT about mpp than about a proxied open', () => {
+    // The surviving half of the old property: an unconfirmable relay hit and
+    // an unattributable open read identically, so the wording never leaks a
+    // confidence distinction the mark is there to carry.
+    const shared = { recipientEmail: 'kate@example.com', subject: 'Re: invoice', deviceClass: 'unknown', os: null };
     const open = formatOpenRowSentence(buildEvent({ token: 'g', classification: 'open', ...shared }), ROW_NOW);
     const mpp = formatOpenRowSentence(buildEvent({ token: 'h', classification: 'mpp', ...shared }), ROW_NOW);
     expect(open).toBe(mpp);
@@ -377,14 +429,32 @@ describe('expandedDetailFor — what the hover/focus expansion shows', () => {
   // absent from the output, not merely that the return TYPE happens not
   // to name it (which a bug that folded the value into another field,
   // e.g. `cause`, could still defeat).
-  it('never leaks deviceClass or os, even when the input event genuinely carries them', () => {
-    const event = buildEvent({ token: 'f', deviceClass: 'iPhone', os: 'iOS 17' });
-    const detail = expandedDetailFor(event);
-    const serialized = JSON.stringify(detail);
-    expect(serialized).not.toContain('iPhone');
-    expect(serialized).not.toContain('iOS 17');
+  it('reports the client as a sentence, never as a raw field', () => {
+    // DESIGN.md §5.1's ban was absolute until 2026-08-30 and is now narrowed:
+    // the user asked for the device. What survives the narrowing is the
+    // property the ban existed for — no raw field reaches the UI, so nothing
+    // can render "unknown" as though it were a device.
+    const detail = expandedDetailFor(buildEvent({ token: 'f', deviceClass: 'iPhone', os: 'iOS 17' }));
     expect(Object.keys(detail)).not.toContain('deviceClass');
     expect(Object.keys(detail)).not.toContain('os');
+    expect(detail.reader).toBe('iOS 17 iPhone');
+    expect(detail.isAttributable).toBe(true);
+  });
+
+  it('names the ABSENCE of a device rather than printing "unknown"', () => {
+    const detail = expandedDetailFor(
+      buildEvent({ token: 'f', deviceClass: 'unknown', os: null }),
+    );
+    expect(detail.reader).toBe('a proxy that reported no device');
+    expect(detail.reader).not.toContain('unknown');
+    expect(detail.isAttributable).toBe(false);
+  });
+
+  it('reads the client off the classification for the two known relays', () => {
+    const gmail = expandedDetailFor(buildEvent({ token: 'f', classification: 'prefetch' }));
+    const apple = expandedDetailFor(buildEvent({ token: 'g', classification: 'mpp' }));
+    expect(gmail.reader).toBe('Gmail image proxy');
+    expect(apple.reader).toBe('Apple Mail, Privacy Protection on');
   });
 });
 

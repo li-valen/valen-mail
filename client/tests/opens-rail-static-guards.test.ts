@@ -35,17 +35,39 @@ import opensFeedSource from '../src/components/OpensFeed.tsx?raw';
 
 const SOURCE = `${readStateSource}\n${openEventsSource}\n${opensViewSource}\n${opensFeedSource}`;
 
+/**
+ * The COMPONENTS — everything except openEvents.ts, which is now the single
+ * sanctioned reader of `deviceClass`/`os`.
+ *
+ * DESIGN.md §5.1's ban was absolute until 2026-08-30 and is now narrowed: the
+ * fields may reach the UI, but only through `readerFor()`, which returns a
+ * sentence that stays honest when nothing was reported. Keeping the ban on
+ * the COMPONENTS is what preserves the property the original was protecting —
+ * no component can render a raw platform string, so `unknown` can never be
+ * painted as though it were a device.
+ */
+const COMPONENT_SOURCE = `${readStateSource}\n${opensViewSource}\n${opensFeedSource}`;
+
 const DEVICE_CLASS_ACCESS = /\.deviceClass\b/;
 const OS_FIELD_ACCESS = /\.os\b/;
 const CHECKMARK_ICON_IMPORT = /\bCheck(Circle2?|Square)?\b|\bBadgeCheck\b/;
 
 describe('OpensView/OpensFeed/ReadState source — read-state hard bans', () => {
-  it('never reads event.deviceClass', () => {
-    expect(SOURCE).not.toMatch(DEVICE_CLASS_ACCESS);
+  it('no COMPONENT reads event.deviceClass', () => {
+    expect(COMPONENT_SOURCE).not.toMatch(DEVICE_CLASS_ACCESS);
   });
 
-  it('never reads event.os', () => {
-    expect(SOURCE).not.toMatch(OS_FIELD_ACCESS);
+  it('no COMPONENT reads event.os', () => {
+    expect(COMPONENT_SOURCE).not.toMatch(OS_FIELD_ACCESS);
+  });
+
+  it('exactly one module is allowed to read them, and it is the honest one', () => {
+    // The narrowing has to be a channel, not a hole: if a second module could
+    // read these, "unknown" would eventually get rendered as a device
+    // somewhere. openEvents.ts reads them solely to build `readerFor`'s
+    // sentence, which names the absence rather than printing it.
+    expect(openEventsSource).toMatch(DEVICE_CLASS_ACCESS);
+    expect(openEventsSource).toContain('a proxy that reported no device');
   });
 
   it('never imports a checkmark-shaped lucide-react icon', () => {

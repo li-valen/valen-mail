@@ -235,6 +235,64 @@ export function formatOpenCount(count: number): string {
 }
 
 /**
+ * WHETHER THIS FETCH CAN BE PINNED ON THE RECIPIENT AT ALL.
+ *
+ * The user, about a message to their professor: *"The mail opens that get
+ * detected are not from the email of my professor but just when I open the
+ * email on gmail.com ... Only show the professors name when it is actually
+ * the professor."*
+ *
+ * They are right, and the reason is structural. The service sends one copy
+ * per recipient, each carrying that recipient's own pixel, and Gmail files
+ * each of those in the sender's Sent folder. Opening your own Sent copy on
+ * gmail.com therefore fetches the RECIPIENT's pixel, through the same
+ * `GoogleImageProxy` the recipient's own read would use. Nothing in the hit
+ * distinguishes them — classify.ts has documented this residual all along.
+ *
+ * **SO THE SPLIT IS ON WHETHER A DEVICE WAS REPORTED.** A proxy fetch
+ * carries no platform information: measured across the live feed, every
+ * `prefetch` and `mpp` hit and 7 of 16 `open` hits reported
+ * `deviceClass: 'unknown'`. Those are the ambiguous ones — could be the
+ * recipient, could be the sender re-reading their own Sent copy. A hit that
+ * DID report a device came straight from a real client rather than a relay,
+ * and is the recipient's by construction.
+ *
+ * Naming the recipient on an ambiguous hit is the specific falsehood being
+ * removed here: it asserts a person read something when the evidence cannot
+ * carry that. Naming them on an attributable hit is fine and stays.
+ */
+export function isAttributable(event: OpenEvent): boolean {
+  return (
+    event.classification === 'open' &&
+    event.deviceClass !== null &&
+    event.deviceClass !== undefined &&
+    event.deviceClass !== 'unknown'
+  );
+}
+
+/**
+ * Which mail client did the fetching, as far as the hit can say.
+ *
+ * The relay that DESTROYS the device information is itself the client
+ * fingerprint, which is why this is knowable when device class is not:
+ * `GoogleImageProxy` means Gmail, Apple's contentless relay means Apple Mail
+ * with Privacy Protection on, and a hit carrying a real platform came from
+ * that platform's own client. Those three are exactly what classify.ts
+ * already decides, so this reads the classification rather than adding a
+ * second parser that could disagree with it.
+ */
+export function readerFor(event: OpenEvent): string {
+  if (event.classification === 'prefetch') return 'Gmail image proxy';
+  if (event.classification === 'mpp') return 'Apple Mail, Privacy Protection on';
+  if (event.classification === 'scanner') return 'a security scanner';
+  if (isAttributable(event)) {
+    const os = event.os === null || event.os === undefined ? '' : `${event.os} `;
+    return `${os}${event.deviceClass}`;
+  }
+  return 'a proxy that reported no device';
+}
+
+/**
  * The WHO-and-WHAT half of the sentence above, without the time.
  *
  * Exists because the rail is a 320px column and the row is one truncating
@@ -257,6 +315,11 @@ export function formatOpenCount(count: number): string {
  */
 export function formatOpenRowLead(event: OpenEvent): string {
   const subjectFragment = event.subject !== null ? ` "${event.subject}"` : '';
+  // The recipient is NAMED only when the hit can actually be pinned on them
+  // — see `isAttributable`. Otherwise the row says what happened without
+  // claiming who did it, because the alternative is telling the user their
+  // professor read something when it may well have been their own Sent copy.
+  if (!isAttributable(event)) return `${subjectFragment.trim() || 'A message'} was fetched`;
   return `${event.recipientEmail} opened${subjectFragment}`;
 }
 
@@ -305,7 +368,24 @@ export interface ExpandedOpenDetail {
   readonly recipientEmail: string;
   readonly subject: string;
   readonly absoluteTime: string;
-  readonly cause: string;
+  readonly cause: string;  /**
+   * Which client did the fetching, and whether the recipient can be named.
+   *
+   * The old version of this type deliberately had NO `deviceClass`/`os`
+   * field, so leaking one was structurally impossible rather than a matter
+   * of discipline — and that was right, because the measurement study found
+   * device attribution 0-for-4 on real accounts and warned that a UI built
+   * on it would read "unknown" almost always.
+   *
+   * What is exposed here is not that raw field. `reader` is a SENTENCE that
+   * is honest in the unknown case ("a proxy that reported no device") rather
+   * than a device string that pretends to know, and `isAttributable` is the
+   * flag the row uses to decide whether naming the recipient is supportable
+   * at all. The privacy property the old shape protected — never handing the
+   * UI a raw platform string to render as fact — is intact.
+   */
+  readonly reader: string;
+  readonly isAttributable: boolean;
 }
 
 export function expandedDetailFor(event: OpenEvent): ExpandedOpenDetail {
@@ -314,6 +394,8 @@ export function expandedDetailFor(event: OpenEvent): ExpandedOpenDetail {
     subject: event.subject !== null ? event.subject : NO_SUBJECT_LABEL,
     absoluteTime: formatClockTime(event.occurredAt),
     cause: readStateFor(event.classification).title,
+    reader: readerFor(event),
+    isAttributable: isAttributable(event),
   };
 }
 

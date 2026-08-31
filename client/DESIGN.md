@@ -578,10 +578,31 @@ paired with a real `:active` background — never remove the highlight without r
 
 Three hard bans, all measured:
 
-1. **Never render `deviceClass` or `os`.** They are present on `OpenRow` and an
-   implementer will be tempted. Gmail's image proxy strips device attribution, so the
-   field is architecturally meaningless. No device, no client name, no location, no city,
-   no map, no flag, no "read on iPhone." Not in a tooltip, not in a detail panel.
+1. **Never render `deviceClass` or `os` RAW, and never name a person on a hit that
+   cannot carry the claim.** *(Narrowed 2026-08-30, at the user's request: "give me
+   more details on who opened it like the device that opened it etc." and "show me
+   where they open on like gmail vs mail vs outlook".)*
+
+   The original ban was absolute, on the premise that "Gmail's image proxy strips
+   device attribution, so the field is architecturally meaningless." Measured against
+   the live feed that premise is too strong: of 16 `open` hits, **9 carried a real
+   `desktop`/`macOS` platform** and 7 did not. The field is meaningless *for proxied
+   hits*, which is a narrower claim than the ban made.
+
+   What replaces it:
+   - Device and client reach the UI only through `readerFor()`, which returns a
+     SENTENCE that is honest when nothing was reported ("a proxy that reported no
+     device"). No component reads `.deviceClass`/`.os` directly, so the UI can never
+     render `unknown` as though it were a device.
+   - The client name comes from the CLASSIFICATION, not a second UA parser: Gmail's
+     proxy, Apple's Privacy Protection relay and a scanner are exactly what
+     `classify.ts` already decides, so the two cannot disagree.
+   - **The recipient is named only when the hit is attributable** (`isAttributable()`:
+     an `open` that reported a device). A proxied hit is indistinguishable from the
+     SENDER opening their own Sent copy — the service sends one copy per recipient and
+     Gmail files each in Sent carrying that recipient's pixel — so naming them there
+     asserts a read the evidence cannot support. Still no location, no city, no map,
+     no flag.
 2. **Never display a lag under 60 seconds as a confirmed open.** The server suppresses
    these (`PREFETCH_WINDOW_MS = 60_000`), and the UI must not reintroduce them by, e.g.,
    rendering a raw hits list.
@@ -889,7 +910,9 @@ Run in **all three root states** (unstamped on a light OS, unstamped on a dark O
 - [ ] `prefers-reduced-motion: reduce` reaches every end state; nothing is unreachable.
 - [ ] The unavailable rail and the empty rail are told apart at a glance, in greyscale.
 - [ ] An Apple/`mpp` recipient shows no spinner, no pulse, and no refresh control.
-- [ ] `deviceClass` and `os` appear nowhere in the rendered DOM.
+- [ ] `deviceClass`/`os` reach the DOM only via `readerFor()`; no component reads them
+      directly, and an unreported device renders as a sentence, never as "unknown".
+- [ ] A proxied hit never names the recipient (see `isAttributable`).
 - [ ] No checkmark glyph is rendered anywhere.
 - [ ] The mobile rail strip clears the iOS home indicator with the safe-area inset applied.
 

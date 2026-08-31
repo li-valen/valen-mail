@@ -446,7 +446,12 @@ interface OpenEntryProps {
  * before the pixel request reaches this app — every event ever recorded
  * carries `deviceClass: 'unknown'`, `os: null`), and a permanently-blank
  * "Device: unknown" row would be worse than no row at all, per the task
- * brief. `expandedDetailFor` cannot leak either field even by accident —
+ * brief. Since 2026-08-30 the detail DOES carry the client, at the user's
+ * request ("give me more details on who opened it like the device"), but only
+ * as `reader`: a sentence that names the absence when a relay reported no
+ * platform, never a raw field this component could render as "unknown". See
+ * DESIGN.md §5.1, narrowed with the measurement that narrowed it.
+ * `expandedDetailFor` still cannot leak either raw field even by accident —
  * it never reads either one off `event` in the first place — and
  * `User` does not match tests/opens-rail-static-guards.test.ts's
  * checkmark-icon ban (it is a person glyph, not a check-adjacent one).
@@ -552,7 +557,7 @@ function OpenEntry({ event, now, onOpen, variants, isNew }: OpenEntryProps) {
                   <span className="block text-neutral-900 dark:text-foreground">{detail.recipientEmail}</span>
                   <span className="block">{detail.subject}</span>
                   <span className="block font-mono">
-                    {detail.absoluteTime} · {detail.cause}
+                    {detail.absoluteTime} · {detail.reader} · {detail.cause}
                   </span>
                 </span>
               </span>
