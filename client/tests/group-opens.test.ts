@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { groupOpens, partitionOpens, formatOpenRowSentence } from '../src/components/openEvents';
+import {
+  countEpisodes,
+  groupOpens,
+  partitionOpens,
+  formatOpenRowSentence,
+} from '../src/components/openEvents';
 import type { OpenEvent } from '../src/api';
 
 /**
@@ -23,12 +28,19 @@ const BASE: OpenEvent = {
 };
 const at = (over: Partial<OpenEvent>): OpenEvent => ({ ...BASE, ...over });
 
+/** An hour apart, which is past OPEN_EPISODE_GAP_MS — so these fixtures are
+ *  separate readings, not one burst. The earlier version of this file spaced
+ *  them milliseconds apart, which episode-counting correctly collapses to a
+ *  single row; the counts below are about grouping, not coalescing, so they
+ *  need gaps a human could actually produce. */
+const HOUR = 60 * 60 * 1000;
+
 describe('groupOpens — one recipient-copy is one row', () => {
   it('collapses repeat fetches of the same copy and counts them', () => {
     const rows = groupOpens([
-      at({ occurredAt: 300 }),
-      at({ occurredAt: 200 }),
-      at({ occurredAt: 100 }),
+      at({ occurredAt: 3 * HOUR }),
+      at({ occurredAt: 2 * HOUR }),
+      at({ occurredAt: 1 * HOUR }),
     ]);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.count).toBe(3);
@@ -64,9 +76,9 @@ describe('groupOpens — one recipient-copy is one row', () => {
     // This is the overstatement the whole three-tone vocabulary exists to
     // avoid: five opens plus one machine fetch is "opened 5 times", not 6.
     const rows = groupOpens([
-      at({ classification: 'prefetch', occurredAt: 10 }),
-      at({ classification: 'open', occurredAt: 20 }),
-      at({ classification: 'open', occurredAt: 30 }),
+      at({ classification: 'prefetch', occurredAt: 1 * HOUR }),
+      at({ classification: 'open', occurredAt: 2 * HOUR }),
+      at({ classification: 'open', occurredAt: 4 * HOUR }),
     ]);
     expect(rows[0]?.count).toBe(2);
   });
@@ -105,7 +117,10 @@ describe('groupOpens — one recipient-copy is one row', () => {
 
 describe('partitionOpens with grouping', () => {
   it('groups what it displays', () => {
-    const { displayable } = partitionOpens([at({ occurredAt: 1 }), at({ occurredAt: 2 })]);
+    const { displayable } = partitionOpens([
+      at({ occurredAt: 1 * HOUR }),
+      at({ occurredAt: 3 * HOUR }),
+    ]);
     expect(displayable).toHaveLength(1);
     expect(displayable[0]?.count).toBe(2);
   });
@@ -132,9 +147,9 @@ describe('partitionOpens with grouping', () => {
     const { selfCount, displayable } = partitionOpens([
       at({ classification: 'self', occurredAt: 1 }),
       at({ classification: 'self', occurredAt: 2 }),
-      at({ token: 'shown', classification: 'open', occurredAt: 3 }),
-      at({ token: 'shown', classification: 'open', occurredAt: 4 }),
-      at({ token: 'shown', classification: 'open', occurredAt: 5 }),
+      at({ token: 'shown', classification: 'open', occurredAt: 3 * HOUR }),
+      at({ token: 'shown', classification: 'open', occurredAt: 5 * HOUR }),
+      at({ token: 'shown', classification: 'open', occurredAt: 7 * HOUR }),
     ]);
     expect(displayable).toHaveLength(1);
     expect(displayable[0]?.count).toBe(3);
@@ -145,12 +160,60 @@ describe('partitionOpens with grouping', () => {
 
 describe('the row sentence says the count out loud', () => {
   it('includes it above one', () => {
-    const [row] = groupOpens([at({ occurredAt: 300 }), at({ occurredAt: 200 })]);
-    expect(formatOpenRowSentence(row!, 300)).toContain('opened 2 times');
+    const [row] = groupOpens([at({ occurredAt: 3 * HOUR }), at({ occurredAt: HOUR })]);
+    expect(formatOpenRowSentence(row!, 3 * HOUR)).toContain('opened 2 times');
   });
 
   it('and stays silent at exactly one, where it would carry no information', () => {
     const [row] = groupOpens([at({ occurredAt: 300 })]);
     expect(formatOpenRowSentence(row!, 300)).not.toContain('times');
+  });
+});
+
+describe('countEpisodes — a burst of fetches is one reading, not many', () => {
+  const MIN = 60_000;
+  // The exact bursts the live service produced, which the feed reported as
+  // four separate reads each.
+  const burst = (minutesAfterSend: readonly number[]) =>
+    minutesAfterSend
+      .map((m) => at({ occurredAt: 1_000_000 + m * MIN }))
+      .sort((a, b) => b.occurredAt - a.occurredAt);
+
+  it('collapses the observed 14/18/19/23-minute burst into one', () => {
+    expect(countEpisodes(burst([14, 18, 19, 23]))).toBe(1);
+  });
+
+  it('collapses the 14/19/23/50-minute burst too — its largest gap is 27 minutes', () => {
+    expect(countEpisodes(burst([14, 19, 23, 50]))).toBe(1);
+  });
+
+  it('but a return the NEXT DAY is a second reading', () => {
+    // Same copy, 22 hours later — the gap in the real data between the burst
+    // and a genuinely separate visit.
+    expect(countEpisodes(burst([14, 18, 19, 23, 22 * 60]))).toBe(2);
+  });
+
+  it('splits exactly at the window, not around it', () => {
+    const justInside = burst([0, 29]);
+    const justOutside = burst([0, 31]);
+    expect(countEpisodes(justInside)).toBe(1);
+    expect(countEpisodes(justOutside)).toBe(2);
+  });
+
+  it('is 1 for a single fetch and 0 for none', () => {
+    expect(countEpisodes(burst([5]))).toBe(1);
+    expect(countEpisodes([])).toBe(0);
+  });
+
+  it('feeds the row count, so the feed says 2 where it used to say 5', () => {
+    const rows = groupOpens([
+      at({ occurredAt: 1_000_000 + 14 * MIN }),
+      at({ occurredAt: 1_000_000 + 18 * MIN }),
+      at({ occurredAt: 1_000_000 + 19 * MIN }),
+      at({ occurredAt: 1_000_000 + 23 * MIN }),
+      at({ occurredAt: 1_000_000 + 22 * 60 * MIN }),
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.count).toBe(2);
   });
 });

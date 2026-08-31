@@ -332,6 +332,45 @@ export interface OpensPartition {
 }
 
 /**
+ * How long after a fetch another fetch of the same copy still counts as the
+ * same reading.
+ *
+ * Measured against the live service, one copy produced fetches 14, 18, 19 and
+ * 23 minutes after send, and another 14, 19, 23 and 50 minutes after. The
+ * feed reported those as four and four separate reads. Nobody opens the same
+ * email four times in nine minutes; Gmail's image proxy re-validating its
+ * cache does, and so does a sender clicking around their own Sent folder.
+ *
+ * 30 minutes is chosen to sit above the largest observed intra-burst gap (27
+ * minutes) and far below the gap to a genuinely separate return (22 hours in
+ * the same data). It is a COALESCING window, so every error it makes is in
+ * the direction of under-counting reads — which is the correct direction for
+ * a number this app puts next to the word "opened".
+ *
+ * PROVISIONAL, like PREFETCH_WINDOW_MS in tracking/src/classify.ts and for
+ * the same reason: two bursts is not a distribution. Revisit with more data.
+ */
+export const OPEN_EPISODE_GAP_MS = 30 * 60 * 1000;
+
+/**
+ * Collapses a copy's fetches into reading EPISODES.
+ *
+ * Consecutive fetches closer together than `OPEN_EPISODE_GAP_MS` are one
+ * episode. `events` arrives newest-first, which is why the comparison walks
+ * backwards through time.
+ */
+export function countEpisodes(events: readonly OpenEvent[]): number {
+  if (events.length === 0) return 0;
+  let episodes = 1;
+  for (let i = 1; i < events.length; i += 1) {
+    const newer = events[i - 1] as OpenEvent;
+    const older = events[i] as OpenEvent;
+    if (newer.occurredAt - older.occurredAt > OPEN_EPISODE_GAP_MS) episodes += 1;
+  }
+  return episodes;
+}
+
+/**
  * COLLAPSES REPEAT FETCHES OF THE SAME COPY INTO ONE ROW.
  *
  * The feed was a raw event log: every pixel fetch got its own row. Measured
@@ -375,10 +414,8 @@ export function groupOpens(events: readonly OpenEvent[]): readonly GroupedOpen[]
     // was pushed into it — so the representative is always defined.
     const representative = winning[0] as OpenEvent;
     const classification = representative.classification;
-    rows.push({
-      ...representative,
-      count: winning.filter((event) => event.classification === classification).length,
-    });
+    const matching = winning.filter((event) => event.classification === classification);
+    rows.push({ ...representative, count: countEpisodes(matching) });
   }
   return rows.sort((a, b) => b.occurredAt - a.occurredAt);
 }
