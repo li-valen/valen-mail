@@ -6,6 +6,14 @@ and the same app on the web, on a phone, and in a native macOS window.
 
 It runs on one always-free VM.
 
+![Unified inbox across three accounts, with the recent-opens panel](docs/screenshots/inbox.png)
+
+| Conversation view | Send tracking (dark mode) |
+|---|---|
+| ![A thread stacked oldest-first with replies in place](docs/screenshots/reader.png) | ![Opens feed: confirmed opens vs proxy fetches](docs/screenshots/tracking-dark.png) |
+
+Screenshots use made-up demo data. More are in [`docs/screenshots/`](docs/screenshots/).
+
 ---
 
 ## What it does
